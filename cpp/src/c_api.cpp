@@ -77,6 +77,25 @@ extern "C" int32_t brt_engine_is_cuda_enabled(const BrtEngineHandle* engine) {
   }
 }
 
+extern "C" BrtStatus brt_engine_run_smoke(
+    BrtEngineHandle* engine, BrtSmokeResult* out_result) {
+  clear_last_error();
+  if (engine == nullptr || out_result == nullptr) {
+    return fail(BRT_STATUS_INVALID_ARGUMENT, "engine and out_result are required");
+  }
+  if (!engine->engine.cuda_enabled()) {
+    return fail(BRT_STATUS_UNAVAILABLE, "CUDA backend is not enabled");
+  }
+  try {
+    *out_result = engine->engine.run_smoke();
+    return BrtStatus{BRT_STATUS_OK, nullptr};
+  } catch (const std::exception& error) {
+    return fail(BRT_STATUS_CUDA_ERROR, error.what());
+  } catch (...) {
+    return fail(BRT_STATUS_CUDA_ERROR, "CUDA error");
+  }
+}
+
 extern "C" const char* brt_last_error_message(void) {
   try {
     return g_last_error.message;

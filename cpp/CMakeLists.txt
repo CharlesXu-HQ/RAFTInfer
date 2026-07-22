@@ -4,9 +4,22 @@ target_compile_features(brt_cpp PUBLIC cxx_std_20)
 target_include_directories(brt_cpp PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_definitions(brt_cpp PRIVATE BRT_ENABLE_CUDA=$<BOOL:${BRT_ENABLE_CUDA}>)
 
+if(BRT_ENABLE_CUDA)
+  find_package(CUDAToolkit REQUIRED)
+  find_package(raft 26.06 CONFIG REQUIRED)
+  find_package(rmm 26.06 CONFIG REQUIRED)
+  target_sources(brt_cpp PRIVATE foundation/device_context.cu kernels/smoke.cu)
+  target_link_libraries(brt_cpp PUBLIC raft::raft rmm::rmm CUDA::cudart)
+  target_compile_options(brt_cpp PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--expt-extended-lambda --expt-relaxed-constexpr>)
+endif()
+
 include(GNUInstallDirs)
 install(TARGETS brt_cpp ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
 install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+
+add_executable(brt-smoke tools/brt_smoke.cpp)
+target_link_libraries(brt-smoke PRIVATE brt_cpp)
 
 if(BRT_BUILD_TESTS)
   enable_testing()
