@@ -1,3 +1,5 @@
+# The plan-required tag remains unresolved here; Task 6 must record the target-pulled
+# image digest. Apt packages and rustup remain mutable provenance risks until then.
 FROM rapidsai/base:26.06-cuda13-py3.13
 
 USER root
@@ -5,6 +7,7 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends curl ca-certificates ninja-build pkg-config \
  && rm -rf /var/lib/apt/lists/*
 
+# Verify that this base image defines the rapids user during target image validation.
 USER rapids
 ENV RUSTUP_HOME=/home/rapids/.rustup
 ENV CARGO_HOME=/home/rapids/.cargo
