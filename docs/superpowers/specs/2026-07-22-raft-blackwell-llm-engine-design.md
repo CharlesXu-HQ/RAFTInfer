@@ -378,6 +378,24 @@ RTX 50 local or self-hosted CI runs kernel correctness, CUDA Graph tests, Qwen3.
 
 GPU evidence is stored as machine-readable JSONL. Every published performance result must be traceable to the code commit, model hash, prompt hash, GPU, driver, CUDA version, selected kernels, correctness result, and measurement protocol.
 
+### 11.1 Target validation host and shared-GPU policy
+
+The initial remote validation host is `192.168.124.8`, accessed as user `charles`. Authentication secrets are never written to the repository, build scripts, logs, command history, benchmark evidence, or documentation. Tests use an interactive credential prompt or an approved secret mechanism.
+
+The target GPU may be shared with unrelated workloads. Remote test automation must therefore follow these rules:
+
+- Inspect GPU processes, memory use, utilization, temperature, clocks, and power state before allocating significant memory or starting a benchmark.
+- Never terminate, suspend, renice, or otherwise interfere with another process unless the user explicitly authorizes that exact action.
+- Never enable exclusive-process mode, reset the GPU, change persistent system GPU configuration, or change global power/clock settings without explicit authorization.
+- Correctness tests may run alongside other processes only when the required memory headroom is available and the test cannot cause an out-of-memory condition for existing workloads.
+- Performance tests require a quiet measurement window. They must not start when unrelated GPU compute utilization is active or when free VRAM is below the scenario's declared safety margin.
+- Re-check occupancy before every benchmark arm. If a competing workload appears, abort the current measurement cleanly and mark its data invalid rather than publishing a distorted result.
+- Use a cooperative host-local benchmark lock to prevent two project benchmark jobs from overlapping. The lock does not grant ownership of the GPU and does not override evidence of unrelated workloads.
+- Record pre-run and post-run GPU state in benchmark evidence. A result is publishable only when the evidence shows a stable, uncontended measurement window.
+- Prefer small smoke and correctness probes before full-model or long-running performance tests.
+
+Remote tests must stage outputs in a project-specific directory, avoid modifying unrelated files or services, and clean up only artifacts created by the current project run.
+
 ## 12. Milestones
 
 ### M0: Toolchain and full-stack smoke
@@ -387,6 +405,7 @@ GPU evidence is stored as machine-readable JSONL. Every published performance re
 - The stable C ABI creates an engine.
 - A Rust CLI prints GPU capabilities, allocates RMM memory, launches a smoke kernel, and reads the correct result.
 - Exact tested dependency revisions and the `sm_120a` compilation mode are locked.
+- The same smoke test runs safely on the target validation host after passing the shared-GPU preflight checks.
 
 ### M1: Foundation, registry, and correctness harness
 
