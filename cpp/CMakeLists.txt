@@ -1,0 +1,10 @@
+add_library(brt_cpp STATIC src/status.cpp)
+target_compile_features(brt_cpp PUBLIC cxx_std_20)
+target_include_directories(brt_cpp PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+
+if(BRT_BUILD_TESTS)
+  enable_testing()
+  add_executable(brt_c_api_test tests/c_api_test.cpp)
+  target_link_libraries(brt_c_api_test PRIVATE brt_cpp)
+  add_test(NAME brt_c_api_test COMMAND brt_c_api_test)
+endif()

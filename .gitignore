@@ -1,2 +1,11 @@
 .worktrees/
 .superpowers/
+/build/
+/target/
+/.cache/
+/.idea/
+/.vscode/
+*.swp
+*.swo
+compile_commands.json
+/evidence/local/
