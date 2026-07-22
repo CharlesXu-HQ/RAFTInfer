@@ -56,3 +56,17 @@ cargo run -p brt-cli -- info
 git diff --check
   exit 0
 ```
+
+### Build-script invalidation fix
+
+- Added `cargo:rerun-if-env-changed=BRT_ENABLE_CUDA` before reading the backend-selection environment variable, so changing host/CUDA selection invalidates Cargo's native build output.
+- No standalone source-contract test was added: Cargo evaluates build-script invalidation before compiling or running package tests, so proving it with a Rust test would require a nested Cargo invocation and an isolated target directory. That would test Cargo's cache orchestration rather than this project's runtime behavior and would add disproportionate test machinery. The workspace build/test command recompiled `brt-sys` after the script changed and validated the directive's build-script output path.
+
+```text
+cargo fmt --check
+  exit 0
+cargo test --workspace
+  brt-sys rebuilt; 4 integration tests passed; 0 failed
+git diff --check
+  exit 0
+```

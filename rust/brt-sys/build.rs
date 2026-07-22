@@ -1,4 +1,5 @@
 fn main() {
+    println!("cargo:rerun-if-env-changed=BRT_ENABLE_CUDA");
     let cuda = std::env::var("BRT_ENABLE_CUDA").unwrap_or_else(|_| "OFF".into());
     let dst = cmake::Config::new("../..")
         .define("BRT_ENABLE_CUDA", cuda)
