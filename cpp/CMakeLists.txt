@@ -4,6 +4,10 @@ target_compile_features(brt_cpp PUBLIC cxx_std_20)
 target_include_directories(brt_cpp PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_definitions(brt_cpp PRIVATE BRT_ENABLE_CUDA=$<BOOL:${BRT_ENABLE_CUDA}>)
 
+include(GNUInstallDirs)
+install(TARGETS brt_cpp ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
+install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+
 if(BRT_BUILD_TESTS)
   enable_testing()
   add_executable(brt_c_api_test tests/c_api_test.cpp)
