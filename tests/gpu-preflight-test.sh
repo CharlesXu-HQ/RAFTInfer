@@ -4,6 +4,7 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 fixture_dir="$(mktemp -d)"
 golden_json='{"device_id":0,"element_count":1024,"checksum":523776}'
+golden_output="${golden_json}"$'\n'
 trap 'rm -rf "${fixture_dir}"' EXIT
 
 cat >"${fixture_dir}/nvidia-smi" <<'EOF'
@@ -38,8 +39,28 @@ cat >"${fixture_dir}/docker" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$@" >>"${BRT_TEST_DOCKER_LOG}"
-printf '%s\n' "${BRT_TEST_DOCKER_OUTPUT}"
-exit "${BRT_TEST_DOCKER_STATUS:-0}"
+arguments=("$@")
+for ((index = 0; index < ${#arguments[@]}; index++)); do
+  if [[ "${arguments[index]}" == -e ]]; then
+    index=$((index + 1))
+    case "${arguments[index]}" in
+      BRT_MIN_FREE_MIB=*|BRT_MAX_UTILIZATION_PERCENT=*)
+        export "${arguments[index]}"
+        ;;
+    esac
+  fi
+done
+for argument in "${arguments[@]}"; do
+  if [[ "${argument}" == *'scripts/gpu-preflight.sh >/dev/null && ./build/gpu/cpp/brt-smoke'* ]]; then
+    BRT_TEST_COMPUTE_APPS="${BRT_TEST_INNER_COMPUTE_APPS:-${BRT_TEST_COMPUTE_APPS:-}}" \
+      "${BRT_TEST_REPO_ROOT}/scripts/gpu-preflight.sh" >/dev/null
+    break
+  fi
+done
+if [[ "${BRT_TEST_DOCKER_STATUS:-0}" -ne 0 ]]; then
+  exit "${BRT_TEST_DOCKER_STATUS}"
+fi
+printf '%s' "${BRT_TEST_DOCKER_OUTPUT}"
 EOF
 
 cat >"${fixture_dir}/ssh" <<'EOF'
@@ -123,18 +144,22 @@ assert_preflight 23 '' '8192, 0, 42' fail_compute '' ''
 assert_preflight 23 '' '8192, 0, 42' fail_gpu '' ''
 assert_preflight 23 '' '8192, 0, 42' '' invalid ''
 assert_preflight 23 '' '8192, 0, 42' '' -1 ''
+assert_preflight 23 '' '8192, 0, 42' '' 0 ''
 assert_preflight 23 '' '8192, 0, 42' '' '' invalid
 assert_preflight 23 '' '8192, 0, 42' '' '' -1
+assert_preflight 23 '' '8192, 0, 42' '' '' 101
 
 run_smoke() {
   PATH="${fixture_dir}:${PATH}" \
     BRT_TEST_NVIDIA_LOG="${fixture_dir}/nvidia.log" \
     BRT_TEST_FLOCK_LOG="${fixture_dir}/flock.log" \
     BRT_TEST_DOCKER_LOG="${fixture_dir}/docker.log" \
+    BRT_TEST_REPO_ROOT="${repo_root}" \
     BRT_TEST_COMPUTE_APPS="${BRT_TEST_COMPUTE_APPS:-}" \
+    BRT_TEST_INNER_COMPUTE_APPS="${BRT_TEST_INNER_COMPUTE_APPS:-}" \
     BRT_TEST_GPU_ROW="${BRT_TEST_GPU_ROW:-8192, 0, 42}" \
     BRT_TEST_FLOCK_STATUS="${BRT_TEST_FLOCK_STATUS:-0}" \
-    BRT_TEST_DOCKER_OUTPUT="${BRT_TEST_DOCKER_OUTPUT:-${golden_json}}" \
+    BRT_TEST_DOCKER_OUTPUT="${BRT_TEST_DOCKER_OUTPUT:-${golden_output}}" \
     BRT_TEST_DOCKER_STATUS="${BRT_TEST_DOCKER_STATUS:-0}" \
     "${repo_root}/scripts/gpu-smoke.sh"
 }
@@ -167,12 +192,33 @@ assert_smoke 30 BRT_TEST_FLOCK_STATUS=1
 assert_smoke 20 BRT_TEST_COMPUTE_APPS='1234, training, 1024'
 [[ ! -s "${fixture_dir}/docker.log" ]]
 
+# Invalid policy values must be rejected by the outer preflight before Docker.
+assert_smoke 23 BRT_MIN_FREE_MIB=0
+[[ ! -s "${fixture_dir}/docker.log" ]]
+
 assert_smoke 0
 cmp -s tests/golden/smoke_result.json "${fixture_dir}/stdout"
 grep -Fx -- '--gpus' "${fixture_dir}/docker.log"
 grep -Fx -- 'device=0' "${fixture_dir}/docker.log"
+grep -Fx -- '-e' "${fixture_dir}/docker.log"
+grep -Fx -- 'BRT_MIN_FREE_MIB=2048' "${fixture_dir}/docker.log"
+grep -Fx -- 'BRT_MAX_UTILIZATION_PERCENT=5' "${fixture_dir}/docker.log"
 grep -F -- 'scripts/gpu-preflight.sh >/dev/null && ./build/gpu/cpp/brt-smoke' "${fixture_dir}/docker.log"
 
+assert_smoke 0 BRT_MIN_FREE_MIB=4096 BRT_MAX_UTILIZATION_PERCENT=3
+cmp -s tests/golden/smoke_result.json "${fixture_dir}/stdout"
+grep -Fx -- 'BRT_MIN_FREE_MIB=4096' "${fixture_dir}/docker.log"
+grep -Fx -- 'BRT_MAX_UTILIZATION_PERCENT=3' "${fixture_dir}/docker.log"
+
+# The simulated in-container preflight must stop before the smoke result is emitted.
+assert_smoke 20 BRT_TEST_INNER_COMPUTE_APPS='4321, foreign-job, 1024'
+[[ ! -s "${fixture_dir}/stdout" ]]
+
+# Docker stdout must compare byte-for-byte with the golden file.
+assert_smoke 31 BRT_TEST_DOCKER_OUTPUT="${golden_json}"
+[[ ! -s "${fixture_dir}/stdout" ]]
+assert_smoke 31 BRT_TEST_DOCKER_OUTPUT="${golden_output}"$'\n'
+[[ ! -s "${fixture_dir}/stdout" ]]
 assert_smoke 31 BRT_TEST_DOCKER_OUTPUT='{"device_id":0,"element_count":1024,"checksum":0}'
 [[ ! -s "${fixture_dir}/stdout" ]]
 assert_smoke 77 BRT_TEST_DOCKER_STATUS=77
@@ -192,6 +238,10 @@ reset_logs
 assert_status 41 run_sync env BRT_TARGET_DIR=/
 [[ ! -s "${fixture_dir}/ssh.log" && ! -s "${fixture_dir}/rsync.log" ]]
 reset_logs
+assert_status 41 run_sync env BRT_TARGET_DIR=/home/charles/brt-workspace/../outside
+[[ ! -s "${fixture_dir}/ssh.log" && ! -s "${fixture_dir}/rsync.log" ]]
+reset_logs
 assert_status 0 run_sync env
 grep -Fx -- "${repo_root}/" "${fixture_dir}/rsync.log"
 ! grep -F -- '--delete' "${fixture_dir}/rsync.log"
+grep -Fx -- 'mkdir -p -- /home/charles/brt-workspace' "${fixture_dir}/ssh.log"

@@ -14,6 +14,8 @@ minimum_free_mib="${BRT_MIN_FREE_MIB:-2048}"
 maximum_utilization="${BRT_MAX_UTILIZATION_PERCENT:-5}"
 is_nonnegative_decimal "${minimum_free_mib}" || safety_refusal "invalid BRT_MIN_FREE_MIB"
 is_nonnegative_decimal "${maximum_utilization}" || safety_refusal "invalid BRT_MAX_UTILIZATION_PERCENT"
+(( 10#${minimum_free_mib} > 0 )) || safety_refusal "invalid BRT_MIN_FREE_MIB"
+(( 10#${maximum_utilization} <= 100 )) || safety_refusal "invalid BRT_MAX_UTILIZATION_PERCENT"
 
 if ! compute_apps="$(nvidia-smi --id=0 --query-compute-apps=pid,process_name,used_memory --format=csv,noheader,nounits 2>/dev/null)"; then
   safety_refusal "unable to query compute applications on GPU 0"
