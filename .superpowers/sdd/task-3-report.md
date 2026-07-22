@@ -6,14 +6,14 @@
 - Built the native static library through CMake in host mode, including the static-library install rule required by Cargo's CMake build helper.
 - Added raw opaque C ABI declarations, including `brt_last_error_message` to cover the full exported ABI.
 - Added the safe RAII `Engine`, `EngineConfig`, and displayable native `Error` wrapper.  The wrapper accepts only coarse configuration and an opaque engine handle; it neither accepts GPU pointers nor exposes native resource ownership.
-- Added the `info` CLI command and a tested `host-info` compatibility alias required by the host validation command.
+- Added the documented `info` CLI command.
 
 ## TDD evidence
 
 1. RED: Added `rust/brt-runtime/tests/engine.rs` and crate manifests before implementation. `cargo test -p brt-runtime` failed because `brt-sys` had no source target, as expected.
 2. GREEN: Added the raw binding, CMake build script, wrapper, and CLI. The two engine lifecycle/error tests passed.
-3. RED: Added the host CLI integration test. `cargo test -p brt-cli --test cli` failed because `host-info` was unknown.
-4. GREEN: Accepted `host-info` as an alias for `info`; the CLI integration test passed.
+3. RED: The review-fix test required exact `info` output and rejection of undocumented `host-info`; it failed while the alias still succeeded.
+4. GREEN: Removed the alias; the focused CLI tests passed.
 
 ## Final verification
 
@@ -21,9 +21,8 @@ All commands were run from the worktree:
 
 ```text
 cargo fmt --check                                      PASS
-cargo test --workspace                                 PASS (3 integration tests)
+cargo test --workspace                                 PASS (4 integration tests)
 cargo run -p brt-cli -- info                           PASS (backend=host)
-cargo run -p brt-cli -- host-info                      PASS (backend=host)
 cmake --build build/host                               PASS
 ctest --test-dir build/host --output-on-failure        PASS (1/1)
 ```
@@ -37,3 +36,23 @@ ctest --test-dir build/host --output-on-failure        PASS (1/1)
 ## Remaining concerns
 
 The wrapper intentionally mirrors the current coarse C ABI only. It should gain explicit thread-safety guarantees only when the C++ engine's cross-thread lifecycle contract is defined.
+
+## Review Fixes
+
+- Removed the undocumented `host-info` alias; only explicit `info` and the existing default-to-`info` behavior can succeed.
+- Replaced alias coverage with an exact-byte assertion for `info` output (`backend=host\n`) and a focused rejection assertion for `host-info`.
+
+### Review-fix verification
+
+```text
+cargo fmt --check
+  exit 0
+cargo test -p brt-cli
+  2 passed; 0 failed
+cargo test --workspace
+  4 integration tests passed; 0 failed
+cargo run -p brt-cli -- info
+  backend=host
+git diff --check
+  exit 0
+```
