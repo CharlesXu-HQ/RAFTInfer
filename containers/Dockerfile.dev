@@ -1,0 +1,17 @@
+FROM rapidsai/base:26.06-cuda13-py3.13
+
+USER root
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl ca-certificates ninja-build pkg-config \
+ && rm -rf /var/lib/apt/lists/*
+
+USER rapids
+ENV RUSTUP_HOME=/home/rapids/.rustup
+ENV CARGO_HOME=/home/rapids/.cargo
+ENV PATH=/home/rapids/.cargo/bin:${PATH}
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+ | sh -s -- -y --profile minimal --default-toolchain 1.96.0
+
+WORKDIR /workspace
+ENTRYPOINT []
+CMD ["bash"]
