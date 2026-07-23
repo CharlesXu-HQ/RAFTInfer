@@ -3,6 +3,8 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 fixture_dir="$(mktemp -d)"
+host_uid="$(id -u)"
+host_gid="$(id -g)"
 golden_json='{"device_id":0,"element_count":1024,"checksum":523776}'
 golden_output="${golden_json}"$'\n'
 trap 'rm -rf "${fixture_dir}"' EXIT
@@ -51,7 +53,7 @@ for ((index = 0; index < ${#arguments[@]}; index++)); do
   fi
 done
 for argument in "${arguments[@]}"; do
-  if [[ "${argument}" == *'scripts/gpu-preflight.sh >/dev/null && ./build/gpu/cpp/brt-smoke'* ]]; then
+  if [[ "${argument}" == *'scripts/gpu-preflight.sh >/dev/null && ./build/gpu-uid-'* ]]; then
     BRT_TEST_COMPUTE_APPS="${BRT_TEST_INNER_COMPUTE_APPS:-${BRT_TEST_COMPUTE_APPS:-}}" \
       "${BRT_TEST_REPO_ROOT}/scripts/gpu-preflight.sh" >/dev/null
     break
@@ -200,10 +202,19 @@ assert_smoke 0
 cmp -s tests/golden/smoke_result.json "${fixture_dir}/stdout"
 grep -Fx -- '--gpus' "${fixture_dir}/docker.log"
 grep -Fx -- 'device=0' "${fixture_dir}/docker.log"
+grep -Fx -- '--user' "${fixture_dir}/docker.log" || {
+  echo "Docker smoke must run with the host UID/GID" >&2
+  exit 1
+}
+grep -Fx -- "${host_uid}:${host_gid}" "${fixture_dir}/docker.log" || {
+  echo "Docker smoke must pass the exact host UID/GID" >&2
+  exit 1
+}
 grep -Fx -- '-e' "${fixture_dir}/docker.log"
 grep -Fx -- 'BRT_MIN_FREE_MIB=2048' "${fixture_dir}/docker.log"
 grep -Fx -- 'BRT_MAX_UTILIZATION_PERCENT=5' "${fixture_dir}/docker.log"
-grep -F -- 'scripts/gpu-preflight.sh >/dev/null && ./build/gpu/cpp/brt-smoke' "${fixture_dir}/docker.log"
+grep -F -- "cmake -S . -B build/gpu-uid-${host_uid}" "${fixture_dir}/docker.log"
+grep -F -- "scripts/gpu-preflight.sh >/dev/null && ./build/gpu-uid-${host_uid}/cpp/brt-smoke" "${fixture_dir}/docker.log"
 
 assert_smoke 0 BRT_MIN_FREE_MIB=4096 BRT_MAX_UTILIZATION_PERCENT=3
 cmp -s tests/golden/smoke_result.json "${fixture_dir}/stdout"

@@ -4,6 +4,9 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 golden_result="${repo_root}/tests/golden/smoke_result.json"
 lock_dir="${repo_root}/build"
+host_uid="$(id -u)"
+host_gid="$(id -g)"
+gpu_build_dir="build/gpu-uid-${host_uid}"
 mkdir -p "${lock_dir}"
 exec 9>"${lock_dir}/brt-gpu-smoke.lock"
 if ! flock -n 9; then
@@ -22,10 +25,11 @@ trap 'rm -f "${result_file}"' EXIT
 if docker run --rm --gpus device=0 \
   --shm-size=1g --ulimit memlock=-1 --ulimit stack=67108864 \
   -v "${repo_root}:/workspace" -w /workspace \
+  --user "${host_uid}:${host_gid}" \
   -e "BRT_MIN_FREE_MIB=${minimum_free_mib}" \
   -e "BRT_MAX_UTILIZATION_PERCENT=${maximum_utilization}" \
   brt-dev:26.06-cuda13 \
-  bash -lc 'cmake -S . -B build/gpu -G Ninja -DBRT_ENABLE_CUDA=ON -DCMAKE_BUILD_TYPE=Release >&2 && cmake --build build/gpu --target brt-smoke >&2 && scripts/gpu-preflight.sh >/dev/null && ./build/gpu/cpp/brt-smoke' >"${result_file}"; then
+  bash -lc "cmake -S . -B ${gpu_build_dir} -G Ninja -DBRT_ENABLE_CUDA=ON -DCMAKE_BUILD_TYPE=Release >&2 && cmake --build ${gpu_build_dir} --target brt-smoke >&2 && scripts/gpu-preflight.sh >/dev/null && ./${gpu_build_dir}/cpp/brt-smoke" >"${result_file}"; then
   :
 else
   docker_status=$?
