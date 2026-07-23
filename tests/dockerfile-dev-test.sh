@@ -8,12 +8,8 @@ grep -Eq 'apt-get install -y --no-install-recommends.*cmake|cmake.*apt-get insta
   echo "Dockerfile.dev must install cmake" >&2
   exit 1
 }
-grep -Fq 'dpkg --compare-versions' "${dockerfile}" || {
-  echo "Dockerfile.dev must enforce the required CMake version" >&2
-  exit 1
-}
-grep -Fq '3.26.4' "${dockerfile}" || {
-  echo "Dockerfile.dev must enforce CMake >= 3.26.4" >&2
+grep -Fq 'dpkg --compare-versions "$(cmake --version | sed -n '\''1s/.* //p'\'')" ge 3.26.4' "${dockerfile}" || {
+  echo "Dockerfile.dev must fully enforce CMake >= 3.26.4" >&2
   exit 1
 }
 grep -Fxq 'ARG RUSTUP_DIST_SERVER=https://static.rust-lang.org' "${dockerfile}" || {
@@ -25,11 +21,27 @@ grep -Fxq 'ARG RUSTUP_UPDATE_ROOT=https://static.rust-lang.org/rustup' "${docker
   exit 1
 }
 grep -Fxq 'RUN export RUSTUP_DIST_SERVER RUSTUP_UPDATE_ROOT \' "${dockerfile}" || {
-  echo "Dockerfile.dev must export Rustup endpoints before the curl pipeline" >&2
+  echo "Dockerfile.dev must export Rustup endpoints before installer download" >&2
   exit 1
 }
-grep -Fq '&& curl --proto' "${dockerfile}" || {
-  echo "Dockerfile.dev must keep curl in the exported Rustup pipeline" >&2
+grep -Fq '&& curl --proto '\''=https'\'' --tlsv1.2 -sSf https://sh.rustup.rs -o /tmp/rustup-init' "${dockerfile}" || {
+  echo "Dockerfile.dev must download the Rustup installer before execution" >&2
+  exit 1
+}
+grep -Fq '&& sh /tmp/rustup-init -y --profile minimal --default-toolchain 1.96.0' "${dockerfile}" || {
+  echo "Dockerfile.dev must execute the downloaded Rustup installer" >&2
+  exit 1
+}
+if grep -Fq '| sh -s' "${dockerfile}"; then
+  echo "Dockerfile.dev must not mask curl failure with a shell pipeline" >&2
+  exit 1
+fi
+grep -Fq 'rustc --version' "${dockerfile}" || {
+  echo "Dockerfile.dev must verify rustc after installation" >&2
+  exit 1
+}
+grep -Fq '= 1.96.0' "${dockerfile}" || {
+  echo "Dockerfile.dev must require rustc version 1.96.0 exactly" >&2
   exit 1
 }
 if grep -Eq '^ENV .*RUSTUP_(DIST_SERVER|UPDATE_ROOT)=' "${dockerfile}"; then
