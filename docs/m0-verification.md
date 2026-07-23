@@ -1,0 +1,60 @@
+# M0 Verification
+
+## Host-only
+
+- Command: `scripts/local-check.sh`
+- Result: PASS
+- Platform: macOS arm64
+- CUDA backend: disabled
+- Coverage: host CMake configure/build, CTest, `cargo fmt --check`, and Rust
+  workspace tests. These host tests validate the Rust safe wrapper,
+  Rust-to-C++ opaque-handle lifecycle, and host C ABI error paths.
+
+## Target GPU
+
+- Host: `192.168.124.8`
+- GPU: NVIDIA GeForce RTX 5090
+- Compute capability: 12.0
+- GPU memory: 32607 MiB
+- Driver: 580.159.03
+- Image: `brt-dev:26.06-cuda13`
+- Final image ID: `sha256:9e7ce1e85752d43a53cc2e8bf5c44f4ec610d43d38b28d922a4fab9701c6c340`
+- Toolchain evidence: CMake 3.30.4, Rust 1.96.0, CUDA 13.2.78, G++ 13.3,
+  image user `rapids`
+- Safety preflight: PASS; 31941 MiB free, 0% utilization, 34C, no active compute
+  applications
+- Command: `scripts/gpu-smoke.sh`
+- Expected result: `{"device_id":0,"element_count":1024,"checksum":523776}`
+- Result: PASS. The observed output matched the expected result byte-for-byte.
+- Post-run cleanup: no residual BRT container, GPU compute application, or
+  temporary smoke run directory remained.
+
+## Validated paths
+
+The successful target run directly validated the C++/RAFT/RMM/CUDA path:
+
+- CUDA backend configure/build for RTX 50 `sm_120a`
+- C++20/CUDA build with zero compiler warnings in the smoke path
+- RAFT 26.06 and RMM 26.06 include/link compatibility
+- `raft::device_resources` and RMM pool ownership inside C++
+- Custom CUDA launch, result copy, and byte-exact golden comparison
+- Shared-GPU fail-closed preflight before Docker and again inside the container
+
+Combined with the host-only Rust tests, M0 validates the Rust-to-C++ lifecycle
+and the target GPU execution path. The target GPU command itself runs the C++
+`brt-smoke` executable directly.
+
+## Scope not covered
+
+M0 does not validate model loading, tokenization, GGUF parsing, LLM operators,
+quantization, CUDA Graph replay, scheduler behavior, inference quality, or
+inference performance.
+
+## Accepted residual risks
+
+- The project lock serializes only BRT smoke runs. An unrelated process can still
+  begin GPU work after a preflight and before kernel launch.
+- Docker build provenance still depends on mutable apt, Rustup, and PyPI
+  artifacts. The CMake PyPI wheel is version-pinned but not hash-pinned.
+- The target build used regional PyPI/Rustup endpoints for network reliability;
+  the Dockerfile keeps official endpoint defaults.
