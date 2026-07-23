@@ -8,6 +8,18 @@ grep -Eq 'apt-get install -y --no-install-recommends.*cmake|cmake.*apt-get insta
   echo "Dockerfile.dev must install cmake" >&2
   exit 1
 }
+grep -Eq 'apt-get install -y --no-install-recommends.*g\+\+|g\+\+.*apt-get install -y --no-install-recommends' "${dockerfile}" || {
+  echo "Dockerfile.dev must install the minimal g++ host compiler" >&2
+  exit 1
+}
+grep -Fq 'c++ -x c++ - -o /tmp/cxx-smoke' "${dockerfile}" || {
+  echo "Dockerfile.dev must compile a C++ host-tool smoke program" >&2
+  exit 1
+}
+grep -Fq '&& /tmp/cxx-smoke' "${dockerfile}" || {
+  echo "Dockerfile.dev must execute the C++ host-tool smoke program" >&2
+  exit 1
+}
 grep -Fq 'dpkg --compare-versions "$(cmake --version | sed -n '\''1s/.* //p'\'')" ge 3.26.4' "${dockerfile}" || {
   echo "Dockerfile.dev must fully enforce CMake >= 3.26.4" >&2
   exit 1
