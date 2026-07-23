@@ -7,7 +7,11 @@
 #include <memory>
 #include <stdexcept>
 
-struct BrtEngineHandle { brt::Engine engine; };
+struct BrtEngineHandle {
+  explicit BrtEngineHandle(const BrtEngineConfig& config) : engine(config) {}
+
+  brt::Engine engine;
+};
 
 namespace {
 
@@ -48,7 +52,7 @@ extern "C" BrtStatus brt_engine_create(
     if (config->struct_size != sizeof(BrtEngineConfig)) {
       return fail(BRT_STATUS_INVALID_ARGUMENT, "BrtEngineConfig size mismatch");
     }
-    auto handle = std::make_unique<BrtEngineHandle>(BrtEngineHandle{brt::Engine{*config}});
+    auto handle = std::make_unique<BrtEngineHandle>(*config);
     *out_engine = handle.release();
     return BrtStatus{BRT_STATUS_OK, nullptr};
   } catch (const std::invalid_argument& error) {

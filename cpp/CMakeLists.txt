@@ -27,6 +27,11 @@ if(BRT_BUILD_TESTS)
   target_link_libraries(brt_c_api_test PRIVATE brt_cpp)
   add_test(NAME brt_c_api_test COMMAND brt_c_api_test)
   add_test(
+    NAME brt_c_api_source_test
+    COMMAND ${CMAKE_COMMAND}
+      -DC_API_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/c_api.cpp
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/c_api_source_test.cmake)
+  add_test(
     NAME brt_device_context_source_test
     COMMAND ${CMAKE_COMMAND}
       -DDEVICE_CONTEXT_HEADER=${CMAKE_CURRENT_SOURCE_DIR}/foundation/device_context.hpp
