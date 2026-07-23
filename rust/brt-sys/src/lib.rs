@@ -18,6 +18,14 @@ pub struct BrtStatus {
     pub message: *const c_char,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct BrtSmokeResult {
+    pub device_id: i32,
+    pub element_count: u32,
+    pub checksum: u64,
+}
+
 unsafe extern "C" {
     pub fn brt_engine_create(
         config: *const BrtEngineConfig,
@@ -25,5 +33,9 @@ unsafe extern "C" {
     ) -> BrtStatus;
     pub fn brt_engine_destroy(engine: *mut BrtEngineHandle);
     pub fn brt_engine_is_cuda_enabled(engine: *const BrtEngineHandle) -> i32;
+    pub fn brt_engine_run_smoke(
+        engine: *mut BrtEngineHandle,
+        out_result: *mut BrtSmokeResult,
+    ) -> BrtStatus;
     pub fn brt_last_error_message() -> *const c_char;
 }
