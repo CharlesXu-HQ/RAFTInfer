@@ -2,6 +2,9 @@
 # image digest. Apt packages and rustup remain mutable provenance risks until then.
 FROM rapidsai/base:26.06-cuda13-py3.13
 
+ARG RUSTUP_DIST_SERVER=https://static.rust-lang.org
+ARG RUSTUP_UPDATE_ROOT=https://static.rust-lang.org/rustup
+
 USER root
 RUN apt-get update \
  && apt-get install -y --no-install-recommends cmake curl ca-certificates ninja-build pkg-config \
@@ -13,7 +16,8 @@ USER rapids
 ENV RUSTUP_HOME=/home/rapids/.rustup
 ENV CARGO_HOME=/home/rapids/.cargo
 ENV PATH=/home/rapids/.cargo/bin:${PATH}
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+RUN export RUSTUP_DIST_SERVER RUSTUP_UPDATE_ROOT \
+ && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
  | sh -s -- -y --profile minimal --default-toolchain 1.96.0
 
 WORKDIR /workspace
