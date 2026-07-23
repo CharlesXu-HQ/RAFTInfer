@@ -37,11 +37,35 @@ printf '%s\n' "$*" >>"${BRT_TEST_FLOCK_LOG}"
 exit "${BRT_TEST_FLOCK_STATUS:-0}"
 EOF
 
+cat >"${fixture_dir}/id" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case "${1:-}" in
+  -u) printf '%s\n' "${BRT_TEST_HOST_UID}" ;;
+  -g) printf '%s\n' "${BRT_TEST_HOST_GID}" ;;
+  *) exit 99 ;;
+esac
+EOF
+
 cat >"${fixture_dir}/docker" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$@" >>"${BRT_TEST_DOCKER_LOG}"
 arguments=("$@")
+has_gpu=0
+for argument in "${arguments[@]}"; do
+  if [[ "${argument}" == --gpus ]]; then
+    has_gpu=1
+    break
+  fi
+done
+if [[ " ${arguments[*]} " == *' --entrypoint id '* ]]; then
+  printf '%s\n' "${BRT_TEST_CONTAINER_GID}"
+  exit "${BRT_TEST_CONTAINER_GID_STATUS:-0}"
+fi
+if [[ "${has_gpu}" -eq 1 ]]; then
+  printf '%s\n' "$@" >>"${BRT_TEST_DOCKER_GPU_LOG}"
+fi
 for ((index = 0; index < ${#arguments[@]}; index++)); do
   if [[ "${arguments[index]}" == -e ]]; then
     index=$((index + 1))
@@ -53,7 +77,7 @@ for ((index = 0; index < ${#arguments[@]}; index++)); do
   fi
 done
 for argument in "${arguments[@]}"; do
-  if [[ "${argument}" == *'scripts/gpu-preflight.sh >/dev/null && ./build/gpu-uid-'* ]]; then
+  if [[ "${argument}" == *'scripts/gpu-preflight.sh >/dev/null && /brt-run/build/cpp/brt-smoke'* ]]; then
     BRT_TEST_COMPUTE_APPS="${BRT_TEST_INNER_COMPUTE_APPS:-${BRT_TEST_COMPUTE_APPS:-}}" \
       "${BRT_TEST_REPO_ROOT}/scripts/gpu-preflight.sh" >/dev/null
     break
@@ -77,12 +101,13 @@ set -euo pipefail
 printf '%s\n' "$@" >>"${BRT_TEST_RSYNC_LOG}"
 EOF
 
-chmod +x "${fixture_dir}"/{nvidia-smi,flock,docker,ssh,rsync}
+chmod +x "${fixture_dir}"/{nvidia-smi,flock,id,docker,ssh,rsync}
 
 reset_logs() {
   : >"${fixture_dir}/nvidia.log"
   : >"${fixture_dir}/flock.log"
   : >"${fixture_dir}/docker.log"
+  : >"${fixture_dir}/docker-gpu.log"
   : >"${fixture_dir}/ssh.log"
   : >"${fixture_dir}/rsync.log"
 }
@@ -156,7 +181,12 @@ run_smoke() {
     BRT_TEST_NVIDIA_LOG="${fixture_dir}/nvidia.log" \
     BRT_TEST_FLOCK_LOG="${fixture_dir}/flock.log" \
     BRT_TEST_DOCKER_LOG="${fixture_dir}/docker.log" \
+    BRT_TEST_DOCKER_GPU_LOG="${fixture_dir}/docker-gpu.log" \
     BRT_TEST_REPO_ROOT="${repo_root}" \
+    BRT_TEST_HOST_UID="${BRT_TEST_HOST_UID:-${host_uid}}" \
+    BRT_TEST_HOST_GID="${BRT_TEST_HOST_GID:-${host_gid}}" \
+    BRT_TEST_CONTAINER_GID="${BRT_TEST_CONTAINER_GID:-1001}" \
+    BRT_TEST_CONTAINER_GID_STATUS="${BRT_TEST_CONTAINER_GID_STATUS:-0}" \
     BRT_TEST_COMPUTE_APPS="${BRT_TEST_COMPUTE_APPS:-}" \
     BRT_TEST_INNER_COMPUTE_APPS="${BRT_TEST_INNER_COMPUTE_APPS:-}" \
     BRT_TEST_GPU_ROW="${BRT_TEST_GPU_ROW:-8192, 0, 42}" \
@@ -186,6 +216,24 @@ assert_smoke() {
   }
 }
 
+assert_docker_flag_value() {
+  local log_file="$1"
+  local flag="$2"
+  local expected_value="$3"
+  local previous=''
+  local argument=''
+  while IFS= read -r argument; do
+    if [[ "${previous}" == "${flag}" ]]; then
+      [[ "${argument}" == "${expected_value}" ]] && return 0
+      break
+    fi
+    previous="${argument}"
+  done <"${log_file}"
+  printf 'expected Docker flag %s to be immediately followed by %s\n' \
+    "${flag}" "${expected_value}" >&2
+  exit 1
+}
+
 # A lock refusal must not launch Docker.
 assert_smoke 30 BRT_TEST_FLOCK_STATUS=1
 [[ ! -s "${fixture_dir}/docker.log" ]]
@@ -200,21 +248,44 @@ assert_smoke 23 BRT_MIN_FREE_MIB=0
 
 assert_smoke 0
 cmp -s tests/golden/smoke_result.json "${fixture_dir}/stdout"
-grep -Fx -- '--gpus' "${fixture_dir}/docker.log"
-grep -Fx -- 'device=0' "${fixture_dir}/docker.log"
-grep -Fx -- '--user' "${fixture_dir}/docker.log" || {
+gpu_docker_log="${fixture_dir}/docker-gpu.log"
+grep -Fx -- '--gpus' "${gpu_docker_log}"
+assert_docker_flag_value "${gpu_docker_log}" --gpus device=0
+grep -Fx -- '--user' "${gpu_docker_log}" || {
   echo "Docker smoke must run with the host UID/GID" >&2
   exit 1
 }
-grep -Fx -- "${host_uid}:${host_gid}" "${fixture_dir}/docker.log" || {
-  echo "Docker smoke must pass the exact host UID/GID" >&2
+assert_docker_flag_value "${gpu_docker_log}" --user "${host_uid}:${host_gid}"
+grep -Fx -- 'HOME=/tmp/brt-home' "${gpu_docker_log}" || {
+  echo "Docker smoke must provide a writable container home" >&2
   exit 1
 }
-grep -Fx -- '-e' "${fixture_dir}/docker.log"
-grep -Fx -- 'BRT_MIN_FREE_MIB=2048' "${fixture_dir}/docker.log"
-grep -Fx -- 'BRT_MAX_UTILIZATION_PERCENT=5' "${fixture_dir}/docker.log"
-grep -F -- "cmake -S . -B build/gpu-uid-${host_uid}" "${fixture_dir}/docker.log"
-grep -F -- "scripts/gpu-preflight.sh >/dev/null && ./build/gpu-uid-${host_uid}/cpp/brt-smoke" "${fixture_dir}/docker.log"
+grep -Fx -- 'XDG_CACHE_HOME=/tmp/brt-home/.cache' "${gpu_docker_log}" || {
+  echo "Docker smoke must provide a writable container cache" >&2
+  exit 1
+}
+grep -Fx -- '-c' "${gpu_docker_log}" || {
+  echo "Docker smoke must preserve the image PATH with bash -c" >&2
+  exit 1
+}
+! grep -Fx -- '-lc' "${gpu_docker_log}"
+grep -E -- '.+:/brt-run$' "${gpu_docker_log}" >/dev/null || {
+  echo "Docker smoke must mount a fresh run directory" >&2
+  exit 1
+}
+grep -Fx -- '--group-add' "${gpu_docker_log}" || {
+  echo "Docker smoke must add the image default group" >&2
+  exit 1
+}
+assert_docker_flag_value "${gpu_docker_log}" --group-add 1001
+grep -Fx -- '-e' "${gpu_docker_log}"
+grep -Fx -- 'BRT_MIN_FREE_MIB=2048' "${gpu_docker_log}"
+grep -Fx -- 'BRT_MAX_UTILIZATION_PERCENT=5' "${gpu_docker_log}"
+grep -F -- 'cmake -S . -B /brt-run/build' "${gpu_docker_log}"
+grep -F -- 'nvcc_path="$(command -v nvcc)"' "${gpu_docker_log}"
+grep -F -- '-DCMAKE_CUDA_COMPILER="${nvcc_path}"' "${gpu_docker_log}"
+grep -F -- 'scripts/gpu-preflight.sh >/dev/null && /brt-run/build/cpp/brt-smoke' "${gpu_docker_log}"
+[[ -z "$(find "${repo_root}/build" -maxdepth 1 -name 'brt-gpu-run.*' -print -quit)" ]]
 
 assert_smoke 0 BRT_MIN_FREE_MIB=4096 BRT_MAX_UTILIZATION_PERCENT=3
 cmp -s tests/golden/smoke_result.json "${fixture_dir}/stdout"
@@ -224,6 +295,18 @@ grep -Fx -- 'BRT_MAX_UTILIZATION_PERCENT=3' "${fixture_dir}/docker.log"
 # The simulated in-container preflight must stop before the smoke result is emitted.
 assert_smoke 20 BRT_TEST_INNER_COMPUTE_APPS='4321, foreign-job, 1024'
 [[ ! -s "${fixture_dir}/stdout" ]]
+
+# Unsafe host identities must be refused before Docker starts.
+assert_smoke 32 BRT_TEST_HOST_UID=0
+[[ ! -s "${fixture_dir}/docker.log" ]]
+assert_smoke 32 BRT_TEST_HOST_UID=not-a-number
+[[ ! -s "${fixture_dir}/docker.log" ]]
+assert_smoke 32 BRT_TEST_HOST_GID=0
+[[ ! -s "${fixture_dir}/docker.log" ]]
+assert_smoke 33 BRT_TEST_CONTAINER_GID=0
+[[ ! -s "${fixture_dir}/docker-gpu.log" ]]
+assert_smoke 33 BRT_TEST_CONTAINER_GID_STATUS=1
+[[ ! -s "${fixture_dir}/docker-gpu.log" ]]
 
 # Docker stdout must compare byte-for-byte with the golden file.
 assert_smoke 31 BRT_TEST_DOCKER_OUTPUT="${golden_json}"
