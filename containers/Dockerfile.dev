@@ -4,7 +4,8 @@ FROM rapidsai/base:26.06-cuda13-py3.13
 
 USER root
 RUN apt-get update \
- && apt-get install -y --no-install-recommends curl ca-certificates ninja-build pkg-config \
+ && apt-get install -y --no-install-recommends cmake curl ca-certificates ninja-build pkg-config \
+ && dpkg --compare-versions "$(cmake --version | sed -n '1s/.* //p')" ge 3.26.4 \
  && rm -rf /var/lib/apt/lists/*
 
 # Verify that this base image defines the rapids user during target image validation.
