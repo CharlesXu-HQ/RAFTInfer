@@ -2,6 +2,7 @@
 
 #include <raft/core/device_resources.hpp>
 #include <raft/core/resource/cuda_stream.hpp>
+#include <raft/core/resource/device_memory_resource.hpp>
 #include <rmm/aligned.hpp>
 #include <rmm/cuda_stream_view.hpp>
 #include <rmm/mr/cuda_memory_resource.hpp>
@@ -111,11 +112,14 @@ class DeviceAllocation {
 class DeviceContext::Resources {
  public:
   explicit Resources(uint64_t initial_pool_bytes)
-      : resources_(), cuda_resource_(), pool_(cuda_resource_, initial_pool_bytes) {}
+      : cuda_resource_(), pool_(cuda_resource_, initial_pool_bytes), resources_() {
+    raft::resource::set_workspace_resource(resources_, raft::mr::device_resource{pool_});
+    raft::resource::set_large_workspace_resource(resources_, raft::mr::device_resource{pool_});
+  }
 
-  raft::device_resources resources_;
   rmm::mr::cuda_memory_resource cuda_resource_;
   rmm::mr::pool_memory_resource pool_;
+  raft::device_resources resources_;
 };
 
 DeviceContext::DeviceContext(int device_id, uint64_t initial_pool_bytes) : device_id_(device_id) {
