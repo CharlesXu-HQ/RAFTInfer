@@ -22,24 +22,24 @@ maximum_utilization="${BRT_MAX_UTILIZATION_PERCENT:-5}"
 BRT_MIN_FREE_MIB="${minimum_free_mib}" \
   BRT_MAX_UTILIZATION_PERCENT="${maximum_utilization}" \
   "${repo_root}/scripts/gpu-preflight.sh" >/dev/null
-if ! container_group_gid="$(docker run --rm --entrypoint id brt-dev:26.06-cuda13 -g)"; then
-  echo "BRT GPU smoke refused: unable to resolve the image default group" >&2
+if ! cuda_toolchain_gid="$(docker run --rm --entrypoint stat brt-dev:26.06-cuda13 -c %g /opt/conda)"; then
+  echo "BRT GPU smoke refused: unable to resolve the CUDA toolchain group" >&2
   exit 33
 fi
-if ! [[ "${container_group_gid}" =~ ^[1-9][0-9]*$ ]]; then
-  echo "BRT GPU smoke refused: invalid image default group" >&2
+if ! [[ "${cuda_toolchain_gid}" =~ ^[1-9][0-9]*$ ]]; then
+  echo "BRT GPU smoke refused: invalid CUDA toolchain group" >&2
   exit 33
 fi
 run_dir="$(mktemp -d "${lock_dir}/brt-gpu-run.XXXXXX")"
-result_file="$(mktemp "${run_dir}/brt-smoke-result.XXXXXX")"
 trap 'rm -rf "${run_dir}"' EXIT
+result_file="$(mktemp "${run_dir}/brt-smoke-result.XXXXXX")"
 
 if docker run --rm --gpus device=0 \
   --shm-size=1g --ulimit memlock=-1 --ulimit stack=67108864 \
   -v "${repo_root}:/workspace" -w /workspace \
   -v "${run_dir}:/brt-run" \
   --user "${host_uid}:${host_gid}" \
-  --group-add "${container_group_gid}" \
+  --group-add "${cuda_toolchain_gid}" \
   -e HOME=/tmp/brt-home \
   -e XDG_CACHE_HOME=/tmp/brt-home/.cache \
   -e "BRT_MIN_FREE_MIB=${minimum_free_mib}" \

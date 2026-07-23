@@ -3,8 +3,8 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 fixture_dir="$(mktemp -d)"
-host_uid="$(id -u)"
-host_gid="$(id -g)"
+host_uid=1000
+host_gid=1000
 golden_json='{"device_id":0,"element_count":1024,"checksum":523776}'
 golden_output="${golden_json}"$'\n'
 trap 'rm -rf "${fixture_dir}"' EXIT
@@ -59,9 +59,9 @@ for argument in "${arguments[@]}"; do
     break
   fi
 done
-if [[ " ${arguments[*]} " == *' --entrypoint id '* ]]; then
-  printf '%s\n' "${BRT_TEST_CONTAINER_GID}"
-  exit "${BRT_TEST_CONTAINER_GID_STATUS:-0}"
+if [[ " ${arguments[*]} " == *' --entrypoint stat '* ]]; then
+  printf '%s\n' "${BRT_TEST_CONDA_GID}"
+  exit "${BRT_TEST_CONDA_GID_STATUS:-0}"
 fi
 if [[ "${has_gpu}" -eq 1 ]]; then
   printf '%s\n' "$@" >>"${BRT_TEST_DOCKER_GPU_LOG}"
@@ -185,8 +185,8 @@ run_smoke() {
     BRT_TEST_REPO_ROOT="${repo_root}" \
     BRT_TEST_HOST_UID="${BRT_TEST_HOST_UID:-${host_uid}}" \
     BRT_TEST_HOST_GID="${BRT_TEST_HOST_GID:-${host_gid}}" \
-    BRT_TEST_CONTAINER_GID="${BRT_TEST_CONTAINER_GID:-1001}" \
-    BRT_TEST_CONTAINER_GID_STATUS="${BRT_TEST_CONTAINER_GID_STATUS:-0}" \
+    BRT_TEST_CONDA_GID="${BRT_TEST_CONDA_GID:-1001}" \
+    BRT_TEST_CONDA_GID_STATUS="${BRT_TEST_CONDA_GID_STATUS:-0}" \
     BRT_TEST_COMPUTE_APPS="${BRT_TEST_COMPUTE_APPS:-}" \
     BRT_TEST_INNER_COMPUTE_APPS="${BRT_TEST_INNER_COMPUTE_APPS:-}" \
     BRT_TEST_GPU_ROW="${BRT_TEST_GPU_ROW:-8192, 0, 42}" \
@@ -249,6 +249,10 @@ assert_smoke 23 BRT_MIN_FREE_MIB=0
 assert_smoke 0
 cmp -s tests/golden/smoke_result.json "${fixture_dir}/stdout"
 gpu_docker_log="${fixture_dir}/docker-gpu.log"
+assert_docker_flag_value "${fixture_dir}/docker.log" --entrypoint stat
+grep -Fx -- '-c' "${fixture_dir}/docker.log"
+grep -Fx -- '%g' "${fixture_dir}/docker.log"
+grep -Fx -- '/opt/conda' "${fixture_dir}/docker.log"
 grep -Fx -- '--gpus' "${gpu_docker_log}"
 assert_docker_flag_value "${gpu_docker_log}" --gpus device=0
 grep -Fx -- '--user' "${gpu_docker_log}" || {
@@ -303,9 +307,9 @@ assert_smoke 32 BRT_TEST_HOST_UID=not-a-number
 [[ ! -s "${fixture_dir}/docker.log" ]]
 assert_smoke 32 BRT_TEST_HOST_GID=0
 [[ ! -s "${fixture_dir}/docker.log" ]]
-assert_smoke 33 BRT_TEST_CONTAINER_GID=0
+assert_smoke 33 BRT_TEST_CONDA_GID=0
 [[ ! -s "${fixture_dir}/docker-gpu.log" ]]
-assert_smoke 33 BRT_TEST_CONTAINER_GID_STATUS=1
+assert_smoke 33 BRT_TEST_CONDA_GID_STATUS=1
 [[ ! -s "${fixture_dir}/docker-gpu.log" ]]
 
 # Docker stdout must compare byte-for-byte with the golden file.

@@ -4,8 +4,12 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 dockerfile="${repo_root}/containers/Dockerfile.dev"
 
-grep -Eq 'apt-get install -y --no-install-recommends.*cmake|cmake.*apt-get install -y --no-install-recommends' "${dockerfile}" || {
-  echo "Dockerfile.dev must install cmake" >&2
+grep -Fxq 'ARG CMAKE_PIP_INDEX_URL=https://pypi.org/simple' "${dockerfile}" || {
+  echo "Dockerfile.dev must default CMAKE_PIP_INDEX_URL to the official PyPI index" >&2
+  exit 1
+}
+grep -Fq 'RUN /opt/conda/bin/python -m pip install --no-cache-dir --index-url "${CMAKE_PIP_INDEX_URL}" cmake==3.30.4 \' "${dockerfile}" || {
+  echo "Dockerfile.dev must install pinned CMake 3.30.4 with the existing conda Python" >&2
   exit 1
 }
 grep -Eq 'apt-get install -y --no-install-recommends.*g\+\+|g\+\+.*apt-get install -y --no-install-recommends' "${dockerfile}" || {
@@ -20,8 +24,8 @@ grep -Fq '&& /tmp/cxx-smoke' "${dockerfile}" || {
   echo "Dockerfile.dev must execute the C++ host-tool smoke program" >&2
   exit 1
 }
-grep -Fq 'dpkg --compare-versions "$(cmake --version | sed -n '\''1s/.* //p'\'')" ge 3.26.4' "${dockerfile}" || {
-  echo "Dockerfile.dev must fully enforce CMake >= 3.26.4" >&2
+grep -Fq 'dpkg --compare-versions "$(cmake --version | sed -n '\''1s/.* //p'\'')" ge 3.30.4' "${dockerfile}" || {
+  echo "Dockerfile.dev must fully enforce the RAFT CMake >= 3.30.4 floor" >&2
   exit 1
 }
 grep -Fxq 'ARG RUSTUP_DIST_SERVER=https://static.rust-lang.org' "${dockerfile}" || {

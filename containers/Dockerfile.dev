@@ -7,12 +7,15 @@ ARG RUSTUP_UPDATE_ROOT=https://static.rust-lang.org/rustup
 
 USER root
 RUN apt-get update \
- && apt-get install -y --no-install-recommends cmake curl ca-certificates g++ ninja-build pkg-config \
- && dpkg --compare-versions "$(cmake --version | sed -n '1s/.* //p')" ge 3.26.4 \
+ && apt-get install -y --no-install-recommends curl ca-certificates g++ ninja-build pkg-config \
  && printf 'int main(void) { return 0; }\n' | c++ -x c++ - -o /tmp/cxx-smoke \
  && /tmp/cxx-smoke \
  && rm -f /tmp/cxx-smoke \
  && rm -rf /var/lib/apt/lists/*
+
+ARG CMAKE_PIP_INDEX_URL=https://pypi.org/simple
+RUN /opt/conda/bin/python -m pip install --no-cache-dir --index-url "${CMAKE_PIP_INDEX_URL}" cmake==3.30.4 \
+ && dpkg --compare-versions "$(cmake --version | sed -n '1s/.* //p')" ge 3.30.4
 
 # Verify that this base image defines the rapids user during target image validation.
 USER rapids
