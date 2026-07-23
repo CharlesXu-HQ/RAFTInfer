@@ -2,6 +2,7 @@
 
 #include <raft/core/device_resources.hpp>
 #include <raft/core/resource/cuda_stream.hpp>
+#include <rmm/aligned.hpp>
 #include <rmm/cuda_stream_view.hpp>
 #include <rmm/mr/cuda_memory_resource.hpp>
 #include <rmm/mr/pool_memory_resource.hpp>
@@ -71,7 +72,8 @@ class DeviceAllocation {
         stream_ref_(stream_ref),
         stream_(stream),
         bytes_(bytes),
-        values_(static_cast<uint32_t*>(resource_.allocate(stream_ref_, bytes_))) {}
+        values_(static_cast<uint32_t*>(
+            resource_.allocate(stream_ref_, bytes_, rmm::CUDA_ALLOCATION_ALIGNMENT))) {}
 
   ~DeviceAllocation() noexcept {
     if (values_ != nullptr) {
@@ -91,7 +93,9 @@ class DeviceAllocation {
 
   void deallocate() {
     uint32_t* values = std::exchange(values_, nullptr);
-    if (values != nullptr) resource_.deallocate(stream_ref_, values, bytes_);
+    if (values != nullptr) {
+      resource_.deallocate(stream_ref_, values, bytes_, rmm::CUDA_ALLOCATION_ALIGNMENT);
+    }
   }
 
  private:
