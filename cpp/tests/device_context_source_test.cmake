@@ -5,6 +5,13 @@ function(require_match content expression description)
   endif()
 endfunction()
 
+function(reject_match content expression description)
+  string(REGEX MATCH "${expression}" match "${content}")
+  if(match)
+    message(FATAL_ERROR "Unexpected ${description}")
+  endif()
+endfunction()
+
 file(READ "${DEVICE_CONTEXT_HEADER}" header)
 file(READ "${DEVICE_CONTEXT_SOURCE}" source)
 
@@ -20,3 +27,6 @@ require_match("${source}" "resources_\\.reset\\(\\);" "resource destruction unde
 require_match("${source}" "DeviceGuard device_guard\\{device_id_\\};" "per-operation device selection")
 require_match("${source}" "class DeviceAllocation" "RMM allocation scope owner")
 require_match("${source}" "cudaStreamSynchronize\\(stream_\\)" "exception-path synchronization")
+require_match("${source}" "#include <rmm/mr/cuda_memory_resource\\.hpp>" "RMM 26.06 CUDA memory resource header")
+require_match("${source}" "#include <rmm/mr/pool_memory_resource\\.hpp>" "RMM 26.06 pool memory resource header")
+reject_match("${source}" "rmm/mr/device/" "pre-26.06 RMM device memory resource include path")
