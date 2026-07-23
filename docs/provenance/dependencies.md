@@ -45,4 +45,3 @@ directly only when all of the following are recorded:
 3. Functional and numerical correctness match the BRT kernel contract.
 4. Upstream commit, source path, license, imported files, and local
    modifications are documented.
-

@@ -34,7 +34,7 @@
 The successful target run directly validated the C++/RAFT/RMM/CUDA path:
 
 - CUDA backend configure/build for RTX 50 `sm_120a`
-- C++20/CUDA build with zero compiler warnings in the smoke path
+- C++20/CUDA smoke build completed successfully
 - RAFT 26.06 and RMM 26.06 include/link compatibility
 - `raft::device_resources` and RMM pool ownership inside C++
 - Custom CUDA launch, result copy, and byte-exact golden comparison
