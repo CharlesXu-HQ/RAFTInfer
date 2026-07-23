@@ -21,7 +21,7 @@
 - Final image ID: `sha256:9e7ce1e85752d43a53cc2e8bf5c44f4ec610d43d38b28d922a4fab9701c6c340`
 - Toolchain evidence: CMake 3.30.4, Rust 1.96.0, CUDA 13.2.78, G++ 13.3,
   image user `rapids`
-- Safety preflight: PASS; 31941 MiB free, 0% utilization, 34C, no active compute
+- Safety preflight: PASS; 31936 MiB free, 0% utilization, 33C, no active compute
   applications
 - Command: `scripts/gpu-smoke.sh`
 - Expected result: `{"device_id":0,"element_count":1024,"checksum":523776}`
@@ -36,13 +36,14 @@ The successful target run directly validated the C++/RAFT/RMM/CUDA path:
 - CUDA backend configure/build for RTX 50 `sm_120a`
 - C++20/CUDA smoke build completed successfully
 - RAFT 26.06 and RMM 26.06 include/link compatibility
-- `raft::device_resources` and RMM pool ownership inside C++
+- `raft::device_resources` ownership inside C++, with RAFT workspace and
+  large-workspace resources bound to the owned RMM pool
 - Custom CUDA launch, result copy, and byte-exact golden comparison
 - Shared-GPU fail-closed preflight before Docker and again inside the container
 
-Combined with the host-only Rust tests, M0 validates the Rust-to-C++ lifecycle
-and the target GPU execution path. The target GPU command itself runs the C++
-`brt-smoke` executable directly.
+Combined with the host-only Rust tests, M0 validates the Rust-to-C++ lifecycle,
+coarse smoke FFI error propagation, and the target GPU execution path. The
+target GPU command itself runs the C++ `brt-smoke` executable directly.
 
 ## Scope not covered
 
