@@ -34,6 +34,15 @@ struct TensorSignature {
   bool operator==(const TensorSignature&) const = default;
 };
 
+struct TensorConstraint {
+  BrtDataType dtype{};
+  BrtQuantFormat quant{};
+  std::uint32_t rank{};
+  std::size_t alignment{};
+  std::vector<std::int64_t> min_shape;
+  std::vector<std::int64_t> max_shape;
+};
+
 struct OperatorSignature {
   OperatorKind op{};
   ExecutionRegime regime{};
@@ -69,12 +78,7 @@ struct KernelCapability {
   int min_arch_minor{};
   int max_arch_major{};
   int max_arch_minor{};
-  BrtDataType dtype{};
-  BrtQuantFormat quant{};
-  std::uint32_t rank{};
-  std::size_t alignment{};
-  std::vector<std::int64_t> min_shape;
-  std::vector<std::int64_t> max_shape;
+  std::vector<TensorConstraint> inputs;
   bool graph_safe{};
   bool deterministic{};
   std::size_t workspace_bytes{};

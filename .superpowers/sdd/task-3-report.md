@@ -40,5 +40,33 @@ git diff --check
 
 ## Remaining concerns
 
-- `KernelCapability` currently describes one input tensor because Task 3 only required metadata dispatch and the current tests exercise one tensor signature. The `OperatorSignature` value/hash path already supports multiple input tensor signatures.
 - No Rust per-op FFI was added, and no `bw24` import was introduced.
+
+## Review fix: per-input capability constraints
+
+- Fixed the review defect where `KernelCapability::rejection_reason` validated only `signature.inputs.front()`.
+- Replaced scalar tensor capability fields with `std::vector<TensorConstraint>` aligned to `OperatorSignature::inputs`.
+- Added input-count mismatch rejection before per-input validation.
+- Added per-input dtype, quantization, rank, alignment, and shape-bound validation, with rejection reasons labeled by input index.
+
+### Review-fix TDD evidence
+
+1. RED: Added two-input registry tests using `TensorConstraint` before production support existed.
+2. RED observed: `cmake --build build/host --target brt_operator_registry_test` failed with `no type named 'TensorConstraint' in namespace 'brt'`.
+3. GREEN: Added `TensorConstraint`, changed `KernelCapability` to hold per-input constraints, and updated matching to validate every input.
+4. Regression coverage verifies correct selection when only input 2 differs, rejection reasons for input 2 dtype mismatch, and input-count mismatch rejection.
+
+### Review-fix verification
+
+```text
+cmake --build build/host --target brt_operator_registry_test
+  PASS
+ctest --test-dir build/host -R brt_operator_registry_test --output-on-failure
+  PASS (1/1)
+ctest --test-dir build/host -R brt_operator_registry_test --repeat until-fail:2 --output-on-failure
+  PASS (2/2)
+cmake --build build/host
+  PASS
+ctest --test-dir build/host --output-on-failure
+  PASS (6/6)
+```

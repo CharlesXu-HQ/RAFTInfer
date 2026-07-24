@@ -72,29 +72,37 @@ std::optional<std::string> KernelCapability::rejection_reason(
   if (signature.workspace_bytes < workspace_bytes) {
     append_reason(reasons, "workspace capacity insufficient");
   }
-  if (signature.inputs.empty()) {
-    append_reason(reasons, "missing input tensor");
+  if (signature.inputs.size() != inputs.size()) {
+    append_reason(reasons, "input count mismatch");
   } else {
-    const TensorSignature& input = signature.inputs.front();
-    if (input.dtype != dtype) {
-      append_reason(reasons, "dtype unsupported");
-    }
-    if (input.quant != quant) {
-      append_reason(reasons, "quantization unsupported");
-    }
-    if (input.rank != rank) {
-      append_reason(reasons, "rank unsupported");
-    }
-    if (input.alignment != alignment) {
-      append_reason(reasons, "alignment unsupported");
-    }
-    if (input.shape.size() != rank || min_shape.size() != rank || max_shape.size() != rank) {
-      append_reason(reasons, "shape rank unsupported");
-    } else {
-      for (std::size_t i = 0; i < input.shape.size(); ++i) {
-        if (input.shape[i] < min_shape[i] || input.shape[i] > max_shape[i]) {
-          append_reason(reasons, "shape bounds unsupported");
-          break;
+    for (std::size_t input_index = 0; input_index < inputs.size(); ++input_index) {
+      const TensorSignature& input = signature.inputs[input_index];
+      const TensorConstraint& constraint = inputs[input_index];
+      const std::string prefix = "input " + std::to_string(input_index) + " ";
+
+      if (input.dtype != constraint.dtype) {
+        append_reason(reasons, prefix + "dtype unsupported");
+      }
+      if (input.quant != constraint.quant) {
+        append_reason(reasons, prefix + "quantization unsupported");
+      }
+      if (input.rank != constraint.rank) {
+        append_reason(reasons, prefix + "rank unsupported");
+      }
+      if (input.alignment != constraint.alignment) {
+        append_reason(reasons, prefix + "alignment unsupported");
+      }
+      if (input.shape.size() != constraint.rank ||
+          constraint.min_shape.size() != constraint.rank ||
+          constraint.max_shape.size() != constraint.rank) {
+        append_reason(reasons, prefix + "shape rank unsupported");
+      } else {
+        for (std::size_t dim = 0; dim < input.shape.size(); ++dim) {
+          if (input.shape[dim] < constraint.min_shape[dim] ||
+              input.shape[dim] > constraint.max_shape[dim]) {
+            append_reason(reasons, prefix + "shape bounds unsupported");
+            break;
+          }
         }
       }
     }
