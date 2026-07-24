@@ -19,17 +19,46 @@ field order and `schema_version: 1`. String fields must escape quotes,
 backslashes, and every control byte below `0x20`; project-native kernels record
 `upstream_revision: null`.
 
-Required M1 evidence fields:
+Required M1 evidence fields, in stable JSON order:
 
-- registry identity: operator name, selected kernel name, backend, optional
-  upstream revision, target architecture, dtype, and shape bucket;
-- correctness state: pass/fail, maximum absolute error, maximum relative error,
-  cosine similarity, and non-finite mismatch count;
-- timing state: measured iterations, median microseconds, p95 microseconds, and
-  the derived `performance_publishable` flag.
+- `schema_version`: currently `1`;
+- `utc_timestamp`: UTC collection timestamp;
+- `project_commit`: project revision that produced the record;
+- `device`: GPU/device name;
+- `driver_version`: NVIDIA driver version;
+- `cuda_version`: CUDA toolkit or runtime version;
+- `architecture`: target architecture such as `sm_120a`;
+- `operator_signature`: full operator-signature string, including shapes and
+  data types;
+- `selected_kernel`: selected registry kernel name;
+- `provenance_kind`: project-native, imported, or other explicit provenance
+  category;
+- `upstream_revision`: source revision for imported kernels, or `null` for
+  project-native kernels;
+- `correctness_passed`: independent oracle pass/fail;
+- `max_abs_error`: maximum absolute error;
+- `max_rel_error`: maximum relative error;
+- `cosine_similarity`: output cosine similarity;
+- `nonfinite_mismatches`: count of non-finite mismatches;
+- `warmup_count`: warmup launches before measurement;
+- `measured_iterations`: measured timing iterations;
+- `median_us`: median latency in microseconds;
+- `p95_us`: p95 latency in microseconds;
+- `min_us`: minimum measured latency in microseconds;
+- `max_us`: maximum measured latency in microseconds;
+- `workspace_bytes`: workspace bytes available to the selected launch;
+- `launch_count`: launches per measured iteration;
+- `graph_mode`: graph mode used for the measurement;
+- `performance_publishable`: derived publication gate.
 
-Metrics and timings must be finite before serialization. Non-finite values make
-the record invalid rather than publishable evidence.
+Required identity strings must be nonempty before serialization. Error metrics
+must be finite and nonnegative, cosine similarity must be finite and within
+`[-1, 1]`, timing fields must be finite, and measured timing records must have
+positive `min_us`, `median_us`, `p95_us`, `max_us`, and `launch_count`. Latency
+ordering must satisfy `min_us <= median_us <= p95_us <= max_us`.
+
+Invalid metrics, timings, identity fields, or count combinations make the record
+invalid rather than publishable evidence.
 
 ## Correctness-valid vs. Publishable Performance
 
