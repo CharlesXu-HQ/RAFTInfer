@@ -10,7 +10,12 @@ Build an independent open-source LLM inference engine for NVIDIA RTX 50-series c
 
 The project is not a generic CUDA framework and is not a simple fork of `bw24`. It reuses proven `bw24` kernels when they match the requirements, but rebuilds the runtime around explicit RAFT/RMM resource ownership, a C++ operator registry, a stable C ABI, and a safe Rust control layer.
 
-The v0.1 reference workload is Qwen3.5-9B Dense in GGUF format, with F16/BF16 as a correctness baseline and Q4_K_M as the first optimized quantized path.
+The v0.1 reference workload is the text-generation path of Qwen3.5-9B in GGUF
+format, with F16/BF16 as a correctness baseline and Q4_K_M as the first
+optimized quantized path. Here, "Dense" means non-MoE; the text decoder is a
+hybrid of Gated DeltaNet linear-attention and causal full-attention blocks. The
+detailed M2 architecture is defined by the approved
+`2026-07-25-m2-qwen35-text-baseline-design.md` amendment.
 
 ## 2. Goals
 
@@ -258,7 +263,11 @@ v0.1 uses a contiguous, fixed-address KV cache:
 [layer][K/V][token][kv_head][head_dim]
 ```
 
-The session allocates it once for the configured maximum context length. It uses F16/BF16 values and a device-side token position. Reset changes logical length and state but does not reallocate memory.
+Only Qwen3.5 full-attention blocks use this cache. Gated DeltaNet blocks instead
+own fixed-address causal-convolution state and FP32 recurrent state. The
+session allocates all state once for the configured maximum context length.
+Reset changes logical length and zeroes both state families but does not
+reallocate memory.
 
 ### 7.4 Decode and CUDA Graph
 
@@ -413,9 +422,11 @@ Remote tests must stage outputs in a project-specific directory, avoid modifying
 - Register reference RMSNorm, RoPE, BF16 linear, softmax/argmax, embedding, Add, and SwiGLU operators.
 - Demonstrate dispatch, fallback, and graph-safety metadata.
 
-### M2: Qwen3.5-9B F16/BF16 baseline
+### M2: Qwen3.5-9B text F16/BF16 baseline
 
-- Implement GGUF loading, Rust tokenization, Qwen3.5 configuration, full Dense forward, prefill, contiguous KV cache, ordinary decode, greedy sampling, and CLI generation.
+- Implement GGUF loading, Rust tokenization, Qwen3.5 hybrid block planning,
+  Gated DeltaNet and full-attention forward paths, hybrid recurrent/KV state,
+  prefill, ordinary decode, greedy sampling, and CLI generation.
 - Match llama.cpp greedy tokens on the fixed corpus.
 - Record the first end-to-end performance baseline.
 
@@ -456,7 +467,7 @@ No model, benchmark asset, or third-party source is redistributed until its sepa
 
 v0.1 is complete only when:
 
-- Qwen3.5-9B Dense GGUF runs end to end with F16/BF16 and Q4_K_M.
+- The Qwen3.5-9B text decoder GGUF runs end to end with F16/BF16 and Q4_K_M.
 - Rust drives the C++/CUDA engine through the stable ABI.
 - RAFT/RMM form the common GPU resource and memory foundation.
 - Imported and native optimized kernels use the common registry and execution context.
