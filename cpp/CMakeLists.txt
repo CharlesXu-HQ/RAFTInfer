@@ -5,7 +5,7 @@ target_compile_features(brt_cpp PUBLIC cxx_std_20)
 target_include_directories(brt_cpp PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_definitions(brt_cpp PRIVATE BRT_ENABLE_CUDA=$<BOOL:${BRT_ENABLE_CUDA}>)
 
-add_library(brt_reference STATIC reference/operators.cpp)
+add_library(brt_reference STATIC reference/operators.cpp reference/correctness.cpp)
 target_compile_features(brt_reference PUBLIC cxx_std_20)
 target_include_directories(brt_reference PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/reference)
 
@@ -46,6 +46,9 @@ if(BRT_BUILD_TESTS)
   add_executable(brt_reference_operators_test tests/reference_operators_test.cpp)
   target_link_libraries(brt_reference_operators_test PRIVATE brt_reference)
   add_test(NAME brt_reference_operators_test COMMAND brt_reference_operators_test)
+  add_executable(brt_correctness_test tests/correctness_test.cpp)
+  target_link_libraries(brt_correctness_test PRIVATE brt_reference)
+  add_test(NAME brt_correctness_test COMMAND brt_correctness_test)
   add_test(
     NAME brt_c_api_source_test
     COMMAND ${CMAKE_COMMAND}
