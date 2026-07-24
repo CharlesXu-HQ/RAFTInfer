@@ -101,6 +101,52 @@ int main() {
   imported.upstream_revision = "bw24@abc123";
   expect_contains(imported.to_json_line(), "\"upstream_revision\":\"bw24@abc123\"");
 
+  brt::BenchmarkRecord fractional_timestamp = record;
+  fractional_timestamp.utc_timestamp = "2024-02-29T23:59:59.123Z";
+  expect_contains(fractional_timestamp.to_json_line(),
+                  "\"utc_timestamp\":\"2024-02-29T23:59:59.123Z\"");
+
+  brt::BenchmarkRecord local_offset_timestamp = record;
+  local_offset_timestamp.utc_timestamp = "2026-07-25T01:02:03+08:00";
+  assert(!local_offset_timestamp.performance_publishable());
+  expect_invalid_argument([&] { (void)local_offset_timestamp.to_json_line(); });
+
+  brt::BenchmarkRecord arbitrary_timestamp = record;
+  arbitrary_timestamp.utc_timestamp = "yesterday";
+  assert(!arbitrary_timestamp.performance_publishable());
+  expect_invalid_argument([&] { (void)arbitrary_timestamp.to_json_line(); });
+
+  brt::BenchmarkRecord range_timestamp = record;
+  range_timestamp.utc_timestamp = "2026-07-25T24:00:00Z";
+  assert(!range_timestamp.performance_publishable());
+  expect_invalid_argument([&] { (void)range_timestamp.to_json_line(); });
+
+  brt::BenchmarkRecord invalid_date_timestamp = record;
+  invalid_date_timestamp.utc_timestamp = "2023-02-29T01:02:03Z";
+  assert(!invalid_date_timestamp.performance_publishable());
+  expect_invalid_argument([&] { (void)invalid_date_timestamp.to_json_line(); });
+
+  brt::BenchmarkRecord dot_without_fraction_timestamp = record;
+  dot_without_fraction_timestamp.utc_timestamp = "2026-07-25T01:02:03.Z";
+  assert(!dot_without_fraction_timestamp.performance_publishable());
+  expect_invalid_argument([&] { (void)dot_without_fraction_timestamp.to_json_line(); });
+
+  brt::BenchmarkRecord native_with_revision = record;
+  native_with_revision.upstream_revision = "should-not-exist";
+  assert(!native_with_revision.performance_publishable());
+  expect_invalid_argument([&] { (void)native_with_revision.to_json_line(); });
+
+  brt::BenchmarkRecord imported_without_revision = record;
+  imported_without_revision.provenance_kind = "upstream_bw24";
+  assert(!imported_without_revision.performance_publishable());
+  expect_invalid_argument([&] { (void)imported_without_revision.to_json_line(); });
+
+  brt::BenchmarkRecord imported_empty_revision = record;
+  imported_empty_revision.provenance_kind = "upstream_bw24";
+  imported_empty_revision.upstream_revision = "";
+  assert(!imported_empty_revision.performance_publishable());
+  expect_invalid_argument([&] { (void)imported_empty_revision.to_json_line(); });
+
   brt::BenchmarkRecord failed_correctness = record;
   failed_correctness.correctness_passed = false;
   assert(!failed_correctness.performance_publishable());
@@ -117,6 +163,7 @@ int main() {
   brt::BenchmarkRecord negative_p95 = record;
   negative_p95.p95_us = -1.0;
   assert(!negative_p95.performance_publishable());
+  expect_invalid_argument([&] { (void)negative_p95.to_json_line(); });
 
   brt::BenchmarkRecord performance_without_correctness = record;
   performance_without_correctness.correctness_passed = false;

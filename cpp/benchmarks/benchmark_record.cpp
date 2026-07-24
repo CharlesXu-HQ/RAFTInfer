@@ -10,6 +10,82 @@
 namespace brt {
 namespace {
 
+bool is_digit(char ch) {
+  return ch >= '0' && ch <= '9';
+}
+
+int parse_digits(std::string_view value, std::size_t offset, std::size_t count) {
+  int result = 0;
+  for (std::size_t i = 0; i < count; ++i) {
+    const char ch = value[offset + i];
+    if (!is_digit(ch)) {
+      return -1;
+    }
+    result = (result * 10) + (ch - '0');
+  }
+  return result;
+}
+
+bool is_leap_year(int year) {
+  return (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+}
+
+int days_in_month(int year, int month) {
+  switch (month) {
+    case 1:
+    case 3:
+    case 5:
+    case 7:
+    case 8:
+    case 10:
+    case 12:
+      return 31;
+    case 4:
+    case 6:
+    case 9:
+    case 11:
+      return 30;
+    case 2:
+      return is_leap_year(year) ? 29 : 28;
+    default:
+      return 0;
+  }
+}
+
+bool is_canonical_utc_timestamp(std::string_view value) {
+  if (value.size() < 20 || value[4] != '-' || value[7] != '-' || value[10] != 'T' ||
+      value[13] != ':' || value[16] != ':') {
+    return false;
+  }
+
+  const bool has_fraction = value[19] == '.';
+  if (has_fraction) {
+    if (value.size() < 22 || value.back() != 'Z') {
+      return false;
+    }
+    for (std::size_t i = 20; i + 1 < value.size(); ++i) {
+      if (!is_digit(value[i])) {
+        return false;
+      }
+    }
+  } else if (value.size() != 20 || value[19] != 'Z') {
+    return false;
+  }
+
+  const int year = parse_digits(value, 0, 4);
+  const int month = parse_digits(value, 5, 2);
+  const int day = parse_digits(value, 8, 2);
+  const int hour = parse_digits(value, 11, 2);
+  const int minute = parse_digits(value, 14, 2);
+  const int second = parse_digits(value, 17, 2);
+  if (year <= 0 || month <= 0 || day <= 0 || hour < 0 || minute < 0 || second < 0) {
+    return false;
+  }
+
+  const int max_day = days_in_month(year, month);
+  return max_day > 0 && day <= max_day && hour <= 23 && minute <= 59 && second <= 59;
+}
+
 void require_finite(double value, std::string_view field) {
   if (!std::isfinite(value)) {
     throw std::invalid_argument(std::string(field) + " must be finite");
@@ -47,6 +123,17 @@ void validate_record(const BenchmarkRecord& record) {
   require_nonempty(record.selected_kernel, "selected_kernel");
   require_nonempty(record.provenance_kind, "provenance_kind");
   require_nonempty(record.graph_mode, "graph_mode");
+  if (!is_canonical_utc_timestamp(record.utc_timestamp)) {
+    throw std::invalid_argument(
+        "utc_timestamp must use canonical RFC3339 UTC form YYYY-MM-DDTHH:MM:SS[.fraction]Z");
+  }
+  if (record.provenance_kind == "project_native") {
+    if (record.upstream_revision.has_value()) {
+      throw std::invalid_argument("project_native records must have null upstream_revision");
+    }
+  } else if (!record.upstream_revision.has_value() || record.upstream_revision->empty()) {
+    throw std::invalid_argument("non-native records must have nonempty upstream_revision");
+  }
 
   require_nonnegative(record.max_abs_error, "max_abs_error");
   require_nonnegative(record.max_rel_error, "max_rel_error");

@@ -22,7 +22,8 @@ backslashes, and every control byte below `0x20`; project-native kernels record
 Required M1 evidence fields, in stable JSON order:
 
 - `schema_version`: currently `1`;
-- `utc_timestamp`: UTC collection timestamp;
+- `utc_timestamp`: UTC collection timestamp in canonical RFC3339 UTC form
+  `YYYY-MM-DDTHH:MM:SS[.fraction]Z`;
 - `project_commit`: project revision that produced the record;
 - `device`: GPU/device name;
 - `driver_version`: NVIDIA driver version;
@@ -51,11 +52,16 @@ Required M1 evidence fields, in stable JSON order:
 - `graph_mode`: graph mode used for the measurement;
 - `performance_publishable`: derived publication gate.
 
-Required identity strings must be nonempty before serialization. Error metrics
-must be finite and nonnegative, cosine similarity must be finite and within
-`[-1, 1]`, timing fields must be finite, and measured timing records must have
-positive `min_us`, `median_us`, `p95_us`, `max_us`, and `launch_count`. Latency
-ordering must satisfy `min_us <= median_us <= p95_us <= max_us`.
+Required identity strings must be nonempty before serialization.
+`utc_timestamp` must be canonical UTC RFC3339 with real date and time ranges,
+including leap-year handling and nonempty fractional digits when a fractional
+part is present. Local offsets and arbitrary timestamp strings are invalid.
+`project_native` records must use `upstream_revision: null`; every non-native
+provenance kind must provide a nonempty upstream revision. Error metrics must
+be finite and nonnegative, cosine similarity must be finite and within `[-1, 1]`,
+timing fields must be finite, and measured timing records must have positive
+`min_us`, `median_us`, `p95_us`, `max_us`, and `launch_count`. Latency ordering
+must satisfy `min_us <= median_us <= p95_us <= max_us`.
 
 Invalid metrics, timings, identity fields, or count combinations make the record
 invalid rather than publishable evidence.
