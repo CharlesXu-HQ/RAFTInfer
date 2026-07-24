@@ -1,22 +1,24 @@
 #include "device_context.hpp"
 
+#include "../execution/execution_context.hpp"
+#include "../execution/workspace_arena.hpp"
+
 #include <raft/core/device_resources.hpp>
 #include <raft/core/resource/cuda_stream.hpp>
 #include <raft/core/resource/device_memory_resource.hpp>
-#include <rmm/aligned.hpp>
 #include <rmm/cuda_stream_view.hpp>
 #include <rmm/mr/cuda_memory_resource.hpp>
 #include <rmm/mr/pool_memory_resource.hpp>
 #include <cuda/stream_ref>
 #include <cuda_runtime_api.h>
 
+#include <array>
 #include <cstddef>
 #include <memory>
 #include <numeric>
+#include <optional>
 #include <stdexcept>
 #include <string>
-#include <utility>
-#include <vector>
 
 extern void brt_launch_smoke(uint32_t* values, uint32_t count, cudaStream_t stream);
 
@@ -62,70 +64,62 @@ class DeviceGuard {
   bool restore_device_{};
 };
 
-class DeviceAllocation {
- public:
-  DeviceAllocation(
-      rmm::device_async_resource_ref resource,
-      cuda::stream_ref stream_ref,
-      cudaStream_t stream,
-      std::size_t bytes)
-      : resource_(resource),
-        stream_ref_(stream_ref),
-        stream_(stream),
-        bytes_(bytes),
-        values_(static_cast<uint32_t*>(
-            resource_.allocate(stream_ref_, bytes_, rmm::CUDA_ALLOCATION_ALIGNMENT))) {}
-
-  ~DeviceAllocation() noexcept {
-    if (values_ != nullptr) {
-      (void)cudaStreamSynchronize(stream_);
-      try {
-        deallocate();
-      } catch (...) {
-      }
-    }
-  }
-
-  DeviceAllocation(const DeviceAllocation&) = delete;
-  DeviceAllocation& operator=(const DeviceAllocation&) = delete;
-
-  uint32_t* data() const noexcept { return values_; }
-  cudaError_t synchronize() const noexcept { return cudaStreamSynchronize(stream_); }
-
-  void deallocate() {
-    uint32_t* values = std::exchange(values_, nullptr);
-    if (values != nullptr) {
-      resource_.deallocate(stream_ref_, values, bytes_, rmm::CUDA_ALLOCATION_ALIGNMENT);
-    }
-  }
-
- private:
-  rmm::device_async_resource_ref resource_;
-  cuda::stream_ref stream_ref_;
-  cudaStream_t stream_;
-  std::size_t bytes_;
-  uint32_t* values_{};
-};
-
 }  // namespace
 
 class DeviceContext::Resources {
  public:
-  explicit Resources(uint64_t initial_pool_bytes)
-      : cuda_resource_(), pool_(cuda_resource_, initial_pool_bytes), resources_() {
+  Resources(int device_id, uint64_t initial_pool_bytes)
+      : cuda_resource_(), pool_(cuda_resource_, initial_pool_bytes), workspace_arena_(), resources_() {
     raft::resource::set_workspace_resource(resources_, raft::mr::device_resource{pool_});
     raft::resource::set_large_workspace_resource(resources_, raft::mr::device_resource{pool_});
+    cudaDeviceProp properties{};
+    cudaError_t error = cudaGetDeviceProperties(&properties, device_id);
+    if (error != cudaSuccess) throw_cuda_error(error);
+    compute_capability_major_ = properties.major;
+    compute_capability_minor_ = properties.minor;
+    max_shared_memory_per_block_ = properties.sharedMemPerBlock;
+    auto stream_view = raft::resource::get_cuda_stream(resources_);
+    cudaStream_t stream = stream_view.value();
+    workspace_arena_.emplace(
+        rmm::device_async_resource_ref{pool_}, cuda::stream_ref{stream}, stream, kWorkspaceBytes);
   }
 
+  ExecutionContext execution_context(int device_id) {
+    WorkspaceArena& workspace = *workspace_arena_;
+    auto stream_view = raft::resource::get_cuda_stream(resources_);
+    cudaStream_t stream = stream_view.value();
+    return ExecutionContext{
+        resources_,
+        rmm::device_async_resource_ref{pool_},
+        stream,
+        workspace,
+        device_id,
+        compute_capability_major_,
+        compute_capability_minor_,
+        max_shared_memory_per_block_};
+  }
+
+  void probe_workspace() {
+    WorkspaceArena& workspace = *workspace_arena_;
+    workspace.reset();
+    (void)workspace.allocate(1, alignof(uint32_t));
+    workspace.reset();
+  }
+
+  static constexpr std::size_t kWorkspaceBytes = 1024 * 1024;
   rmm::mr::cuda_memory_resource cuda_resource_;
   rmm::mr::pool_memory_resource pool_;
+  std::optional<WorkspaceArena> workspace_arena_;
   raft::device_resources resources_;
+  int compute_capability_major_{};
+  int compute_capability_minor_{};
+  int max_shared_memory_per_block_{};
 };
 
 DeviceContext::DeviceContext(int device_id, uint64_t initial_pool_bytes) : device_id_(device_id) {
   DeviceGuard device_guard{device_id_};
   try {
-    resources_ = std::make_unique<Resources>(initial_pool_bytes);
+    resources_ = std::make_unique<Resources>(device_id_, initial_pool_bytes);
     device_guard.restore();
   } catch (...) {
     // If the caller's device cannot be restored, do not let RAFT/RMM
@@ -153,36 +147,30 @@ DeviceContext::~DeviceContext() noexcept {
 BrtSmokeResult DeviceContext::run_smoke() {
   constexpr uint32_t count = 1024;
   DeviceGuard device_guard{device_id_};
-  auto stream_view = raft::resource::get_cuda_stream(resources_->resources_);
-  cudaStream_t stream = stream_view.value();
-  auto stream_ref = cuda::stream_ref{stream};
-  auto resource = rmm::device_async_resource_ref{resources_->pool_};
-  DeviceAllocation device{resource, stream_ref, stream, count * sizeof(uint32_t)};
-  brt_launch_smoke(device.data(), count, stream);
+  ExecutionContext execution_context = resources_->execution_context(device_id_);
+  WorkspaceArena& workspace = execution_context.workspace();
+  resources_->probe_workspace();
+  uint32_t* device_values =
+      static_cast<uint32_t*>(workspace.allocate(count * sizeof(uint32_t), alignof(uint32_t)));
+  brt_launch_smoke(device_values, count, execution_context.stream());
   cudaError_t error = cudaGetLastError();
   if (error != cudaSuccess) {
     const std::string message = cudaGetErrorString(error);
-    (void)device.synchronize();
-    try {
-      device.deallocate();
-    } catch (...) {
-    }
+    (void)cudaStreamSynchronize(execution_context.stream());
+    workspace.reset();
     throw std::runtime_error(message);
   }
-  std::vector<uint32_t> host(count);
+  std::array<uint32_t, count> host{};
   error = cudaMemcpyAsync(
-      host.data(), device.data(), count * sizeof(uint32_t), cudaMemcpyDeviceToHost, stream);
-  const cudaError_t synchronization_error = device.synchronize();
+      host.data(), device_values, count * sizeof(uint32_t), cudaMemcpyDeviceToHost, execution_context.stream());
+  const cudaError_t synchronization_error = cudaStreamSynchronize(execution_context.stream());
   if (error == cudaSuccess) error = synchronization_error;
   if (error != cudaSuccess) {
     const std::string message = cudaGetErrorString(error);
-    try {
-      device.deallocate();
-    } catch (...) {
-    }
+    workspace.reset();
     throw std::runtime_error(message);
   }
-  device.deallocate();
+  workspace.reset();
   uint64_t checksum = std::accumulate(host.begin(), host.end(), uint64_t{0});
   BrtSmokeResult result{device_id_, count, checksum};
   device_guard.restore();

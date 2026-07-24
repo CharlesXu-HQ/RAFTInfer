@@ -8,7 +8,10 @@ if(BRT_ENABLE_CUDA)
   find_package(CUDAToolkit REQUIRED)
   find_package(raft 26.06 CONFIG REQUIRED)
   find_package(rmm 26.06 CONFIG REQUIRED)
-  target_sources(brt_cpp PRIVATE foundation/device_context.cu kernels/smoke.cu)
+  target_sources(brt_cpp PRIVATE
+    execution/workspace_arena.cu
+    foundation/device_context.cu
+    kernels/smoke.cu)
   target_link_libraries(brt_cpp PUBLIC raft::raft rmm::rmm CUDA::cudart)
   target_compile_options(brt_cpp PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--expt-extended-lambda --expt-relaxed-constexpr>)
@@ -29,6 +32,9 @@ if(BRT_BUILD_TESTS)
   add_executable(brt_tensor_validation_test tests/tensor_validation_test.cpp)
   target_link_libraries(brt_tensor_validation_test PRIVATE brt_cpp)
   add_test(NAME brt_tensor_validation_test COMMAND brt_tensor_validation_test)
+  add_executable(brt_workspace_layout_test tests/workspace_layout_test.cpp)
+  target_link_libraries(brt_workspace_layout_test PRIVATE brt_cpp)
+  add_test(NAME brt_workspace_layout_test COMMAND brt_workspace_layout_test)
   add_test(
     NAME brt_c_api_source_test
     COMMAND ${CMAKE_COMMAND}
@@ -39,5 +45,7 @@ if(BRT_BUILD_TESTS)
     COMMAND ${CMAKE_COMMAND}
       -DDEVICE_CONTEXT_HEADER=${CMAKE_CURRENT_SOURCE_DIR}/foundation/device_context.hpp
       -DDEVICE_CONTEXT_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/foundation/device_context.cu
+      -DWORKSPACE_ARENA_HEADER=${CMAKE_CURRENT_SOURCE_DIR}/execution/workspace_arena.hpp
+      -DWORKSPACE_ARENA_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/execution/workspace_arena.cu
       -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/device_context_source_test.cmake)
 endif()
