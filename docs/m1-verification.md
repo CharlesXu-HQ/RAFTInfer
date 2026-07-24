@@ -101,6 +101,41 @@ The target evidence should capture GPU model, compute capability, driver,
 CUDA/toolchain versions, image ID, preflight state, the exact command, and the
 observed smoke output.
 
+### RTX 5090 smoke evidence
+
+- Verification commit: `979f1c1`
+- Target: `charles@192.168.124.8`
+- GPU: GPU0 NVIDIA GeForce RTX 5090
+- Driver: 580.159.03
+- Preflight state: no compute applications; free memory 32095 MiB; utilization
+  0%; temperature 34 C
+- Container image: `brt-dev:26.06-cuda13`
+- Image ID:
+  `sha256:9e7ce1e85752d43a53cc2e8bf5c44f4ec610d43d38b28d922a4fab9701c6c340`
+- Container user: `rapids`
+- Host compiler: C++ GNU 13.3.0
+- CUDA compiler/toolkit: 13.2.78
+- RMM: 26.06.0
+- RAFT: 26.06.0
+- Build result: 12/12 CUDA build steps passed, including
+  `workspace_arena.cu` and `device_context.cu`
+- Exact command: `scripts/gpu-smoke.sh`
+- Exact smoke output:
+
+```json
+{"device_id":0,"element_count":1024,"checksum":523776}
+```
+
+The smoke executable calls the C ABI `brt_engine_run_smoke` path. That path
+constructs RAFT/RMM device resources and runs the workspace allocation/reset
+probe before allocating the smoke buffer from the preallocated workspace arena,
+while preserving the M0-compatible golden JSON output.
+
+Postflight state: no compute applications; free memory 32095 MiB; utilization
+0%; temperature 34 C. Cleanup completed with `active_brt_containers=0`, the
+dedicated remote validation directory removed, and the local run archive
+deleted.
+
 ## Scope Not Covered
 
 M1 does not load Qwen3 Dense, parse GGUF, tokenize prompts, allocate a KV cache,
