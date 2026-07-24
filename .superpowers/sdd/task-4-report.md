@@ -63,3 +63,35 @@
 
 - No blocker. The reference API is intentionally minimal and internal to the
   current C++ tree.
+
+## Review Hardening Pass
+
+### RED
+
+- Added review-driven tests before changing implementation.
+- Observed the required failure in `brt_reference_operators_test`:
+  `Assertion failed: ((bf16.bits & 0x7F80U) == 0x7F80U)` for adversarial NaN
+  BF16 conversion.
+
+### Fixes
+
+- `float_to_bf16` now special-cases exponent-all-ones values: infinities are
+  preserved exactly and all NaNs retain a nonzero BF16 payload.
+- Split reference code into standalone `brt_reference`; `brt_reference_operators_test`
+  links only that target, not `brt_cpp`.
+- `rms_norm` rejects `cols == 0`; `rows == 0` with `cols > 0` is an explicit
+  no-op.
+- Softmax computes shifted logits after casting both operands to `double`.
+- Expanded deterministic seeded randomized scalar-oracle checks to RMSNorm,
+  RoPE, non-square BF16 linear, embedding, and argmax ties.
+- Added invalid/adversarial coverage for dimension multiplication overflow,
+  zero/empty dimensions, RoPE invalid dimensions/base, negative/out-of-range
+  token IDs, softmax empty columns, and output sentinels for throwing APIs.
+
+### GREEN
+
+- `cmake --build build/host --target brt_reference_operators_test` passed and
+  rebuilt `libbrt_reference.a`.
+- `ctest --test-dir build/host -R brt_reference_operators_test --output-on-failure`
+  passed: 1/1, 0 failed.
+- `ctest --test-dir build/host --output-on-failure` passed: 7/7, 0 failed.

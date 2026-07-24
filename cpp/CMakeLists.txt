@@ -1,10 +1,13 @@
 add_library(brt_cpp STATIC src/status.cpp)
 target_sources(brt_cpp PRIVATE src/c_api.cpp src/engine.cpp operators/tensor_validation.cpp)
 target_sources(brt_cpp PRIVATE registry/operator_registry.cpp)
-target_sources(brt_cpp PRIVATE reference/operators.cpp)
 target_compile_features(brt_cpp PUBLIC cxx_std_20)
 target_include_directories(brt_cpp PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_definitions(brt_cpp PRIVATE BRT_ENABLE_CUDA=$<BOOL:${BRT_ENABLE_CUDA}>)
+
+add_library(brt_reference STATIC reference/operators.cpp)
+target_compile_features(brt_reference PUBLIC cxx_std_20)
+target_include_directories(brt_reference PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/reference)
 
 if(BRT_ENABLE_CUDA)
   find_package(CUDAToolkit REQUIRED)
@@ -41,7 +44,7 @@ if(BRT_BUILD_TESTS)
   target_link_libraries(brt_operator_registry_test PRIVATE brt_cpp)
   add_test(NAME brt_operator_registry_test COMMAND brt_operator_registry_test)
   add_executable(brt_reference_operators_test tests/reference_operators_test.cpp)
-  target_link_libraries(brt_reference_operators_test PRIVATE brt_cpp)
+  target_link_libraries(brt_reference_operators_test PRIVATE brt_reference)
   add_test(NAME brt_reference_operators_test COMMAND brt_reference_operators_test)
   add_test(
     NAME brt_c_api_source_test

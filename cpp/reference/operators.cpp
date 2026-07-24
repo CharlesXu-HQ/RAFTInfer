@@ -116,6 +116,7 @@ void rms_norm(
     RmsNormShape shape,
     float epsilon) {
   require(epsilon >= 0.0F, "rms_norm epsilon must be non-negative");
+  require(shape.cols > 0, "rms_norm cols must be positive");
   const std::size_t input_size = checked_mul(shape.rows, shape.cols, "rms_norm shape overflow");
   require_span(input.size(), input_size, "rms_norm input span does not match shape");
   require_span(weight.size(), shape.cols, "rms_norm weight span does not match shape");
@@ -186,11 +187,12 @@ void softmax(
 
     double sum = 0.0;
     for (std::size_t col = 0; col < shape.cols; ++col) {
-      sum += std::exp(static_cast<double>(input[row_offset + col] - max));
+      const double shifted = static_cast<double>(input[row_offset + col]) - static_cast<double>(max);
+      sum += std::exp(shifted);
     }
     for (std::size_t col = 0; col < shape.cols; ++col) {
-      output[row_offset + col] =
-          static_cast<float>(std::exp(static_cast<double>(input[row_offset + col] - max)) / sum);
+      const double shifted = static_cast<double>(input[row_offset + col]) - static_cast<double>(max);
+      output[row_offset + col] = static_cast<float>(std::exp(shifted) / sum);
     }
   }
 }
