@@ -4,11 +4,11 @@ Blackwell RAFT Runtime is an RTX 50-series LLM inference runtime foundation. It
 uses RAFT/RMM as the GPU resource and memory layer, then leaves
 performance-critical operators to custom CUDA/CUTLASS kernels.
 
-Current milestone: M1 registry and correctness harness. M1 adds host-tested
-tensor contracts, deterministic kernel dispatch, workspace layout checks,
-independent CPU reference operators, correctness metrics, and versioned
-benchmark evidence records. It still does not load Qwen3 Dense or implement
-model inference.
+Current milestone: M2A Qwen3.5-9B loader foundation. The runtime now parses
+GGUF v3 catalogs, derives the Qwen3.5 hybrid 3-linear/1-full block plan,
+validates the text-model tensor manifest, memory-maps validated model files,
+and exposes model/tokenizer metadata through coarse C++/Rust handles. It does
+not yet upload weights or run Qwen3.5 inference.
 
 ## Scope
 
@@ -62,7 +62,9 @@ The verified M0 golden output is:
 ```
 
 See [docs/m1-verification.md](docs/m1-verification.md) for the current M1
-verification contract, [docs/m0-verification.md](docs/m0-verification.md) for
-the original target smoke evidence, and
+verification contract, [docs/m2a-verification.md](docs/m2a-verification.md) for
+the host-only Qwen3.5 loader evidence,
+[docs/m0-verification.md](docs/m0-verification.md) for the original target
+smoke evidence, and
 [docs/provenance/dependencies.md](docs/provenance/dependencies.md) for
 dependency provenance.
