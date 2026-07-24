@@ -1,0 +1,115 @@
+#include "../model/qwen35_config.hpp"
+
+#include "assert_enabled.hpp"
+
+#include <cassert>
+#include <cmath>
+#include <cstdint>
+#include <stdexcept>
+#include <string>
+
+namespace {
+
+void put_u32(brt::gguf::Catalog &catalog, const std::string &key,
+             std::uint32_t value) {
+  catalog.metadata.emplace(key, brt::gguf::MetadataValue{value});
+}
+
+void put_f32(brt::gguf::Catalog &catalog, const std::string &key, float value) {
+  catalog.metadata.emplace(key, brt::gguf::MetadataValue{value});
+}
+
+brt::gguf::Catalog official_qwen35_9b_metadata() {
+  brt::gguf::Catalog catalog;
+  catalog.metadata.emplace("general.architecture",
+                           brt::gguf::MetadataValue{std::string{"qwen35"}});
+  put_u32(catalog, "qwen35.block_count", 32);
+  put_u32(catalog, "qwen35.context_length", 262144);
+  put_u32(catalog, "qwen35.embedding_length", 4096);
+  put_u32(catalog, "qwen35.feed_forward_length", 12288);
+  put_u32(catalog, "qwen35.attention.head_count", 16);
+  put_u32(catalog, "qwen35.attention.head_count_kv", 4);
+  put_u32(catalog, "qwen35.attention.key_length", 256);
+  put_u32(catalog, "qwen35.attention.value_length", 256);
+  put_f32(catalog, "qwen35.attention.layer_norm_rms_epsilon", 1.0e-6F);
+  put_f32(catalog, "qwen35.rope.freq_base", 10'000'000.0F);
+  put_u32(catalog, "qwen35.rope.dimension_count", 64);
+  put_u32(catalog, "qwen35.ssm.conv_kernel", 4);
+  put_u32(catalog, "qwen35.ssm.state_size", 128);
+  put_u32(catalog, "qwen35.ssm.group_count", 16);
+  put_u32(catalog, "qwen35.ssm.time_step_rank", 32);
+  put_u32(catalog, "qwen35.ssm.inner_size", 4096);
+  put_u32(catalog, "qwen35.full_attention_interval", 4);
+
+  brt::gguf::MetadataArray tokens{
+      .element_type = brt::gguf::MetadataType::string,
+      .values = {},
+  };
+  tokens.values.reserve(248320);
+  for (std::uint32_t index = 0; index < 248320; ++index) {
+    tokens.values.emplace_back(std::string{});
+  }
+  catalog.metadata.emplace("tokenizer.ggml.tokens",
+                           brt::gguf::MetadataValue{std::move(tokens)});
+  return catalog;
+}
+
+template <class Fn> void expect_config_error(Fn &&fn) {
+  bool thrown = false;
+  try {
+    fn();
+  } catch (const brt::model::ConfigError &) {
+    thrown = true;
+  }
+  assert(thrown);
+}
+
+} // namespace
+
+int main() {
+  const auto catalog = official_qwen35_9b_metadata();
+  const auto config = brt::model::derive_qwen35_config(catalog);
+
+  assert(config.vocabulary_size == 248320);
+  assert(config.hidden_size == 4096);
+  assert(config.intermediate_size == 12288);
+  assert(config.context_length == 262144);
+  assert(config.blocks.size() == 32);
+  assert(config.full_attention_head_count == 16);
+  assert(config.full_attention_kv_head_count == 4);
+  assert(config.full_attention_head_dimension == 256);
+  assert(config.linear_key_head_count == 16);
+  assert(config.linear_value_head_count == 32);
+  assert(config.linear_head_dimension == 128);
+  assert(config.linear_convolution_width == 4);
+  assert(config.rotary_dimension == 64);
+  assert(std::abs(config.rms_norm_epsilon - 1.0e-6F) < 1.0e-12F);
+
+  std::size_t full_count = 0;
+  for (std::size_t index = 0; index < config.blocks.size(); ++index) {
+    assert(config.blocks[index].index == index);
+    const bool expected_full = (index + 1) % 4 == 0;
+    assert((config.blocks[index].kind ==
+            brt::model::Qwen35BlockKind::full_attention) == expected_full);
+    full_count += expected_full ? 1 : 0;
+  }
+  assert(full_count == 8);
+
+  auto wrong_architecture = catalog;
+  wrong_architecture.metadata.at("general.architecture") =
+      brt::gguf::MetadataValue{std::string{"qwen3"}};
+  expect_config_error(
+      [&] { (void)brt::model::derive_qwen35_config(wrong_architecture); });
+
+  auto invalid_interval = catalog;
+  invalid_interval.metadata.at("qwen35.full_attention_interval") =
+      brt::gguf::MetadataValue{std::uint32_t{0}};
+  expect_config_error(
+      [&] { (void)brt::model::derive_qwen35_config(invalid_interval); });
+
+  auto invalid_heads = catalog;
+  invalid_heads.metadata.at("qwen35.attention.head_count") =
+      brt::gguf::MetadataValue{std::uint32_t{15}};
+  expect_config_error(
+      [&] { (void)brt::model::derive_qwen35_config(invalid_heads); });
+}
