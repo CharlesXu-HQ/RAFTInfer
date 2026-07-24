@@ -1,6 +1,8 @@
 #include "../reference/bf16.hpp"
 #include "../reference/operators.hpp"
 
+#include "assert_enabled.hpp"
+
 #include <algorithm>
 #include <array>
 #include <bit>

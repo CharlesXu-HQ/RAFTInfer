@@ -1,5 +1,7 @@
 #include "../benchmarks/benchmark_record.hpp"
 
+#include "assert_enabled.hpp"
+
 #include <algorithm>
 #include <cassert>
 #include <limits>

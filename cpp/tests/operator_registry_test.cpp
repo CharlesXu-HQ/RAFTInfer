@@ -2,6 +2,8 @@
 
 #include <brt/tensor.h>
 
+#include "assert_enabled.hpp"
+
 #include <cassert>
 #include <cstddef>
 #include <cstdint>

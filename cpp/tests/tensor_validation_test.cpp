@@ -1,5 +1,7 @@
 #include "../operators/tensor_validation.hpp"
 
+#include "assert_enabled.hpp"
+
 #include <cassert>
 #include <stdexcept>
 

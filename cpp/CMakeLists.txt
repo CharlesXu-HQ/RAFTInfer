@@ -32,28 +32,30 @@ target_link_libraries(brt-smoke PRIVATE brt_cpp)
 
 if(BRT_BUILD_TESTS)
   enable_testing()
-  add_executable(brt_c_api_test tests/c_api_test.cpp)
+
+  function(brt_add_assert_test target)
+    add_executable(${target} ${ARGN})
+    target_compile_options(${target} PRIVATE
+      $<$<CXX_COMPILER_ID:MSVC>:/UNDEBUG>
+      $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-UNDEBUG>)
+    add_test(NAME ${target} COMMAND ${target})
+  endfunction()
+
+  brt_add_assert_test(brt_c_api_test tests/c_api_test.cpp)
   target_link_libraries(brt_c_api_test PRIVATE brt_cpp)
-  add_test(NAME brt_c_api_test COMMAND brt_c_api_test)
-  add_executable(brt_tensor_validation_test tests/tensor_validation_test.cpp)
+  brt_add_assert_test(brt_tensor_validation_test tests/tensor_validation_test.cpp)
   target_link_libraries(brt_tensor_validation_test PRIVATE brt_cpp)
-  add_test(NAME brt_tensor_validation_test COMMAND brt_tensor_validation_test)
-  add_executable(brt_workspace_layout_test tests/workspace_layout_test.cpp)
+  brt_add_assert_test(brt_workspace_layout_test tests/workspace_layout_test.cpp)
   target_link_libraries(brt_workspace_layout_test PRIVATE brt_cpp)
-  add_test(NAME brt_workspace_layout_test COMMAND brt_workspace_layout_test)
-  add_executable(brt_operator_registry_test tests/operator_registry_test.cpp)
+  brt_add_assert_test(brt_operator_registry_test tests/operator_registry_test.cpp)
   target_link_libraries(brt_operator_registry_test PRIVATE brt_cpp)
-  add_test(NAME brt_operator_registry_test COMMAND brt_operator_registry_test)
-  add_executable(brt_reference_operators_test tests/reference_operators_test.cpp)
+  brt_add_assert_test(brt_reference_operators_test tests/reference_operators_test.cpp)
   target_link_libraries(brt_reference_operators_test PRIVATE brt_reference)
-  add_test(NAME brt_reference_operators_test COMMAND brt_reference_operators_test)
-  add_executable(brt_correctness_test tests/correctness_test.cpp)
+  brt_add_assert_test(brt_correctness_test tests/correctness_test.cpp)
   target_link_libraries(brt_correctness_test PRIVATE brt_reference)
-  add_test(NAME brt_correctness_test COMMAND brt_correctness_test)
-  add_executable(brt_benchmark_record_test
+  brt_add_assert_test(brt_benchmark_record_test
     tests/benchmark_record_test.cpp)
   target_link_libraries(brt_benchmark_record_test PRIVATE brt_cpp)
-  add_test(NAME brt_benchmark_record_test COMMAND brt_benchmark_record_test)
   add_test(
     NAME brt_c_api_source_test
     COMMAND ${CMAKE_COMMAND}

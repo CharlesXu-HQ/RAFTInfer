@@ -1,5 +1,7 @@
 #include "../execution/workspace_layout.hpp"
 
+#include "assert_enabled.hpp"
+
 #include <cassert>
 #include <cstdint>
 #include <limits>

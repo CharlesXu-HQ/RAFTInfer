@@ -1,5 +1,7 @@
 #include "../reference/correctness.hpp"
 
+#include "assert_enabled.hpp"
+
 #include <array>
 #include <cassert>
 #include <cmath>

@@ -1,5 +1,7 @@
 #include <brt/c_api.h>
 
+#include "assert_enabled.hpp"
+
 #include <cassert>
 #include <cstring>
 
