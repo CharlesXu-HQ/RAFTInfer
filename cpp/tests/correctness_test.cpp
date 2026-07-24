@@ -9,8 +9,9 @@
 
 namespace {
 
-void expect_near(float actual, float expected, float tolerance = 1.0e-6F) {
-  if (std::fabs(actual - expected) > tolerance) {
+void expect_near(double actual, double expected, double tolerance = 1.0e-6) {
+  if (!std::isfinite(actual) || !std::isfinite(expected) ||
+      std::fabs(actual - expected) > tolerance) {
     assert(false);
   }
 }
@@ -91,6 +92,17 @@ int main() {
   }
 
   {
+    const std::array<float, 0> empty{};
+    const auto metrics = compare(empty, empty);
+    assert(metrics.elements == 0);
+    expect_near(metrics.max_absolute_error, 0.0);
+    expect_near(metrics.max_relative_error, 0.0);
+    expect_near(metrics.cosine_similarity, 1.0);
+    assert(metrics.nonfinite_mismatches == 0);
+    assert(passes_tolerance(metrics, Tolerance{.min_cosine_similarity = 1.0F}));
+  }
+
+  {
     const auto metrics = compare(std::array{0.0F, 0.0F}, std::array{1.0F, 0.0F});
     expect_near(metrics.cosine_similarity, 0.0F);
     assert(!passes_tolerance(metrics, Tolerance{.min_cosine_similarity = 0.1F}));
@@ -103,6 +115,33 @@ int main() {
   {
     auto metrics = compare(std::array{1.0e-9F}, std::array{2.0e-9F}, 1.0e-6F);
     expect_near(metrics.max_relative_error, 0.001F);
+  }
+
+  {
+    const float max = std::numeric_limits<float>::max();
+    const auto metrics = compare(std::array{max}, std::array{-max});
+    assert(std::isfinite(metrics.max_absolute_error));
+    expect_near(metrics.max_relative_error, 2.0);
+    assert(metrics.max_absolute_error > 6.0e38);
+  }
+
+  {
+    const auto exact = compare(std::array{1.0F}, std::array{1.0F});
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const float infinity = std::numeric_limits<float>::infinity();
+
+    assert(!passes_tolerance(exact, Tolerance{.max_absolute_error = -1.0F}));
+    assert(!passes_tolerance(exact, Tolerance{.max_absolute_error = nan}));
+    assert(!passes_tolerance(exact, Tolerance{.max_absolute_error = infinity}));
+
+    assert(!passes_tolerance(exact, Tolerance{.max_relative_error = -1.0F}));
+    assert(!passes_tolerance(exact, Tolerance{.max_relative_error = nan}));
+    assert(!passes_tolerance(exact, Tolerance{.max_relative_error = infinity}));
+
+    assert(!passes_tolerance(exact, Tolerance{.min_cosine_similarity = nan}));
+    assert(!passes_tolerance(exact, Tolerance{.min_cosine_similarity = infinity}));
+    assert(!passes_tolerance(exact, Tolerance{.min_cosine_similarity = 1.1F}));
+    assert(!passes_tolerance(exact, Tolerance{.min_cosine_similarity = -1.1F}));
   }
 
   {

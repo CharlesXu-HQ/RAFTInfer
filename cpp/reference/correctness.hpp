@@ -7,17 +7,17 @@
 namespace brt::reference {
 
 struct CorrectnessMetrics {
-  float max_absolute_error;
-  float max_relative_error;
-  float cosine_similarity;
+  double max_absolute_error;
+  double max_relative_error;
+  double cosine_similarity;
   std::size_t nonfinite_mismatches;
   std::size_t elements;
 };
 
 struct Tolerance {
-  std::optional<float> max_absolute_error;
-  std::optional<float> max_relative_error;
-  std::optional<float> min_cosine_similarity;
+  std::optional<double> max_absolute_error;
+  std::optional<double> max_relative_error;
+  std::optional<double> min_cosine_similarity;
 };
 
 // Relative error uses abs(candidate - reference) / max(abs(reference), relative_floor).
@@ -27,7 +27,7 @@ struct Tolerance {
 CorrectnessMetrics compare(
     std::span<const float> candidate,
     std::span<const float> reference,
-    float relative_floor = 1.0e-12F);
+    double relative_floor = 1.0e-12);
 
 // Fails on any non-finite mismatch, then checks only thresholds set by the
 // operator-local tolerance.
