@@ -13,7 +13,7 @@ target_compile_features(brt_cpp PUBLIC cxx_std_20)
 target_include_directories(brt_cpp PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_definitions(brt_cpp PRIVATE BRT_ENABLE_CUDA=$<BOOL:${BRT_ENABLE_CUDA}>)
 
-add_library(brt_reference STATIC reference/operators.cpp reference/correctness.cpp)
+add_library(brt_reference STATIC reference/operators.cpp reference/correctness.cpp reference/qwen35.cpp)
 target_compile_features(brt_reference PUBLIC cxx_std_20)
 target_include_directories(brt_reference PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/reference)
 
@@ -58,6 +58,8 @@ if(BRT_BUILD_TESTS)
   target_link_libraries(brt_operator_registry_test PRIVATE brt_cpp)
   brt_add_assert_test(brt_reference_operators_test tests/reference_operators_test.cpp)
   target_link_libraries(brt_reference_operators_test PRIVATE brt_reference)
+  brt_add_assert_test(brt_qwen35_reference_test tests/qwen35_reference_test.cpp)
+  target_link_libraries(brt_qwen35_reference_test PRIVATE brt_reference brt_cpp)
   brt_add_assert_test(brt_correctness_test tests/correctness_test.cpp)
   target_link_libraries(brt_correctness_test PRIVATE brt_reference)
   brt_add_assert_test(brt_benchmark_record_test
