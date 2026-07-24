@@ -9,6 +9,11 @@ pub struct BrtEngineHandle {
 }
 
 #[repr(C)]
+pub struct BrtModelHandle {
+    _private: [u8; 0],
+}
+
+#[repr(C)]
 pub struct BrtEngineConfig {
     pub struct_size: usize,
     pub device_id: i32,
@@ -29,6 +34,14 @@ pub struct BrtSmokeResult {
     pub checksum: u64,
 }
 
+#[repr(C)]
+pub struct BrtOwnedBuffer {
+    pub struct_size: usize,
+    pub version: u32,
+    pub data: *mut u8,
+    pub size: usize,
+}
+
 unsafe extern "C" {
     pub fn brt_engine_create(
         config: *const BrtEngineConfig,
@@ -40,5 +53,16 @@ unsafe extern "C" {
         engine: *mut BrtEngineHandle,
         out_result: *mut BrtSmokeResult,
     ) -> BrtStatus;
+    pub fn brt_engine_load_model(
+        engine: *mut BrtEngineHandle,
+        gguf_path: *const c_char,
+        out_model: *mut *mut BrtModelHandle,
+    ) -> BrtStatus;
+    pub fn brt_model_destroy(model: *mut BrtModelHandle);
+    pub fn brt_model_copy_tokenizer_spec(
+        model: *const BrtModelHandle,
+        out_buffer: *mut BrtOwnedBuffer,
+    ) -> BrtStatus;
+    pub fn brt_owned_buffer_free(buffer: *mut BrtOwnedBuffer);
     pub fn brt_last_error_message() -> *const c_char;
 }

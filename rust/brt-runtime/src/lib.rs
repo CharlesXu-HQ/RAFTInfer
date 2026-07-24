@@ -1,4 +1,11 @@
-use std::{ffi::CStr, fmt, marker::PhantomData, ptr::NonNull, rc::Rc};
+use std::{
+    ffi::{CStr, CString},
+    fmt,
+    marker::PhantomData,
+    path::Path,
+    ptr::NonNull,
+    rc::Rc,
+};
 
 #[derive(Clone, Copy, Debug)]
 pub struct EngineConfig {
@@ -41,6 +48,19 @@ pub struct Engine {
     _not_send_sync: PhantomData<Rc<()>>,
 }
 
+#[derive(Debug)]
+pub struct Model<'engine> {
+    raw: NonNull<brt_sys::BrtModelHandle>,
+    _engine: PhantomData<&'engine Engine>,
+    _not_send_sync: PhantomData<Rc<()>>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TokenizerSpec {
+    pub version: u32,
+    pub bytes: Vec<u8>,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SmokeResult {
     pub device_id: i32,
@@ -78,11 +98,60 @@ impl Engine {
             checksum: native.checksum,
         })
     }
+
+    pub fn load_model<'engine>(
+        &'engine self,
+        gguf_path: impl AsRef<Path>,
+    ) -> Result<Model<'engine>, Error> {
+        let path = gguf_path.as_ref().to_string_lossy();
+        let native_path = CString::new(path.as_bytes()).map_err(|_| Error {
+            code: brt_sys::BRT_STATUS_UNSUPPORTED,
+            message: "GGUF path contains an interior NUL byte".to_owned(),
+        })?;
+        let mut raw = std::ptr::null_mut();
+        let status = unsafe {
+            brt_sys::brt_engine_load_model(self.raw.as_ptr(), native_path.as_ptr(), &mut raw)
+        };
+        status_to_result(status)?;
+        Ok(Model {
+            raw: NonNull::new(raw).expect("successful model load returned null"),
+            _engine: PhantomData,
+            _not_send_sync: PhantomData,
+        })
+    }
 }
 
 impl Drop for Engine {
     fn drop(&mut self) {
         unsafe { brt_sys::brt_engine_destroy(self.raw.as_ptr()) }
+    }
+}
+
+impl Model<'_> {
+    pub fn tokenizer_spec(&self) -> Result<TokenizerSpec, Error> {
+        let mut native = brt_sys::BrtOwnedBuffer {
+            struct_size: std::mem::size_of::<brt_sys::BrtOwnedBuffer>(),
+            version: 0,
+            data: std::ptr::null_mut(),
+            size: 0,
+        };
+        let status =
+            unsafe { brt_sys::brt_model_copy_tokenizer_spec(self.raw.as_ptr(), &mut native) };
+        status_to_result(status)?;
+        let bytes = if native.size == 0 {
+            Vec::new()
+        } else {
+            unsafe { std::slice::from_raw_parts(native.data, native.size) }.to_vec()
+        };
+        let version = native.version;
+        unsafe { brt_sys::brt_owned_buffer_free(&mut native) };
+        Ok(TokenizerSpec { version, bytes })
+    }
+}
+
+impl Drop for Model<'_> {
+    fn drop(&mut self) {
+        unsafe { brt_sys::brt_model_destroy(self.raw.as_ptr()) }
     }
 }
 

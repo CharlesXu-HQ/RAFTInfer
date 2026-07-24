@@ -1,5 +1,7 @@
 #include "engine.hpp"
 
+#include "../model/model.hpp"
+
 #if BRT_ENABLE_CUDA
 #include "../foundation/device_context.hpp"
 #endif
@@ -8,10 +10,13 @@
 
 namespace brt {
 
-Engine::Engine(const BrtEngineConfig& config)
-    : device_id_(config.device_id), initial_pool_bytes_(config.initial_pool_bytes) {
-  if (device_id_ < 0) throw std::invalid_argument("device_id must be non-negative");
-  if (initial_pool_bytes_ == 0) throw std::invalid_argument("initial_pool_bytes must be non-zero");
+Engine::Engine(const BrtEngineConfig &config)
+    : device_id_(config.device_id),
+      initial_pool_bytes_(config.initial_pool_bytes) {
+  if (device_id_ < 0)
+    throw std::invalid_argument("device_id must be non-negative");
+  if (initial_pool_bytes_ == 0)
+    throw std::invalid_argument("initial_pool_bytes must be non-zero");
 #if BRT_ENABLE_CUDA
   device_ = std::make_unique<DeviceContext>(device_id_, initial_pool_bytes_);
 #endif
@@ -35,4 +40,9 @@ BrtSmokeResult Engine::run_smoke() {
 #endif
 }
 
-}  // namespace brt
+std::unique_ptr<model::Model>
+Engine::load_model(const std::string &gguf_path) const {
+  return std::make_unique<model::Model>(gguf_path);
+}
+
+} // namespace brt

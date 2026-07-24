@@ -4,6 +4,7 @@ target_sources(brt_cpp PRIVATE
   src/engine.cpp
   operators/tensor_validation.cpp
   model/gguf_reader.cpp
+  model/model.cpp
   model/qwen35_config.cpp
   model/qwen35_manifest.cpp)
 target_sources(brt_cpp PRIVATE registry/operator_registry.cpp)

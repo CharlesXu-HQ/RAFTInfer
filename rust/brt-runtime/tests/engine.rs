@@ -27,3 +27,12 @@ fn smoke_reports_unavailable_without_cuda_backend() {
     assert_eq!(error.code(), 2);
     assert!(error.to_string().contains("CUDA backend is not enabled"));
 }
+
+#[test]
+fn missing_model_is_an_atomic_load_failure() {
+    let engine = Engine::new(EngineConfig::default()).expect("engine creation");
+    let error = engine
+        .load_model("/missing/brt-qwen35.gguf")
+        .expect_err("missing model must fail");
+    assert!(error.to_string().contains("brt-qwen35.gguf"));
+}
