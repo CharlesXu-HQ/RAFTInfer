@@ -106,6 +106,7 @@ observed smoke output.
 - Verification commit: `979f1c1`
 - Target: `charles@192.168.124.8`
 - GPU: GPU0 NVIDIA GeForce RTX 5090
+- Compute capability: 12.0
 - Driver: 580.159.03
 - Preflight state: no compute applications; free memory 32095 MiB; utilization
   0%; temperature 34 C
@@ -115,6 +116,7 @@ observed smoke output.
 - Container user: `rapids`
 - Host compiler: C++ GNU 13.3.0
 - CUDA compiler/toolkit: 13.2.78
+- CUDA compile target: `sm_120a`
 - RMM: 26.06.0
 - RAFT: 26.06.0
 - Build result: 12/12 CUDA build steps passed, including
