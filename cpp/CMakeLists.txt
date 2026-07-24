@@ -1,5 +1,5 @@
 add_library(brt_cpp STATIC src/status.cpp)
-target_sources(brt_cpp PRIVATE src/c_api.cpp src/engine.cpp)
+target_sources(brt_cpp PRIVATE src/c_api.cpp src/engine.cpp operators/tensor_validation.cpp)
 target_compile_features(brt_cpp PUBLIC cxx_std_20)
 target_include_directories(brt_cpp PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_definitions(brt_cpp PRIVATE BRT_ENABLE_CUDA=$<BOOL:${BRT_ENABLE_CUDA}>)
@@ -26,6 +26,9 @@ if(BRT_BUILD_TESTS)
   add_executable(brt_c_api_test tests/c_api_test.cpp)
   target_link_libraries(brt_c_api_test PRIVATE brt_cpp)
   add_test(NAME brt_c_api_test COMMAND brt_c_api_test)
+  add_executable(brt_tensor_validation_test tests/tensor_validation_test.cpp)
+  target_link_libraries(brt_tensor_validation_test PRIVATE brt_cpp)
+  add_test(NAME brt_tensor_validation_test COMMAND brt_tensor_validation_test)
   add_test(
     NAME brt_c_api_source_test
     COMMAND ${CMAKE_COMMAND}
