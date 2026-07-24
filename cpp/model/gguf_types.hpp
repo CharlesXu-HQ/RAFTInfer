@@ -131,6 +131,7 @@ struct ReaderLimits {
   std::uint64_t max_tensor_count{1'000'000};
   std::uint64_t max_string_bytes{64 * 1024 * 1024};
   std::uint64_t max_array_elements{16 * 1024 * 1024};
+  std::uint64_t max_catalog_bytes{512 * 1024 * 1024};
   std::uint32_t max_tensor_rank{4};
 };
 

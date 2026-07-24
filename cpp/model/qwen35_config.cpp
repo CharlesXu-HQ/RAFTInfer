@@ -50,6 +50,22 @@ void require_nonzero(std::uint32_t value, const std::string &key) {
   }
 }
 
+Qwen35BlockKind parse_layer_type(const gguf::MetadataValue &value,
+                                 std::uint32_t index) {
+  const auto *name = value.get_if<std::string>();
+  if (name == nullptr) {
+    throw ConfigError("qwen35.layer_types must be a string array");
+  }
+  if (*name == "linear_attention") {
+    return Qwen35BlockKind::linear_attention;
+  }
+  if (*name == "full_attention") {
+    return Qwen35BlockKind::full_attention;
+  }
+  throw ConfigError("qwen35.layer_types has an invalid layer type at block " +
+                    std::to_string(index));
+}
+
 } // namespace
 
 Qwen35Config derive_qwen35_config(const gguf::Catalog &catalog) {
@@ -160,14 +176,33 @@ Qwen35Config derive_qwen35_config(const gguf::Catalog &catalog) {
         "Qwen3.5 block count must be divisible by the attention interval");
   }
 
+  const auto *layer_types_value = catalog.find_metadata("qwen35.layer_types");
+  const gguf::MetadataArray *layer_types = nullptr;
+  if (layer_types_value != nullptr) {
+    layer_types = layer_types_value->get_if<gguf::MetadataArray>();
+    if (layer_types == nullptr ||
+        layer_types->element_type != gguf::MetadataType::string ||
+        layer_types->values.size() != block_count) {
+      throw ConfigError(
+          "qwen35.layer_types must be a string array matching block count");
+    }
+  }
+
   config.blocks.reserve(block_count);
   for (std::uint32_t index = 0; index < block_count; ++index) {
-    const bool full_attention = (index + 1) % full_attention_interval == 0;
-    config.blocks.push_back(Qwen35BlockPlan{
-        .index = index,
-        .kind = full_attention ? Qwen35BlockKind::full_attention
-                               : Qwen35BlockKind::linear_attention,
-    });
+    const bool interval_full_attention =
+        (index + 1) % full_attention_interval == 0;
+    const auto kind =
+        layer_types == nullptr
+            ? (interval_full_attention ? Qwen35BlockKind::full_attention
+                                       : Qwen35BlockKind::linear_attention)
+            : parse_layer_type(layer_types->values[index], index);
+    if (layer_types != nullptr && ((kind == Qwen35BlockKind::full_attention) !=
+                                   interval_full_attention)) {
+      throw ConfigError(
+          "qwen35.layer_types disagrees with qwen35.full_attention_interval");
+    }
+    config.blocks.push_back(Qwen35BlockPlan{.index = index, .kind = kind});
   }
   return config;
 }

@@ -24,6 +24,15 @@
 namespace brt::model {
 namespace {
 
+bool checked_add_u64(std::uint64_t left, std::uint64_t right,
+                     std::uint64_t &result) {
+  if (right > std::numeric_limits<std::uint64_t>::max() - left) {
+    return false;
+  }
+  result = left + right;
+  return true;
+}
+
 class MappedFile {
 public:
   explicit MappedFile(const std::string &path) {
@@ -219,6 +228,34 @@ public:
         manifest(validate_qwen35_manifest(catalog, config)),
         tokenizer_spec_bytes(serialize_tokenizer_spec(catalog)) {}
 
+  std::span<const std::uint8_t>
+  tensor_payload(const gguf::TensorInfo &tensor) const {
+    const auto *catalog_tensor = catalog.find_tensor(tensor.name);
+    if (catalog_tensor == nullptr ||
+        catalog_tensor->dimensions != tensor.dimensions ||
+        catalog_tensor->type != tensor.type ||
+        catalog_tensor->offset != tensor.offset ||
+        catalog_tensor->byte_size != tensor.byte_size) {
+      throw ModelIoError("GGUF tensor descriptor does not belong to model: " +
+                         tensor.name);
+    }
+    const auto bytes = file.bytes();
+    std::uint64_t begin = 0;
+    std::uint64_t end = 0;
+    if (!checked_add_u64(catalog.tensor_data_offset, tensor.offset, begin) ||
+        !checked_add_u64(begin, tensor.byte_size, end) || end > bytes.size()) {
+      throw ModelIoError("GGUF tensor payload is outside the mapped file: " +
+                         tensor.name);
+    }
+    if (begin > std::numeric_limits<std::size_t>::max() ||
+        tensor.byte_size > std::numeric_limits<std::size_t>::max()) {
+      throw ModelIoError(
+          "GGUF tensor payload is too large for this platform: " + tensor.name);
+    }
+    return bytes.subspan(static_cast<std::size_t>(begin),
+                         static_cast<std::size_t>(tensor.byte_size));
+  }
+
   MappedFile file;
   gguf::Catalog catalog;
   Qwen35Config config;
@@ -233,6 +270,11 @@ Model::~Model() = default;
 
 std::span<const std::uint8_t> Model::tokenizer_spec() const noexcept {
   return impl_->tokenizer_spec_bytes;
+}
+
+std::span<const std::uint8_t>
+Model::tensor_payload(const gguf::TensorInfo &tensor) const {
+  return impl_->tensor_payload(tensor);
 }
 
 } // namespace brt::model

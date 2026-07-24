@@ -1,16 +1,21 @@
 #include "../model/gguf_reader.hpp"
 #include "../model/gguf_types.hpp"
+#include "../model/model.hpp"
 
 #include "assert_enabled.hpp"
+#include "qwen35_gguf_fixture.hpp"
 
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <span>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
+#include <unistd.h>
 #include <vector>
 
 namespace {
@@ -92,6 +97,16 @@ template <class Fn> void expect_parse_error(Fn &&fn) {
   assert(thrown);
 }
 
+template <class Fn> void expect_model_io_error(Fn &&fn) {
+  bool thrown = false;
+  try {
+    fn();
+  } catch (const brt::model::ModelIoError &) {
+    thrown = true;
+  }
+  assert(thrown);
+}
+
 } // namespace
 
 int main() {
@@ -142,6 +157,31 @@ int main() {
   assert(parsed.require_tensor("token_embd.weight").dimensions ==
          std::vector<std::uint64_t>({2, 2}));
   assert(parsed.require_tensor("token_embd.weight").byte_size == 8);
+
+  brt::gguf::ReaderLimits tiny_catalog_limit;
+  tiny_catalog_limit.max_catalog_bytes = 16;
+  expect_parse_error([&] {
+    (void)brt::gguf::read_catalog(std::span{bytes}, tiny_catalog_limit);
+  });
+
+  const auto model_bytes = brt::test::make_qwen35_gguf_fixture();
+  const auto model_catalog = brt::gguf::read_catalog(std::span{model_bytes});
+  const auto temporary_path =
+      std::filesystem::temp_directory_path() /
+      ("brt_gguf_reader_test_" + std::to_string(getpid()) + ".gguf");
+  {
+    std::ofstream output{temporary_path, std::ios::binary};
+    output.write(reinterpret_cast<const char *>(model_bytes.data()),
+                 static_cast<std::streamsize>(model_bytes.size()));
+  }
+  brt::model::Model model{temporary_path.string()};
+  assert(model.tensor_payload(model_catalog.require_tensor("token_embd.weight"))
+             .size() == 256);
+
+  auto outside = model_catalog.require_tensor("token_embd.weight");
+  outside.offset = model_bytes.size();
+  expect_model_io_error([&] { (void)model.tensor_payload(outside); });
+  std::filesystem::remove(temporary_path);
 
   auto bad_magic = bytes;
   bad_magic[0] = 'X';

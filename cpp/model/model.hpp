@@ -6,6 +6,8 @@
 #include <stdexcept>
 #include <string>
 
+#include "gguf_types.hpp"
+
 namespace brt::model {
 
 class ModelIoError : public std::runtime_error {
@@ -25,6 +27,8 @@ public:
   Model &operator=(Model &&) = delete;
 
   std::span<const std::uint8_t> tokenizer_spec() const noexcept;
+  std::span<const std::uint8_t>
+  tensor_payload(const gguf::TensorInfo &tensor) const;
 
 private:
   class Impl;

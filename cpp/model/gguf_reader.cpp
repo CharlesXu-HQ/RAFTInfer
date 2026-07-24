@@ -63,6 +63,7 @@ public:
     }
     const auto size = static_cast<std::size_t>(length);
     require(size, context);
+    charge_catalog_bytes(length, context + " storage");
     const char *first =
         reinterpret_cast<const char *>(bytes_.data() + position_);
     std::string result(first, size);
@@ -74,20 +75,28 @@ public:
                            bool allow_array = true) {
     switch (type) {
     case MetadataType::uint8:
+      charge_catalog_bytes(sizeof(std::uint8_t), context + " storage");
       return MetadataValue{read_u8(context)};
     case MetadataType::int8:
+      charge_catalog_bytes(sizeof(std::int8_t), context + " storage");
       return MetadataValue{std::bit_cast<std::int8_t>(read_u8(context))};
     case MetadataType::uint16:
+      charge_catalog_bytes(sizeof(std::uint16_t), context + " storage");
       return MetadataValue{read_u16(context)};
     case MetadataType::int16:
+      charge_catalog_bytes(sizeof(std::int16_t), context + " storage");
       return MetadataValue{std::bit_cast<std::int16_t>(read_u16(context))};
     case MetadataType::uint32:
+      charge_catalog_bytes(sizeof(std::uint32_t), context + " storage");
       return MetadataValue{read_u32(context)};
     case MetadataType::int32:
+      charge_catalog_bytes(sizeof(std::int32_t), context + " storage");
       return MetadataValue{std::bit_cast<std::int32_t>(read_u32(context))};
     case MetadataType::float32:
+      charge_catalog_bytes(sizeof(float), context + " storage");
       return MetadataValue{std::bit_cast<float>(read_u32(context))};
     case MetadataType::boolean: {
+      charge_catalog_bytes(sizeof(bool), context + " storage");
       const auto value = read_u8(context);
       if (value > 1) {
         throw ParseError(context + " has an invalid boolean value");
@@ -102,13 +111,25 @@ public:
       }
       return read_array(context);
     case MetadataType::uint64:
+      charge_catalog_bytes(sizeof(std::uint64_t), context + " storage");
       return MetadataValue{read_u64(context)};
     case MetadataType::int64:
+      charge_catalog_bytes(sizeof(std::int64_t), context + " storage");
       return MetadataValue{std::bit_cast<std::int64_t>(read_u64(context))};
     case MetadataType::float64:
+      charge_catalog_bytes(sizeof(double), context + " storage");
       return MetadataValue{std::bit_cast<double>(read_u64(context))};
     }
     throw ParseError(context + " has an unsupported metadata type");
+  }
+
+  void charge_tensor_dimensions(std::uint32_t rank, const std::string &name) {
+    std::uint64_t storage = 0;
+    if (!checked_multiply<std::uint64_t>(
+            rank, static_cast<std::uint64_t>(sizeof(std::uint64_t)), storage)) {
+      throw ParseError("tensor " + name + " dimension storage overflows");
+    }
+    charge_catalog_bytes(storage, "tensor " + name + " dimension storage");
   }
 
 private:
@@ -133,6 +154,13 @@ private:
     if (length > limits_.max_array_elements) {
       throw ParseError(context + " exceeds the GGUF array limit");
     }
+    std::uint64_t element_storage = 0;
+    if (!checked_multiply<std::uint64_t>(
+            length, static_cast<std::uint64_t>(sizeof(MetadataValue)),
+            element_storage)) {
+      throw ParseError(context + " catalog storage overflows");
+    }
+    charge_catalog_bytes(element_storage, context + " storage");
     MetadataArray result{.element_type = element_type, .values = {}};
     result.values.reserve(static_cast<std::size_t>(length));
     for (std::uint64_t index = 0; index < length; ++index) {
@@ -156,9 +184,21 @@ private:
     }
   }
 
+  void charge_catalog_bytes(std::uint64_t bytes, const std::string &context) {
+    std::uint64_t charged = 0;
+    if (!checked_add(catalog_bytes_, bytes, charged)) {
+      throw ParseError(context + " overflows the GGUF catalog byte counter");
+    }
+    if (charged > limits_.max_catalog_bytes) {
+      throw ParseError(context + " exceeds the GGUF catalog byte limit");
+    }
+    catalog_bytes_ = charged;
+  }
+
   std::span<const std::uint8_t> bytes_;
   const ReaderLimits &limits_;
   std::size_t position_{};
+  std::uint64_t catalog_bytes_{};
 };
 
 MetadataType metadata_type(std::uint32_t raw, const std::string &context) {
@@ -309,6 +349,7 @@ Catalog read_catalog(std::span<const std::uint8_t> bytes,
     if (rank == 0 || rank > limits.max_tensor_rank) {
       throw ParseError("tensor " + tensor.name + " has an invalid rank");
     }
+    reader.charge_tensor_dimensions(rank, tensor.name);
     tensor.dimensions.reserve(rank);
     for (std::uint32_t dimension = 0; dimension < rank; ++dimension) {
       tensor.dimensions.push_back(reader.read_u64("tensor dimension"));
