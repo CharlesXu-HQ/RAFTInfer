@@ -16,6 +16,7 @@ file(READ "${DEVICE_CONTEXT_HEADER}" header)
 file(READ "${DEVICE_CONTEXT_SOURCE}" source)
 file(READ "${WORKSPACE_ARENA_HEADER}" arena_header)
 file(READ "${WORKSPACE_ARENA_SOURCE}" arena_source)
+file(READ "${EXECUTION_CONTEXT_HEADER}" execution_context_header)
 
 require_match("${header}" "~DeviceContext\\(\\) noexcept" "non-throwing DeviceContext destructor")
 require_match("${header}" "class Resources;" "private resource owner declaration")
@@ -45,7 +46,12 @@ reject_match("${source}" "class DeviceAllocation" "per-smoke RMM allocation scop
 reject_match("${source}" "rmm/mr/device/" "pre-26.06 RMM device memory resource include path")
 
 require_match("${arena_header}" "class WorkspaceArena" "workspace arena owner")
+require_match("${arena_header}" "#include <rmm/resource_ref\\.hpp>" "workspace arena supported RMM resource_ref header")
+reject_match("${arena_header}" "#include <rmm/mr/device_memory_resource\\.hpp>" "workspace arena removed RMM device memory resource header")
 require_match("${arena_source}" "#include <rmm/aligned\\.hpp>" "workspace arena RMM allocation alignment header")
 require_match("${arena_source}" "allocate\\(stream_ref_, bytes_, rmm::CUDA_ALLOCATION_ALIGNMENT\\)" "explicit arena RMM allocation alignment")
 require_match("${arena_source}" "deallocate\\(stream_ref_, base, bytes_, rmm::CUDA_ALLOCATION_ALIGNMENT\\)" "matching explicit arena RMM deallocation alignment")
 require_match("${arena_source}" "cudaStreamSynchronize\\(stream_\\)" "arena destruction synchronization")
+
+require_match("${execution_context_header}" "#include <rmm/resource_ref\\.hpp>" "execution context supported RMM resource_ref header")
+reject_match("${execution_context_header}" "#include <rmm/mr/device_memory_resource\\.hpp>" "execution context removed RMM device memory resource header")

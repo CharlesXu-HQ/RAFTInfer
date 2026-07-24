@@ -3,7 +3,7 @@
 #include "workspace_arena.hpp"
 
 #include <raft/core/device_resources.hpp>
-#include <rmm/mr/device_memory_resource.hpp>
+#include <rmm/resource_ref.hpp>
 #include <cuda_runtime_api.h>
 
 namespace brt {

@@ -2,7 +2,7 @@
 
 #include "workspace_layout.hpp"
 
-#include <rmm/mr/device_memory_resource.hpp>
+#include <rmm/resource_ref.hpp>
 #include <cuda/stream_ref>
 #include <cuda_runtime_api.h>
 

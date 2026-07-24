@@ -47,5 +47,6 @@ if(BRT_BUILD_TESTS)
       -DDEVICE_CONTEXT_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/foundation/device_context.cu
       -DWORKSPACE_ARENA_HEADER=${CMAKE_CURRENT_SOURCE_DIR}/execution/workspace_arena.hpp
       -DWORKSPACE_ARENA_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/execution/workspace_arena.cu
+      -DEXECUTION_CONTEXT_HEADER=${CMAKE_CURRENT_SOURCE_DIR}/execution/execution_context.hpp
       -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/device_context_source_test.cmake)
 endif()
