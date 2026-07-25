@@ -142,7 +142,7 @@ fn applies_qwen35_no_tools_text_chat_template() {
 
     assert_eq!(
         rendered,
-        "<|im_start|>system\nYou are concise.<|im_end|>\n<|im_start|>user\n你好, GPU!<|im_end|>\n<|im_start|>assistant\n<think>\n"
+        "<|im_start|>system\nYou are concise.<|im_end|>\n<|im_start|>user\n你好, GPU!<|im_end|>\n<|im_start|>assistant\n<think>"
     );
 }
 
@@ -360,10 +360,10 @@ struct OfficialCase {
     tokens: Vec<i32>,
 }
 
-const OFFICIAL_CHAT_RENDERED: &str = "<|im_start|>system\nYou are concise.<|im_end|>\n<|im_start|>user\n你好, GPU!<|im_end|>\n<|im_start|>assistant\n<think>\n";
+const OFFICIAL_CHAT_RENDERED: &str = "<|im_start|>system\nYou are concise.<|im_end|>\n<|im_start|>user\n你好, GPU!<|im_end|>\n<|im_start|>assistant\n<think>";
 const OFFICIAL_CHAT_TOKENS: &[i32] = &[
     248045, 8678, 198, 2523, 513, 61446, 13, 248046, 198, 248045, 846, 198, 109266, 11, 21966, 0,
-    248046, 198, 248045, 74455, 198, 248068, 198,
+    248046, 198, 248045, 74455, 198, 248068,
 ];
 
 fn official_cases() -> Vec<OfficialCase> {

@@ -379,7 +379,7 @@ impl Tokenizer {
             rendered.push_str("<|im_end|>\n");
         }
         if add_generation_prompt {
-            rendered.push_str("<|im_start|>assistant\n<think>\n");
+            rendered.push_str("<|im_start|>assistant\n<think>");
         }
         Ok(rendered)
     }
