@@ -22,7 +22,6 @@
 #include <cassert>
 #include <cmath>
 #include <cstddef>
-#include <cstdio>
 #include <limits>
 #include <memory>
 #include <span>
@@ -175,18 +174,6 @@ void assert_matches(std::span<const float> actual,
                     std::span<const float> expected) {
   assert(actual.size() == expected.size());
   for (std::size_t index = 0; index < actual.size(); ++index) {
-    if (!close_enough(actual[index], expected[index])) {
-      std::fprintf(stderr,
-                   "gated-delta mismatch at index %zu: actual=%g expected=%g "
-                   "absolute=%g relative=%g\n",
-                   index, static_cast<double>(actual[index]),
-                   static_cast<double>(expected[index]),
-                   static_cast<double>(std::fabs(actual[index] -
-                                                 expected[index])),
-                   static_cast<double>(
-                       std::fabs(actual[index] - expected[index]) /
-                       std::max(std::fabs(expected[index]), 1.0e-6F)));
-    }
     assert(close_enough(actual[index], expected[index]));
   }
 }
