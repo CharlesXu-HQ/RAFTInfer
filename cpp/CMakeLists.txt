@@ -61,6 +61,10 @@ if(BRT_BUILD_TESTS)
   target_link_libraries(brt_reference_operators_test PRIVATE brt_reference)
   brt_add_assert_test(brt_qwen35_reference_test tests/qwen35_reference_test.cpp)
   target_link_libraries(brt_qwen35_reference_test PRIVATE brt_reference brt_cpp)
+  brt_add_assert_test(brt_qwen35_fixture_test tests/qwen35_fixture_test.cpp)
+  target_link_libraries(brt_qwen35_fixture_test PRIVATE brt_reference brt_cpp)
+  target_compile_definitions(brt_qwen35_fixture_test PRIVATE
+    BRT_QWEN35_FIXTURE_PATH="${CMAKE_SOURCE_DIR}/tests/fixtures/qwen35/tiny-layer-v1.bin")
   brt_add_assert_test(brt_correctness_test tests/correctness_test.cpp)
   target_link_libraries(brt_correctness_test PRIVATE brt_reference)
   brt_add_assert_test(brt_benchmark_record_test
