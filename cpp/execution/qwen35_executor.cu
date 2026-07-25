@@ -258,6 +258,12 @@ std::size_t workspace_estimate(const model::Qwen35Config &config,
   const std::size_t full_kv_width = checked_mul(
       config.full_attention_kv_head_count, config.full_attention_head_dimension,
       "full KV width overflow");
+  const std::size_t full_kv_cache_bytes =
+      checked_mul(checked_mul(max_context, std::size_t{2},
+                              "full attention KV cache element count overflow"),
+                  checked_mul(full_kv_width, sizeof(float),
+                              "full attention KV cache byte size overflow"),
+                  "full attention KV cache byte size overflow");
 
   std::size_t bytes = 0;
   auto add = [&](std::size_t value) {
@@ -322,10 +328,7 @@ std::size_t workspace_estimate(const model::Qwen35Config &config,
 
   for (const auto &block : config.blocks) {
     if (block.kind == model::Qwen35BlockKind::full_attention) {
-      add(checked_mul(max_context,
-                      checked_mul(2, full_kv_width * sizeof(float),
-                                  "KV cache byte size overflow"),
-                      "KV cache byte size overflow"));
+      add(full_kv_cache_bytes);
     } else {
       add(checked_mul(config.linear_convolution_width - 1,
                       qkv_width * sizeof(float),

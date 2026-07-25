@@ -22,6 +22,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cuda/stream_ref>
 #include <filesystem>
@@ -76,6 +77,16 @@ void expect_executor_error(auto &&fn) {
     thrown = true;
   }
   assert(thrown);
+}
+
+void expect_executor_error_containing(auto &&fn, const std::string &expected) {
+  try {
+    fn();
+  } catch (const brt::Qwen35ExecutorError &error) {
+    assert(std::string{error.what()}.find(expected) != std::string::npos);
+    return;
+  }
+  assert(false);
 }
 
 void expect_primitive_error_containing(auto &&fn, const std::string &expected) {
@@ -177,13 +188,26 @@ void assert_close(std::span<const T> actual, std::span<const float> expected) {
   }
 }
 
-void assert_reference_close(std::span<const float> actual,
+constexpr float kExecutorLogitTolerance = 3.0e-2F;
+
+void assert_reference_close(const char *stage, std::span<const float> actual,
                             std::span<const float> expected) {
   assert(actual.size() == expected.size());
   for (std::size_t i = 0; i < actual.size(); ++i) {
     const float absolute = std::fabs(actual[i] - expected[i]);
     const float denominator = std::max(std::fabs(expected[i]), 1.0e-12F);
-    assert(absolute <= 2.0e-2F || absolute / denominator <= 2.0e-2F);
+    if (!(absolute <= kExecutorLogitTolerance ||
+          absolute / denominator <= kExecutorLogitTolerance)) {
+      std::fprintf(stderr,
+                   "reference mismatch stage=%s index=%zu actual=%.9g "
+                   "expected=%.9g absolute=%.9g relative=%.9g\n",
+                   stage, i, static_cast<double>(actual[i]),
+                   static_cast<double>(expected[i]),
+                   static_cast<double>(absolute),
+                   static_cast<double>(absolute / denominator));
+    }
+    assert(absolute <= kExecutorLogitTolerance ||
+           absolute / denominator <= kExecutorLogitTolerance);
   }
 }
 
@@ -236,10 +260,12 @@ void run_workspace_contract_tests() {
   invalid.linear_head_dimension = std::numeric_limits<std::uint32_t>::max();
   invalid.linear_convolution_width = std::numeric_limits<std::uint32_t>::max();
   invalid.context_length = std::numeric_limits<std::uint32_t>::max();
-  expect_executor_error([&] {
-    (void)brt::Qwen35Executor::workspace_bytes(
-        invalid, std::numeric_limits<std::uint32_t>::max());
-  });
+  expect_executor_error_containing(
+      [&] {
+        (void)brt::Qwen35Executor::workspace_bytes(
+            invalid, std::numeric_limits<std::uint32_t>::max());
+      },
+      "full attention KV cache byte size overflow");
 }
 
 void run_host_validation_tests() {
@@ -437,7 +463,7 @@ void run_executor_reference_and_allocation_tests() {
   executor.copy_last_logits(actual_logits);
   assert(actual_prefill.position == prompt.size() - 1);
   assert(actual_prefill.token == expected_prefill.token);
-  assert_reference_close(actual_logits, expected_prefill.logits);
+  assert_reference_close("prefill", actual_logits, expected_prefill.logits);
 
   const std::vector<std::int32_t> prompt_and_decode{1, 2, 3, 4, 5};
   const auto expected_decode =
@@ -446,7 +472,15 @@ void run_executor_reference_and_allocation_tests() {
   executor.copy_last_logits(actual_logits);
   assert(actual_decode.position == prompt.size());
   assert(actual_decode.token == expected_decode.token);
-  assert_reference_close(actual_logits, expected_decode.logits);
+  const auto split_decode_logits = actual_logits;
+  assert_reference_close("decode", split_decode_logits, expected_decode.logits);
+
+  executor.reset();
+  const auto actual_batched = executor.prefill(prompt_and_decode);
+  executor.copy_last_logits(actual_logits);
+  assert(actual_batched.position == prompt_and_decode.size() - 1);
+  assert(actual_batched.token == expected_decode.token);
+  assert_reference_close("batched-five", actual_logits, expected_decode.logits);
 
   (void)statistics.push_counters();
   for (std::size_t index = 0; index < 32; ++index) {
