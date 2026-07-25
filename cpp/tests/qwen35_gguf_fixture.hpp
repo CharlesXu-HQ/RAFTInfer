@@ -68,21 +68,25 @@ append_string_array_metadata(std::vector<std::uint8_t> &bytes,
 struct Tensor {
   std::string name;
   std::vector<std::uint64_t> dimensions;
+  std::uint32_t type{};
   std::uint64_t offset{};
   std::uint64_t byte_size{};
 };
 
 inline void add_tensor(std::vector<Tensor> &tensors, std::uint64_t &next_offset,
                        std::string name,
-                       std::vector<std::uint64_t> dimensions) {
+                       std::vector<std::uint64_t> dimensions,
+                       std::uint32_t tensor_type) {
   std::uint64_t elements = 1;
   for (const auto dimension : dimensions) {
     elements *= dimension;
   }
-  const std::uint64_t byte_size = elements * 2;
+  const std::uint64_t element_size = tensor_type == 0 ? 4 : 2;
+  const std::uint64_t byte_size = elements * element_size;
   tensors.push_back(Tensor{
       .name = std::move(name),
       .dimensions = std::move(dimensions),
+      .type = tensor_type,
       .offset = next_offset,
       .byte_size = byte_size,
   });
@@ -96,7 +100,9 @@ inline std::string block_name(std::uint32_t index, const std::string &suffix) {
 } // namespace detail
 
 inline std::vector<std::uint8_t>
-make_qwen35_gguf_fixture(std::uint32_t tensor_type = 1) {
+make_qwen35_gguf_fixture(std::uint32_t tensor_type = 1,
+                         bool f32_auxiliary_tensors = false) {
+  constexpr std::uint32_t f32_tensor_type = 0;
   constexpr std::uint32_t vocabulary_size = 16;
   constexpr std::uint32_t hidden_size = 8;
   constexpr std::uint32_t intermediate_size = 16;
@@ -162,76 +168,65 @@ make_qwen35_gguf_fixture(std::uint32_t tensor_type = 1) {
 
   std::vector<detail::Tensor> tensors;
   std::uint64_t next_offset = 0;
-  detail::add_tensor(tensors, next_offset, "token_embd.weight",
-                     {hidden_size, vocabulary_size});
-  detail::add_tensor(tensors, next_offset, "output_norm.weight", {hidden_size});
-  detail::add_tensor(tensors, next_offset, "output.weight",
-                     {hidden_size, vocabulary_size});
+  const auto main_type = tensor_type;
+  const auto aux_type = f32_auxiliary_tensors ? f32_tensor_type : main_type;
+  const auto add_main = [&](std::string name,
+                            std::vector<std::uint64_t> dimensions) {
+    detail::add_tensor(tensors, next_offset, std::move(name),
+                       std::move(dimensions), main_type);
+  };
+  const auto add_aux = [&](std::string name,
+                           std::vector<std::uint64_t> dimensions) {
+    detail::add_tensor(tensors, next_offset, std::move(name),
+                       std::move(dimensions), aux_type);
+  };
+
+  add_main("token_embd.weight", {hidden_size, vocabulary_size});
+  add_aux("output_norm.weight", {hidden_size});
+  add_main("output.weight", {hidden_size, vocabulary_size});
 
   for (std::uint32_t block = 0; block < 4; ++block) {
-    detail::add_tensor(tensors, next_offset,
-                       detail::block_name(block, "attn_norm.weight"),
-                       {hidden_size});
-    detail::add_tensor(tensors, next_offset,
-                       detail::block_name(block, "post_attention_norm.weight"),
-                       {hidden_size});
-    detail::add_tensor(tensors, next_offset,
-                       detail::block_name(block, "ffn_gate.weight"),
-                       {hidden_size, intermediate_size});
-    detail::add_tensor(tensors, next_offset,
-                       detail::block_name(block, "ffn_down.weight"),
-                       {intermediate_size, hidden_size});
-    detail::add_tensor(tensors, next_offset,
-                       detail::block_name(block, "ffn_up.weight"),
-                       {hidden_size, intermediate_size});
+    add_aux(detail::block_name(block, "attn_norm.weight"), {hidden_size});
+    add_aux(detail::block_name(block, "post_attention_norm.weight"),
+            {hidden_size});
+    add_main(detail::block_name(block, "ffn_gate.weight"),
+             {hidden_size, intermediate_size});
+    add_main(detail::block_name(block, "ffn_down.weight"),
+             {intermediate_size, hidden_size});
+    add_main(detail::block_name(block, "ffn_up.weight"),
+             {hidden_size, intermediate_size});
 
     if (block == 3) {
-      detail::add_tensor(
-          tensors, next_offset, detail::block_name(block, "attn_q.weight"),
-          {hidden_size, full_head_count * full_head_dimension * 2});
-      detail::add_tensor(
-          tensors, next_offset, detail::block_name(block, "attn_k.weight"),
-          {hidden_size, full_kv_head_count * full_head_dimension});
-      detail::add_tensor(
-          tensors, next_offset, detail::block_name(block, "attn_v.weight"),
-          {hidden_size, full_kv_head_count * full_head_dimension});
-      detail::add_tensor(tensors, next_offset,
-                         detail::block_name(block, "attn_output.weight"),
-                         {full_head_count * full_head_dimension, hidden_size});
-      detail::add_tensor(tensors, next_offset,
-                         detail::block_name(block, "attn_q_norm.weight"),
-                         {full_head_dimension});
-      detail::add_tensor(tensors, next_offset,
-                         detail::block_name(block, "attn_k_norm.weight"),
-                         {full_head_dimension});
+      add_main(detail::block_name(block, "attn_q.weight"),
+               {hidden_size, full_head_count * full_head_dimension * 2});
+      add_main(detail::block_name(block, "attn_k.weight"),
+               {hidden_size, full_kv_head_count * full_head_dimension});
+      add_main(detail::block_name(block, "attn_v.weight"),
+               {hidden_size, full_kv_head_count * full_head_dimension});
+      add_main(detail::block_name(block, "attn_output.weight"),
+               {full_head_count * full_head_dimension, hidden_size});
+      add_aux(detail::block_name(block, "attn_q_norm.weight"),
+              {full_head_dimension});
+      add_aux(detail::block_name(block, "attn_k_norm.weight"),
+              {full_head_dimension});
     } else {
-      detail::add_tensor(tensors, next_offset,
-                         detail::block_name(block, "attn_qkv.weight"),
-                         {hidden_size, linear_qkv_width});
-      detail::add_tensor(tensors, next_offset,
-                         detail::block_name(block, "attn_gate.weight"),
-                         {hidden_size, linear_value_width});
-      detail::add_tensor(tensors, next_offset,
-                         detail::block_name(block, "ssm_conv1d.weight"),
-                         {4, linear_qkv_width});
-      detail::add_tensor(tensors, next_offset,
-                         detail::block_name(block, "ssm_dt.bias"),
-                         {linear_value_head_count});
-      detail::add_tensor(tensors, next_offset,
-                         detail::block_name(block, "ssm_a"),
-                         {linear_value_head_count});
-      detail::add_tensor(tensors, next_offset,
-                         detail::block_name(block, "ssm_beta.weight"),
-                         {hidden_size, linear_value_head_count});
-      detail::add_tensor(tensors, next_offset,
-                         detail::block_name(block, "ssm_alpha.weight"),
-                         {hidden_size, linear_value_head_count});
-      detail::add_tensor(tensors, next_offset,
-                         detail::block_name(block, "ssm_norm.weight"),
-                         {linear_head_dimension});
-      detail::add_tensor(tensors, next_offset,
-                         detail::block_name(block, "ssm_out.weight"),
-                         {linear_value_width, hidden_size});
+      add_main(detail::block_name(block, "attn_qkv.weight"),
+               {hidden_size, linear_qkv_width});
+      add_main(detail::block_name(block, "attn_gate.weight"),
+               {hidden_size, linear_value_width});
+      add_aux(detail::block_name(block, "ssm_conv1d.weight"),
+              {4, linear_qkv_width});
+      add_aux(detail::block_name(block, "ssm_dt.bias"),
+              {linear_value_head_count});
+      add_aux(detail::block_name(block, "ssm_a"), {linear_value_head_count});
+      add_main(detail::block_name(block, "ssm_beta.weight"),
+               {hidden_size, linear_value_head_count});
+      add_main(detail::block_name(block, "ssm_alpha.weight"),
+               {hidden_size, linear_value_head_count});
+      add_aux(detail::block_name(block, "ssm_norm.weight"),
+              {linear_head_dimension});
+      add_main(detail::block_name(block, "ssm_out.weight"),
+               {linear_value_width, hidden_size});
     }
   }
 
@@ -246,7 +241,7 @@ make_qwen35_gguf_fixture(std::uint32_t tensor_type = 1) {
     for (const auto dimension : tensor.dimensions) {
       detail::append(bytes, dimension);
     }
-    detail::append<std::uint32_t>(bytes, tensor_type);
+    detail::append<std::uint32_t>(bytes, tensor.type);
     detail::append(bytes, tensor.offset);
   }
   while (bytes.size() % 32 != 0) {
@@ -254,6 +249,11 @@ make_qwen35_gguf_fixture(std::uint32_t tensor_type = 1) {
   }
   bytes.resize(bytes.size() + next_offset);
   return bytes;
+}
+
+inline std::vector<std::uint8_t>
+make_qwen35_mixed_f32_aux_gguf_fixture(std::uint32_t primary_tensor_type = 1) {
+  return make_qwen35_gguf_fixture(primary_tensor_type, true);
 }
 
 } // namespace brt::test

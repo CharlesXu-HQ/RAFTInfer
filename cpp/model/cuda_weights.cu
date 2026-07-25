@@ -8,10 +8,13 @@
 #include <rmm/aligned.hpp>
 
 #include <algorithm>
+#include <bit>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <exception>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -70,13 +73,31 @@ CudaWeightType checked_type(const gguf::TensorInfo &tensor) {
                         tensor.name);
 }
 
-std::vector<const gguf::TensorInfo *>
-primary_tensors(const Qwen35Manifest &manifest) {
-  std::vector<const gguf::TensorInfo *> tensors;
+enum class TensorUploadRole {
+  primary,
+  auxiliary,
+};
+
+struct ManifestTensor {
+  const gguf::TensorInfo *descriptor{};
+  TensorUploadRole role{};
+};
+
+std::vector<ManifestTensor> manifest_tensors(const Qwen35Manifest &manifest) {
+  std::vector<ManifestTensor> tensors;
   tensors.reserve(3 + manifest.layers.size() * 14);
-  tensors.push_back(manifest.token_embedding);
-  tensors.push_back(manifest.output_norm);
-  tensors.push_back(manifest.output);
+  const auto add_primary = [&tensors](const gguf::TensorInfo *tensor) {
+    tensors.push_back(ManifestTensor{
+        .descriptor = tensor, .role = TensorUploadRole::primary});
+  };
+  const auto add_auxiliary = [&tensors](const gguf::TensorInfo *tensor) {
+    tensors.push_back(ManifestTensor{
+        .descriptor = tensor, .role = TensorUploadRole::auxiliary});
+  };
+
+  add_primary(manifest.token_embedding);
+  add_auxiliary(manifest.output_norm);
+  add_primary(manifest.output);
   for (std::size_t layer_position = 0; layer_position < manifest.layers.size();
        ++layer_position) {
     const auto &layer = manifest.layers[layer_position];
@@ -88,38 +109,146 @@ primary_tensors(const Qwen35Manifest &manifest) {
       throw CudaWeightError(
           "Qwen3.5 CUDA weight layer must have exactly one attention branch");
     }
-    tensors.push_back(layer.common.input_norm);
-    tensors.push_back(layer.common.post_attention_norm);
-    tensors.push_back(layer.common.ffn_gate);
-    tensors.push_back(layer.common.ffn_down);
-    tensors.push_back(layer.common.ffn_up);
+    add_auxiliary(layer.common.input_norm);
+    add_auxiliary(layer.common.post_attention_norm);
+    add_primary(layer.common.ffn_gate);
+    add_primary(layer.common.ffn_down);
+    add_primary(layer.common.ffn_up);
     if (layer.full_attention.has_value()) {
       const auto &full = *layer.full_attention;
-      tensors.push_back(full.query);
-      tensors.push_back(full.key);
-      tensors.push_back(full.value);
-      tensors.push_back(full.output);
-      tensors.push_back(full.query_norm);
-      tensors.push_back(full.key_norm);
+      add_primary(full.query);
+      add_primary(full.key);
+      add_primary(full.value);
+      add_primary(full.output);
+      add_auxiliary(full.query_norm);
+      add_auxiliary(full.key_norm);
     }
     if (layer.linear_attention.has_value()) {
       const auto &linear = *layer.linear_attention;
-      tensors.push_back(linear.qkv);
-      tensors.push_back(linear.gate);
-      tensors.push_back(linear.convolution);
-      tensors.push_back(linear.time_step_bias);
-      tensors.push_back(linear.recurrent_a);
-      tensors.push_back(linear.beta);
-      tensors.push_back(linear.alpha);
-      tensors.push_back(linear.output_norm);
-      tensors.push_back(linear.output);
+      add_primary(linear.qkv);
+      add_primary(linear.gate);
+      add_auxiliary(linear.convolution);
+      add_auxiliary(linear.time_step_bias);
+      add_auxiliary(linear.recurrent_a);
+      add_primary(linear.beta);
+      add_primary(linear.alpha);
+      add_auxiliary(linear.output_norm);
+      add_primary(linear.output);
     }
   }
   if (std::any_of(tensors.begin(), tensors.end(),
-                  [](const auto *tensor) { return tensor == nullptr; })) {
+                  [](const auto &tensor) {
+                    return tensor.descriptor == nullptr;
+                  })) {
     throw CudaWeightError("Qwen3.5 manifest contains a null primary tensor");
   }
   return tensors;
+}
+
+std::uint32_t round_shift_right(std::uint32_t value, unsigned shift) {
+  if (shift == 0) {
+    return value;
+  }
+  if (shift >= 32) {
+    return 0;
+  }
+  const std::uint32_t quotient = value >> shift;
+  const std::uint32_t remainder_mask = (std::uint32_t{1} << shift) - 1U;
+  const std::uint32_t remainder = value & remainder_mask;
+  const std::uint32_t halfway = std::uint32_t{1} << (shift - 1U);
+  if (remainder > halfway || (remainder == halfway && (quotient & 1U) != 0)) {
+    return quotient + 1U;
+  }
+  return quotient;
+}
+
+std::uint16_t float_to_f16_bits(float value) {
+  const std::uint32_t bits = std::bit_cast<std::uint32_t>(value);
+  const std::uint16_t sign = static_cast<std::uint16_t>((bits >> 16U) & 0x8000U);
+  const std::uint32_t exponent = (bits >> 23U) & 0xffU;
+  const std::uint32_t mantissa = bits & 0x7fffffU;
+  if (exponent == 0xffU) {
+    if (mantissa == 0) {
+      return static_cast<std::uint16_t>(sign | 0x7c00U);
+    }
+    std::uint16_t payload = static_cast<std::uint16_t>(mantissa >> 13U);
+    if (payload == 0) {
+      payload = 1;
+    }
+    return static_cast<std::uint16_t>(sign | 0x7c00U | payload);
+  }
+
+  const int half_exponent = static_cast<int>(exponent) - 127 + 15;
+  if (half_exponent >= 31) {
+    return static_cast<std::uint16_t>(sign | 0x7c00U);
+  }
+  if (half_exponent <= 0) {
+    if (half_exponent < -24) {
+      return sign;
+    }
+    const std::uint32_t rounded =
+        round_shift_right(mantissa | 0x800000U,
+                          static_cast<unsigned>(14 - half_exponent));
+    return static_cast<std::uint16_t>(sign | rounded);
+  }
+
+  std::uint32_t rounded_mantissa = round_shift_right(mantissa, 13);
+  std::uint32_t rounded_exponent = static_cast<std::uint32_t>(half_exponent);
+  if (rounded_mantissa == 0x400U) {
+    rounded_mantissa = 0;
+    ++rounded_exponent;
+    if (rounded_exponent >= 31) {
+      return static_cast<std::uint16_t>(sign | 0x7c00U);
+    }
+  }
+  return static_cast<std::uint16_t>(sign | (rounded_exponent << 10U) |
+                                    rounded_mantissa);
+}
+
+std::uint16_t float_to_bf16_bits(float value) {
+  const std::uint32_t bits = std::bit_cast<std::uint32_t>(value);
+  if ((bits & 0x7F800000U) == 0x7F800000U) {
+    const std::uint16_t sign_and_exp =
+        static_cast<std::uint16_t>((bits >> 16U) & 0xFF80U);
+    if ((bits & 0x007FFFFFU) == 0) {
+      return sign_and_exp;
+    }
+    std::uint16_t payload =
+        static_cast<std::uint16_t>((bits >> 16U) & 0x007FU);
+    if (payload == 0) {
+      payload = 1;
+    }
+    return static_cast<std::uint16_t>(sign_and_exp | payload);
+  }
+  const std::uint32_t lsb = (bits >> 16U) & 1U;
+  const std::uint32_t rounded = bits + 0x7FFFU + lsb;
+  return static_cast<std::uint16_t>(rounded >> 16U);
+}
+
+std::vector<std::uint8_t>
+convert_f32_payload(std::span<const std::uint8_t> payload,
+                    CudaWeightType target_type,
+                    const std::string &tensor_name) {
+  if (payload.size() % sizeof(float) != 0) {
+    throw CudaWeightError("F32 auxiliary tensor byte size is invalid: " +
+                          tensor_name);
+  }
+  std::vector<std::uint8_t> converted(payload.size() / sizeof(float) *
+                                      sizeof(std::uint16_t));
+  for (std::size_t element = 0; element < payload.size() / sizeof(float);
+       ++element) {
+    float value = 0.0F;
+    std::memcpy(&value, payload.data() + element * sizeof(float),
+                sizeof(value));
+    const std::uint16_t bits = target_type == CudaWeightType::f16
+                                   ? float_to_f16_bits(value)
+                                   : float_to_bf16_bits(value);
+    converted[element * sizeof(std::uint16_t)] =
+        static_cast<std::uint8_t>(bits & 0xffU);
+    converted[element * sizeof(std::uint16_t) + 1] =
+        static_cast<std::uint8_t>((bits >> 8U) & 0xffU);
+  }
+  return converted;
 }
 
 bool descriptors_equal(const gguf::TensorInfo &left,
@@ -253,32 +382,58 @@ CudaWeightPlan::upload(ExecutionContext &context, const Model &model,
     throw CudaWeightError(
         "CUDA weight upload requires a device resource lifetime anchor");
   }
-  const auto tensors = primary_tensors(manifest);
+  const auto tensors = manifest_tensors(manifest);
   struct ValidatedTensor {
     const gguf::TensorInfo *descriptor;
     CudaWeightType type;
     std::span<const std::uint8_t> payload;
+    std::vector<std::uint8_t> converted_payload;
   };
   std::vector<ValidatedTensor> validated;
   validated.reserve(tensors.size());
   std::unordered_map<std::string, std::size_t> indices_by_name;
   indices_by_name.reserve(tensors.size());
   try {
+    const CudaWeightType primary_type = checked_type(*manifest.token_embedding);
     for (std::size_t index = 0; index < tensors.size(); ++index) {
-      const auto *tensor = tensors[index];
+      const auto *tensor = tensors[index].descriptor;
       const bool inserted = indices_by_name.emplace(tensor->name, index).second;
       if (!inserted) {
         throw CudaWeightError("duplicate Qwen3.5 CUDA weight name: " +
                               tensor->name);
       }
-      const CudaWeightType type = checked_type(*tensor);
       const auto payload = model.tensor_payload(*tensor);
       if (payload.size() != tensor->byte_size) {
         throw CudaWeightError("truncated Qwen3.5 tensor payload: " +
                               tensor->name);
       }
       validated.push_back(ValidatedTensor{
-          .descriptor = tensor, .type = type, .payload = payload});
+          .descriptor = tensor,
+          .type = primary_type,
+          .payload = {},
+          .converted_payload = {},
+      });
+      auto &validated_tensor = validated.back();
+      if (tensors[index].role == TensorUploadRole::primary) {
+        const CudaWeightType type = checked_type(*tensor);
+        if (type != primary_type) {
+          throw CudaWeightError("Qwen3.5 primary CUDA weights must share the "
+                                "selected dtype: " +
+                                tensor->name);
+        }
+        validated_tensor.payload = payload;
+      } else if (tensor->type == static_cast<std::uint32_t>(primary_type)) {
+        validated_tensor.payload = payload;
+      } else if (tensor->type == 0) {
+        validated_tensor.converted_payload =
+            convert_f32_payload(payload, primary_type, tensor->name);
+        validated_tensor.payload = validated_tensor.converted_payload;
+      } else {
+        throw CudaWeightError(
+            "Qwen3.5 auxiliary CUDA weight must be F32 or match the selected "
+            "dtype: " +
+            tensor->name);
+      }
     }
   } catch (const CudaWeightError &) {
     throw;
