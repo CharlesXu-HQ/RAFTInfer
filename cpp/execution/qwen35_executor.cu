@@ -261,9 +261,10 @@ std::size_t workspace_estimate(const model::Qwen35Config &config,
 
   std::size_t bytes = 0;
   auto add = [&](std::size_t value) {
-    bytes = checked_add(align_up(bytes, workspace_alignment),
-                        align_up(value, workspace_alignment),
-                        "Qwen3.5 executor workspace overflow");
+    bytes = checked_add(
+        align_up(bytes, Qwen35Executor::workspace_alignment),
+        align_up(value, Qwen35Executor::workspace_alignment),
+        "Qwen3.5 executor workspace overflow");
   };
 
   add(checked_mul(max_context, sizeof(std::int32_t),
@@ -339,7 +340,7 @@ std::size_t workspace_estimate(const model::Qwen35Config &config,
                       "linear recurrent state byte size overflow"));
     }
   }
-  return align_up(bytes, workspace_alignment);
+  return align_up(bytes, Qwen35Executor::workspace_alignment);
 }
 
 } // namespace
@@ -643,7 +644,8 @@ private:
                                    "logits byte size overflow"),
                        16);
     matmul_workspace_ =
-        allocate(arena, kMatmulWorkspaceBudget, workspace_alignment);
+        allocate(arena, kMatmulWorkspaceBudget,
+                 Qwen35Executor::workspace_alignment);
     attention_workspace_ = allocate(
         arena, max_attention_workspace(config_, max_tokens, max_context_),
         alignof(float));
