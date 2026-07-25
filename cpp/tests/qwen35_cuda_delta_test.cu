@@ -22,6 +22,7 @@
 #include <cassert>
 #include <cmath>
 #include <cstddef>
+#include <cstdio>
 #include <limits>
 #include <memory>
 #include <span>
@@ -174,6 +175,18 @@ void assert_matches(std::span<const float> actual,
                     std::span<const float> expected) {
   assert(actual.size() == expected.size());
   for (std::size_t index = 0; index < actual.size(); ++index) {
+    if (!close_enough(actual[index], expected[index])) {
+      std::fprintf(stderr,
+                   "gated-delta mismatch at index %zu: actual=%g expected=%g "
+                   "absolute=%g relative=%g\n",
+                   index, static_cast<double>(actual[index]),
+                   static_cast<double>(expected[index]),
+                   static_cast<double>(std::fabs(actual[index] -
+                                                 expected[index])),
+                   static_cast<double>(
+                       std::fabs(actual[index] - expected[index]) /
+                       std::max(std::fabs(expected[index]), 1.0e-6F)));
+    }
     assert(close_enough(actual[index], expected[index]));
   }
 }
@@ -258,6 +271,21 @@ Fixture make_fixture(const brt::kernels::GatedDeltaShape& shape) {
 }
 
 template <typename T>
+Fixture quantize_fixture(const Fixture& fixture) {
+  // Keep the CPU FP32 algorithm and CUDA kernel on identical F16/BF16
+  // operands; otherwise input quantization is incorrectly charged to the
+  // kernel's arithmetic error.
+  return Fixture{
+      .input = decode<T>(encode<T>(fixture.input)),
+      .conv_weight = decode<T>(encode<T>(fixture.conv_weight)),
+      .a_log = decode<T>(encode<T>(fixture.a_log)),
+      .dt_bias = decode<T>(encode<T>(fixture.dt_bias)),
+      .output_norm_weight =
+          decode<T>(encode<T>(fixture.output_norm_weight)),
+  };
+}
+
+template <typename T>
 struct DeviceRun {
   std::vector<float> output;
   std::vector<float> convolution;
@@ -334,23 +362,25 @@ DeviceRun<T> run_cuda(brt::ExecutionContext& context,
   };
 }
 
+template <typename T>
 brt::reference::GatedDeltaReferenceState
 run_reference(const brt::kernels::GatedDeltaShape& shape,
               const Fixture& fixture, std::span<float> output,
               const brt::reference::GatedDeltaReferenceState* initial =
                   nullptr) {
+  const auto quantized = quantize_fixture<T>(fixture);
   const auto args = make_reference_args(shape);
   brt::reference::GatedDeltaReferenceState state{args};
   if (initial != nullptr) {
     state = *initial;
   }
   brt::reference::qwen35_gated_delta_prefill(
-      fixture.input, output,
+      quantized.input, output,
       brt::reference::GatedDeltaReferenceWeights{
-          .conv_weight = fixture.conv_weight,
-          .a_log = fixture.a_log,
-          .dt_bias = fixture.dt_bias,
-          .output_norm_weight = fixture.output_norm_weight,
+          .conv_weight = quantized.conv_weight,
+          .a_log = quantized.a_log,
+          .dt_bias = quantized.dt_bias,
+          .output_norm_weight = quantized.output_norm_weight,
       },
       args, state);
   return state;
@@ -363,7 +393,7 @@ void check_prefill_length(brt::ExecutionContext& context,
   const auto fixture = make_fixture(shape);
   std::vector<float> expected_output(tokens * shape.hidden_size);
   const auto expected_state =
-      run_reference(shape, fixture, expected_output);
+      run_reference<T>(shape, fixture, expected_output);
   const auto actual = run_cuda<T>(context, shape, fixture);
   assert_matches(actual.output, expected_output);
   assert_matches(actual.convolution, expected_state.convolution);
@@ -377,7 +407,7 @@ void check_continued_prefill(brt::ExecutionContext& context) {
   std::vector<float> first_expected(first_shape.tokens *
                                     first_shape.hidden_size);
   const auto first_reference_state =
-      run_reference(first_shape, first_fixture, first_expected);
+      run_reference<T>(first_shape, first_fixture, first_expected);
   const auto first_actual = run_cuda<T>(context, first_shape, first_fixture);
   assert_matches(first_actual.output, first_expected);
 
@@ -389,8 +419,8 @@ void check_continued_prefill(brt::ExecutionContext& context) {
   std::vector<float> continued_expected(continued_shape.tokens *
                                         continued_shape.hidden_size);
   const auto continued_reference_state =
-      run_reference(continued_shape, continued_fixture, continued_expected,
-                    &first_reference_state);
+      run_reference<T>(continued_shape, continued_fixture, continued_expected,
+                       &first_reference_state);
   const auto continued_actual =
       run_cuda<T>(context, continued_shape, continued_fixture,
                   first_actual.convolution, first_actual.recurrent);
@@ -408,7 +438,7 @@ void check_decode_after_prefill(brt::ExecutionContext& context) {
   std::vector<float> prefill_expected(prefill_shape.tokens *
                                       prefill_shape.hidden_size);
   const auto prefill_reference_state =
-      run_reference(prefill_shape, prefill_fixture, prefill_expected);
+      run_reference<T>(prefill_shape, prefill_fixture, prefill_expected);
   const auto prefill_actual =
       run_cuda<T>(context, prefill_shape, prefill_fixture);
 
@@ -419,8 +449,8 @@ void check_decode_after_prefill(brt::ExecutionContext& context) {
   }
   std::vector<float> decode_expected(decode_shape.hidden_size);
   const auto decode_reference_state =
-      run_reference(decode_shape, decode_fixture, decode_expected,
-                    &prefill_reference_state);
+      run_reference<T>(decode_shape, decode_fixture, decode_expected,
+                       &prefill_reference_state);
   const auto decode_actual =
       run_cuda<T>(context, decode_shape, decode_fixture,
                   prefill_actual.convolution, prefill_actual.recurrent);
@@ -467,16 +497,16 @@ void check_device_resident_sequence(brt::ExecutionContext& context) {
   std::vector<float> expected_prefill(prefill_shape.tokens *
                                       prefill_shape.hidden_size);
   const auto reference_after_prefill =
-      run_reference(prefill_shape, prefill_fixture, expected_prefill);
+      run_reference<T>(prefill_shape, prefill_fixture, expected_prefill);
   std::vector<float> expected_decode(decode_shape.hidden_size);
   const auto reference_after_decode =
-      run_reference(decode_shape, decode_fixture, expected_decode,
-                    &reference_after_prefill);
+      run_reference<T>(decode_shape, decode_fixture, expected_decode,
+                       &reference_after_prefill);
   std::vector<float> expected_continued(continued_shape.tokens *
                                         continued_shape.hidden_size);
   const auto expected_final_state =
-      run_reference(continued_shape, continued_fixture, expected_continued,
-                    &reference_after_decode);
+      run_reference<T>(continued_shape, continued_fixture, expected_continued,
+                       &reference_after_decode);
 
   const auto encoded_prefill = encode<T>(prefill_fixture.input);
   const auto encoded_decode = encode<T>(decode_fixture.input);
@@ -588,7 +618,7 @@ void check_saturation_edges(brt::ExecutionContext& context) {
 
   std::vector<float> expected_output(shape.tokens * shape.hidden_size);
   const auto expected_state =
-      run_reference(shape, fixture, expected_output);
+      run_reference<T>(shape, fixture, expected_output);
   const auto actual = run_cuda<T>(context, shape, fixture);
   assert_finite(expected_output);
   assert_finite(expected_state.convolution);
