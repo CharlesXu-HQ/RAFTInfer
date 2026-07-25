@@ -397,7 +397,7 @@ fn make_qwen35_gguf_fixture() -> Vec<u8> {
         push_u32(&mut bytes, 1);
         push_u64(&mut bytes, tensor.offset);
     }
-    while bytes.len() % 32 != 0 {
+    while !bytes.len().is_multiple_of(32) {
         bytes.push(0);
     }
     bytes.resize(bytes.len() + next_offset as usize, 0);
@@ -451,7 +451,7 @@ fn add_tensor(tensors: &mut Vec<Tensor>, next_offset: &mut u64, name: &str, dime
         dimensions: dimensions.to_vec(),
         offset: *next_offset,
     });
-    *next_offset = (*next_offset + byte_size + 31) / 32 * 32;
+    *next_offset = (*next_offset + byte_size).div_ceil(32) * 32;
 }
 
 fn block_name(index: u32, suffix: &str) -> String {

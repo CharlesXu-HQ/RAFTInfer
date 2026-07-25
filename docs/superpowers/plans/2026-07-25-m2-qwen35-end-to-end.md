@@ -450,31 +450,31 @@ Rust 2024, GGUF v3, pinned llama.cpp.
   - `Tokenizer::decode(tokens, skip_special_tokens)`
   - `Tokenizer::apply_chat_template(messages, add_generation_prompt)`
 
-- [ ] **Step 1: Add binary-format corruption tests**
+- [x] **Step 1: Add binary-format corruption tests**
 
   Reject bad magic/version, truncation at every field category, duplicate
   keys, wrong scalar/array types, missing tokens/merges/model/pre fields, and
   out-of-range special IDs.
 
-- [ ] **Step 2: Observe RED**
+- [x] **Step 2: Observe RED**
 
-- [ ] **Step 3: Parse the deterministic metadata map**
+- [x] **Step 3: Parse the deterministic metadata map**
 
   Preserve arbitrary byte tokens, merges, token types, BOS/EOS/EOT/padding IDs,
   pre-tokenizer identifier, add-BOS/add-EOS flags, and chat template.
 
-- [ ] **Step 4: Implement Qwen byte-level BPE without a second GGUF reader**
+- [x] **Step 4: Implement Qwen byte-level BPE without a second GGUF reader**
 
   Split contractions, Unicode letters, numbers, punctuation, and whitespace;
   protect registered special tokens; merge by GGUF rank; and use byte fallback
   for unmatched UTF-8. Decode reverses byte encoding before UTF-8 replacement.
 
-- [ ] **Step 5: Add pinned llama.cpp token vectors**
+- [x] **Step 5: Add pinned llama.cpp token vectors**
 
   Cover English, Simplified Chinese, mixed punctuation, whitespace/newlines,
   emoji, special-token text, and the no-tools Qwen3.5 chat template.
 
-- [ ] **Step 6: Run Cargo tests and commit**
+- [x] **Step 6: Run Cargo tests and commit**
 
   Commit: `feat: tokenize Qwen3.5 prompts in Rust`
 

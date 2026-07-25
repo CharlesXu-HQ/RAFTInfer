@@ -7,6 +7,8 @@ use std::{
     rc::Rc,
 };
 
+pub mod tokenizer;
+
 #[derive(Clone, Copy, Debug)]
 pub struct EngineConfig {
     pub device_id: i32,
