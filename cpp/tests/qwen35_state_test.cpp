@@ -1,0 +1,243 @@
+#include "../execution/qwen35_state.hpp"
+
+#include "assert_enabled.hpp"
+
+#include <atomic>
+#include <cassert>
+#include <cstddef>
+#include <cstdint>
+#include <cstdlib>
+#include <iostream>
+#include <limits>
+#include <new>
+#include <span>
+#include <stdexcept>
+#include <vector>
+
+namespace {
+std::atomic<std::size_t> g_allocation_count{0};
+}
+
+void *operator new(std::size_t size) {
+  g_allocation_count.fetch_add(1, std::memory_order_relaxed);
+  if (void *pointer = std::malloc(size)) {
+    return pointer;
+  }
+  throw std::bad_alloc();
+}
+
+void operator delete(void *pointer) noexcept { std::free(pointer); }
+
+void operator delete(void *pointer, std::size_t) noexcept { std::free(pointer); }
+
+namespace {
+
+brt::model::Qwen35Config small_hybrid_config() {
+  brt::model::Qwen35Config config;
+  config.hidden_size = 16;
+  config.context_length = 16;
+  config.full_attention_head_count = 4;
+  config.full_attention_kv_head_count = 2;
+  config.full_attention_head_dimension = 4;
+  config.linear_key_head_count = 2;
+  config.linear_value_head_count = 4;
+  config.linear_head_dimension = 3;
+  config.linear_convolution_width = 4;
+  config.blocks = {
+      {.index = 0,
+       .kind = brt::model::Qwen35BlockKind::linear_attention},
+      {.index = 1,
+       .kind = brt::model::Qwen35BlockKind::linear_attention},
+      {.index = 2, .kind = brt::model::Qwen35BlockKind::full_attention},
+      {.index = 3,
+       .kind = brt::model::Qwen35BlockKind::linear_attention},
+  };
+  return config;
+}
+
+brt::model::Qwen35Config official_shape_config() {
+  auto config = small_hybrid_config();
+  config.hidden_size = 4096;
+  config.context_length = 262144;
+  config.full_attention_head_count = 16;
+  config.full_attention_kv_head_count = 4;
+  config.full_attention_head_dimension = 256;
+  config.linear_key_head_count = 16;
+  config.linear_value_head_count = 32;
+  config.linear_head_dimension = 128;
+  config.linear_convolution_width = 4;
+  config.blocks.clear();
+  config.blocks.reserve(32);
+  for (std::uint32_t index = 0; index < 32; ++index) {
+    config.blocks.push_back(
+        {.index = index,
+         .kind = (index + 1) % 4 == 0
+                     ? brt::model::Qwen35BlockKind::full_attention
+                     : brt::model::Qwen35BlockKind::linear_attention});
+  }
+  return config;
+}
+
+brt::model::Qwen35Config two_full_layer_config() {
+  auto config = small_hybrid_config();
+  config.blocks = {
+      {.index = 0, .kind = brt::model::Qwen35BlockKind::full_attention},
+      {.index = 1,
+       .kind = brt::model::Qwen35BlockKind::linear_attention},
+      {.index = 2, .kind = brt::model::Qwen35BlockKind::full_attention},
+  };
+  return config;
+}
+
+template <class Exception, class Fn>
+void expect_throw(const char *case_name, Fn &&fn) {
+  bool thrown = false;
+  try {
+    fn();
+  } catch (const Exception &) {
+    thrown = true;
+  }
+  if (!thrown) {
+    std::cerr << "expected exception was not thrown: " << case_name << '\n';
+  }
+  assert(thrown);
+}
+
+void expect_all_zero(std::span<const float> values) {
+  for (const float value : values) {
+    assert(value == 0.0F);
+  }
+}
+
+} // namespace
+
+int main() {
+  const auto small_layout =
+      brt::Qwen35StateLayout::create(small_hybrid_config(), 8);
+  assert(small_layout.max_context_tokens == 8);
+  assert(small_layout.block_count == 4);
+  assert(small_layout.linear_layer_count == 3);
+  assert(small_layout.full_layer_count == 1);
+  assert(small_layout.linear_slots_by_block == (std::vector<std::uint32_t>{
+                                                   0, 1,
+                                                   std::numeric_limits<std::uint32_t>::max(),
+                                                   2}));
+  assert(small_layout.full_slots_by_block == (std::vector<std::uint32_t>{
+                                                 std::numeric_limits<std::uint32_t>::max(),
+                                                 std::numeric_limits<std::uint32_t>::max(),
+                                                 0,
+                                                 std::numeric_limits<std::uint32_t>::max()}));
+  assert(small_layout.linear_qkv_channel_count == 24);
+  assert(small_layout.linear_convolution_floats_per_layer == 72);
+  assert(small_layout.linear_recurrent_floats_per_layer == 36);
+  assert(small_layout.full_kv_floats_per_layer == 128);
+
+  const auto official_layout =
+      brt::Qwen35StateLayout::create(official_shape_config(), 1024);
+  assert(official_layout.linear_layer_count == 24);
+  assert(official_layout.full_layer_count == 8);
+  assert(official_layout.linear_slots_by_block[0] == 0);
+  assert(official_layout.linear_slots_by_block[2] == 2);
+  assert(official_layout.full_slots_by_block[3] == 0);
+  assert(official_layout.linear_slots_by_block[4] == 3);
+  assert(official_layout.full_slots_by_block[31] == 7);
+  assert(official_layout.linear_qkv_channel_count == 8192);
+  assert(official_layout.linear_recurrent_floats_per_layer == 524288);
+
+  expect_throw<std::invalid_argument>(
+      "zero max context",
+      [] { (void)brt::Qwen35StateLayout::create(small_hybrid_config(), 0); });
+  auto empty = small_hybrid_config();
+  empty.blocks.clear();
+  expect_throw<std::invalid_argument>(
+      "empty block plan in layout create",
+      [&] { (void)brt::Qwen35StateLayout::create(empty, 8); });
+  expect_throw<std::invalid_argument>(
+      "empty layout in host state constructor",
+      [] { (void)brt::Qwen35HostState{brt::Qwen35StateLayout{}}; });
+
+  auto overflowing = small_hybrid_config();
+  overflowing.blocks = {{.index = 0,
+                         .kind = brt::model::Qwen35BlockKind::full_attention}};
+  overflowing.full_attention_kv_head_count =
+      std::numeric_limits<std::uint32_t>::max();
+  overflowing.full_attention_head_dimension =
+      std::numeric_limits<std::uint32_t>::max();
+  expect_throw<std::length_error>(
+      "full KV byte overflow",
+      [&] { (void)brt::Qwen35StateLayout::create(overflowing, 2); });
+
+  brt::Qwen35HostState state{small_layout};
+  const auto *convolution_base = state.linear_convolution(0).data();
+  const auto *recurrent_base = state.linear_recurrent(1).data();
+  const auto *kv_base = state.full_kv(2).data();
+  const auto convolution_capacity = state.linear_convolution(0).size();
+  const auto recurrent_capacity = state.linear_recurrent(1).size();
+  const auto kv_capacity = state.full_kv(2).size();
+
+  assert(state.position() == 0);
+  assert(state.full_kv_length(2) == 0);
+  assert(state.linear_convolution(0).size() == 72);
+  assert(state.linear_recurrent(1).size() == 36);
+  assert(state.full_kv(2).size() == 128);
+
+  g_allocation_count.store(0, std::memory_order_relaxed);
+  (void)state.position();
+  (void)state.full_kv_length(2);
+  (void)state.linear_convolution(0);
+  (void)state.linear_recurrent(1);
+  (void)state.full_kv(2);
+  state.commit_tokens(1);
+  state.reset();
+  assert(g_allocation_count.load(std::memory_order_relaxed) == 0);
+  assert(state.position() == 0);
+  assert(state.full_kv_length(2) == 0);
+
+  expect_throw<std::invalid_argument>(
+      "linear convolution accessor rejects full layer",
+      [&] { (void)state.linear_convolution(2); });
+  expect_throw<std::invalid_argument>(
+      "linear recurrent accessor rejects full layer",
+      [&] { (void)state.linear_recurrent(2); });
+  expect_throw<std::invalid_argument>(
+      "full KV accessor rejects linear layer", [&] { (void)state.full_kv(1); });
+  expect_throw<std::out_of_range>(
+      "full KV length rejects out-of-range layer",
+      [&] { (void)state.full_kv_length(4); });
+
+  state.linear_convolution(0)[3] = 1.0F;
+  state.linear_recurrent(1)[5] = 2.0F;
+  state.full_kv(2)[7] = 3.0F;
+  state.commit_tokens(3);
+  assert(state.position() == 3);
+  assert(state.full_kv_length(2) == 3);
+  expect_throw<std::length_error>("single-full commit overflow leaves state",
+                                  [&] { state.commit_tokens(6); });
+  assert(state.position() == 3);
+  assert(state.full_kv_length(2) == 3);
+
+  brt::Qwen35HostState two_full_state{
+      brt::Qwen35StateLayout::create(two_full_layer_config(), 4)};
+  two_full_state.commit_tokens(3);
+  assert(two_full_state.position() == 3);
+  assert(two_full_state.full_kv_length(0) == 3);
+  assert(two_full_state.full_kv_length(2) == 3);
+  expect_throw<std::length_error>("multi-full commit overflow leaves all state",
+                                  [&] { two_full_state.commit_tokens(2); });
+  assert(two_full_state.position() == 3);
+  assert(two_full_state.full_kv_length(0) == 3);
+  assert(two_full_state.full_kv_length(2) == 3);
+
+  state.reset();
+  assert(state.position() == 0);
+  assert(state.full_kv_length(2) == 0);
+  assert(state.linear_convolution(0).data() == convolution_base);
+  assert(state.linear_recurrent(1).data() == recurrent_base);
+  assert(state.full_kv(2).data() == kv_base);
+  assert(state.linear_convolution(0).size() == convolution_capacity);
+  assert(state.linear_recurrent(1).size() == recurrent_capacity);
+  assert(state.full_kv(2).size() == kv_capacity);
+  expect_all_zero(state.linear_convolution(0));
+  expect_all_zero(state.linear_recurrent(1));
+  expect_all_zero(state.full_kv(2));
+}

@@ -6,7 +6,8 @@ target_sources(brt_cpp PRIVATE
   model/gguf_reader.cpp
   model/model.cpp
   model/qwen35_config.cpp
-  model/qwen35_manifest.cpp)
+  model/qwen35_manifest.cpp
+  execution/qwen35_state.cpp)
 target_sources(brt_cpp PRIVATE registry/operator_registry.cpp)
 target_sources(brt_cpp PRIVATE benchmarks/benchmark_record.cpp)
 target_compile_features(brt_cpp PUBLIC cxx_std_20)
@@ -71,6 +72,8 @@ if(BRT_BUILD_TESTS)
   target_link_libraries(brt_qwen35_config_test PRIVATE brt_cpp)
   brt_add_assert_test(brt_qwen35_manifest_test tests/qwen35_manifest_test.cpp)
   target_link_libraries(brt_qwen35_manifest_test PRIVATE brt_cpp)
+  brt_add_assert_test(brt_qwen35_state_test tests/qwen35_state_test.cpp)
+  target_link_libraries(brt_qwen35_state_test PRIVATE brt_cpp)
   add_test(
     NAME brt_c_api_source_test
     COMMAND ${CMAKE_COMMAND}
