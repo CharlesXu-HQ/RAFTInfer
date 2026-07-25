@@ -10,6 +10,7 @@ fn main() {
         panic!("BRT_NATIVE_LIBRARY_TYPE must be STATIC or SHARED, got: {library_type}");
     }
     let dst = cmake::Config::new("../..")
+        .generator("Ninja")
         .define("BRT_ENABLE_CUDA", cuda)
         .define("BRT_NATIVE_LIBRARY_TYPE", &library_type)
         .define("BRT_BUILD_TESTS", "OFF")
