@@ -16,12 +16,49 @@
 namespace brt {
 
 enum class OperatorKind {
+  Unspecified,
   Matmul,
+  EmbeddingLookup,
+  RmsNorm,
+  ResidualAdd,
+  PartialRope,
+  QkNormalize,
+  QkNormRope,
+  SigmoidGate,
+  SwiGlu,
+  CausalAttention,
+  ConvolutionShiftUpdate,
+  RecurrentDeltaUpdate,
+  DeltaOutputNormGate,
+  GatedDeltaNet,
+  Argmax,
 };
 
 enum class ExecutionRegime {
   HostDispatch,
   CudaGraph,
+};
+
+enum class CudaArchitecture {
+  Unspecified,
+  Sm90,
+  Sm120a,
+};
+
+enum class ShapeBucket {
+  Unspecified,
+  Decode,
+  Prefill1,
+  Prefill2,
+  Prefill4,
+  Prefill17,
+  Tail,
+};
+
+enum class KernelProvenance {
+  Unspecified,
+  ProjectNative,
+  UpstreamBw24,
 };
 
 struct TensorSignature {
@@ -46,8 +83,8 @@ struct TensorConstraint {
 struct OperatorSignature {
   OperatorKind op{};
   ExecutionRegime regime{};
-  int arch_major{};
-  int arch_minor{};
+  CudaArchitecture architecture{};
+  ShapeBucket shape_bucket{};
   bool graph_capture{};
   bool deterministic{};
   std::size_t workspace_bytes{};
@@ -74,10 +111,9 @@ struct KernelCapability {
   std::string name;
   OperatorKind op{};
   ExecutionRegime regime{};
-  int min_arch_major{};
-  int min_arch_minor{};
-  int max_arch_major{};
-  int max_arch_minor{};
+  CudaArchitecture architecture{};
+  ShapeBucket shape_bucket{};
+  KernelProvenance provenance{};
   std::vector<TensorConstraint> inputs;
   bool graph_safe{};
   bool deterministic{};

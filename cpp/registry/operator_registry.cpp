@@ -11,14 +11,6 @@ void hash_combine(std::size_t& seed, const T& value) {
   seed ^= std::hash<T>{}(value) + 0x9e3779b97f4a7c15ull + (seed << 6) + (seed >> 2);
 }
 
-bool architecture_less(int lhs_major, int lhs_minor, int rhs_major, int rhs_minor) {
-  return lhs_major < rhs_major || (lhs_major == rhs_major && lhs_minor < rhs_minor);
-}
-
-bool architecture_greater(int lhs_major, int lhs_minor, int rhs_major, int rhs_minor) {
-  return lhs_major > rhs_major || (lhs_major == rhs_major && lhs_minor > rhs_minor);
-}
-
 void append_reason(std::vector<std::string>& reasons, std::string reason) {
   reasons.push_back(std::move(reason));
 }
@@ -57,11 +49,11 @@ std::optional<std::string> KernelCapability::rejection_reason(
   if (signature.regime != regime) {
     append_reason(reasons, "execution regime mismatch");
   }
-  if (architecture_less(signature.arch_major, signature.arch_minor, min_arch_major,
-                        min_arch_minor) ||
-      architecture_greater(signature.arch_major, signature.arch_minor, max_arch_major,
-                           max_arch_minor)) {
+  if (signature.architecture != architecture) {
     append_reason(reasons, "architecture unsupported");
+  }
+  if (signature.shape_bucket != shape_bucket) {
+    append_reason(reasons, "shape bucket unsupported");
   }
   if (signature.graph_capture && !graph_safe) {
     append_reason(reasons, "not graph safe");
@@ -118,6 +110,22 @@ DispatchError::DispatchError(std::vector<KernelRejection> rejections)
     : std::runtime_error(build_dispatch_message(rejections)), rejections_(std::move(rejections)) {}
 
 const KernelRegistration& OperatorRegistry::register_kernel(KernelCapability capability) {
+  if (capability.op == OperatorKind::Unspecified) {
+    throw std::invalid_argument("kernel capability operator kind is unspecified");
+  }
+  if (capability.architecture == CudaArchitecture::Unspecified) {
+    throw std::invalid_argument("kernel capability architecture is unspecified");
+  }
+  if (capability.architecture != CudaArchitecture::Sm120a) {
+    throw std::invalid_argument("kernel capability architecture must be sm_120a");
+  }
+  if (capability.shape_bucket == ShapeBucket::Unspecified) {
+    throw std::invalid_argument("kernel capability shape bucket is unspecified");
+  }
+  if (capability.provenance == KernelProvenance::Unspecified) {
+    throw std::invalid_argument("kernel capability provenance is unspecified");
+  }
+
   const auto [_, inserted] = names_.insert(capability.name);
   if (!inserted) {
     throw std::invalid_argument("duplicate kernel registration: " + capability.name);
@@ -177,8 +185,8 @@ std::size_t std::hash<brt::OperatorSignature>::operator()(
   std::size_t seed = 0;
   hash_combine(seed, static_cast<int>(signature.op));
   hash_combine(seed, static_cast<int>(signature.regime));
-  hash_combine(seed, signature.arch_major);
-  hash_combine(seed, signature.arch_minor);
+  hash_combine(seed, static_cast<int>(signature.architecture));
+  hash_combine(seed, static_cast<int>(signature.shape_bucket));
   hash_combine(seed, signature.graph_capture);
   hash_combine(seed, signature.deterministic);
   hash_combine(seed, signature.workspace_bytes);
