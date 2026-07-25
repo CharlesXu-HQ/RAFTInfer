@@ -878,8 +878,6 @@ private:
                       const model::Qwen35CudaLayerWeights &weights,
                       const FullPlans &plans, std::size_t chunk_position) {
     const auto &full = *weights.full_attention;
-    const std::size_t q_width = config_.full_attention_head_count *
-                                config_.full_attention_head_dimension;
     const std::size_t kv_width = config_.full_attention_kv_head_count *
                                  config_.full_attention_head_dimension;
     run_matmul(*plans.query_gate, input, full.query, full_query_gate_);

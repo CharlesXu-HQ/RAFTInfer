@@ -244,9 +244,10 @@ void run_workspace_contract_tests() {
 
 void run_host_validation_tests() {
   const auto config = tiny_config();
-  brt::Qwen35Executor::validate_request(config, 0, std::span<const int32_t>{1});
-  brt::Qwen35Executor::validate_request(config, 127,
-                                        std::span<const int32_t>{15});
+  const std::vector<int32_t> first_token{1};
+  const std::vector<int32_t> last_token{15};
+  brt::Qwen35Executor::validate_request(config, 0, first_token);
+  brt::Qwen35Executor::validate_request(config, 127, last_token);
 
   expect_executor_error([&] {
     brt::Qwen35Executor::validate_request(config, 0,
@@ -415,6 +416,8 @@ void run_executor_reference_and_allocation_tests() {
                                 workspace_bytes};
   cudaDeviceProp properties{};
   assert(cudaGetDeviceProperties(&properties, 0) == cudaSuccess);
+  assert(properties.sharedMemPerBlock <=
+         static_cast<std::size_t>(std::numeric_limits<int>::max()));
   brt::ExecutionContext context{resources,
                                 rmm::device_async_resource_ref{statistics},
                                 stream,
@@ -422,7 +425,7 @@ void run_executor_reference_and_allocation_tests() {
                                 0,
                                 properties.major,
                                 properties.minor,
-                                properties.sharedMemPerBlock};
+                                static_cast<int>(properties.sharedMemPerBlock)};
   brt::Qwen35Executor executor{context, model.qwen35_config(), *weights,
                                max_context};
 
