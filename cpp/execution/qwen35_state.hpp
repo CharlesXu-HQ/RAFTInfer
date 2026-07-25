@@ -9,6 +9,11 @@
 
 namespace brt {
 
+enum class Qwen35HostStorage {
+  Full,
+  LogicalOnly,
+};
+
 struct Qwen35StateLayout {
   std::uint32_t max_context_tokens{};
   std::uint32_t block_count{};
@@ -36,9 +41,12 @@ struct Qwen35StateLayout {
 
 class Qwen35HostState {
 public:
-  explicit Qwen35HostState(Qwen35StateLayout layout);
+  explicit Qwen35HostState(
+      Qwen35StateLayout layout,
+      Qwen35HostStorage storage = Qwen35HostStorage::Full);
 
   const Qwen35StateLayout &layout() const noexcept;
+  bool has_tensor_storage() const noexcept;
   std::uint32_t position() const noexcept;
   std::uint32_t full_kv_length(std::uint32_t layer) const;
   std::span<float> linear_convolution(std::uint32_t layer);
@@ -52,6 +60,7 @@ public:
 
 private:
   Qwen35StateLayout layout_;
+  Qwen35HostStorage storage_{};
   std::uint32_t position_{};
   std::vector<std::uint32_t> full_kv_lengths_;
   std::vector<float> linear_convolution_;

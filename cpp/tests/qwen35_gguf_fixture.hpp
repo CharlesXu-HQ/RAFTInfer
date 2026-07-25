@@ -95,7 +95,8 @@ inline std::string block_name(std::uint32_t index, const std::string &suffix) {
 
 } // namespace detail
 
-inline std::vector<std::uint8_t> make_qwen35_gguf_fixture() {
+inline std::vector<std::uint8_t>
+make_qwen35_gguf_fixture(std::uint32_t tensor_type = 1) {
   constexpr std::uint32_t vocabulary_size = 16;
   constexpr std::uint32_t hidden_size = 8;
   constexpr std::uint32_t intermediate_size = 16;
@@ -245,7 +246,7 @@ inline std::vector<std::uint8_t> make_qwen35_gguf_fixture() {
     for (const auto dimension : tensor.dimensions) {
       detail::append(bytes, dimension);
     }
-    detail::append<std::uint32_t>(bytes, 1);
+    detail::append<std::uint32_t>(bytes, tensor_type);
     detail::append(bytes, tensor.offset);
   }
   while (bytes.size() % 32 != 0) {

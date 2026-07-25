@@ -1,5 +1,9 @@
-use brt_runtime::{Engine, EngineConfig, Model, SessionConfig};
+use brt_runtime::{
+    BenchmarkConfig, Engine, EngineConfig, GenerationConfig, GenerationSession, Model,
+    SessionConfig, TokenResult, benchmark_session, generate_token_ids,
+};
 use std::{
+    collections::VecDeque,
     fs::File,
     io::Write,
     path::PathBuf,
@@ -29,6 +33,18 @@ fn smoke_reports_unavailable_without_cuda_backend() {
     let error = engine
         .run_smoke()
         .expect_err("host-only build cannot run CUDA smoke");
+
+    assert_eq!(error.code(), 2);
+    assert!(error.to_string().contains("CUDA backend is not enabled"));
+}
+
+#[test]
+fn peak_gpu_allocation_reports_unavailable_without_cuda_backend() {
+    let engine = Engine::new(EngineConfig::default()).expect("engine creation");
+
+    let error = engine
+        .peak_allocated_gpu_bytes()
+        .expect_err("host-only build cannot report GPU allocation");
 
     assert_eq!(error.code(), 2);
     assert!(error.to_string().contains("CUDA backend is not enabled"));
@@ -87,6 +103,169 @@ fn session_rejects_zero_context_in_rust() {
     assert!(error.to_string().contains("max_context_tokens"));
 }
 
+#[test]
+fn greedy_generation_prefills_once_and_decodes_once_per_following_token() {
+    let mut session = ScriptedSession::new(
+        [Ok(token_result(20))],
+        [Ok(token_result(21)), Ok(token_result(22))],
+    );
+
+    let generated = generate_token_ids(
+        &mut session,
+        &[10, 11],
+        GenerationConfig {
+            max_new_tokens: 3,
+            context_tokens: 8,
+        },
+        |_| false,
+    )
+    .expect("generation");
+
+    assert_eq!(generated, vec![20, 21, 22]);
+    assert_eq!(session.reset_calls, 1);
+    assert_eq!(session.prefill_inputs, vec![vec![10, 11]]);
+    assert_eq!(session.decode_inputs, vec![20, 21]);
+}
+
+#[test]
+fn greedy_generation_omits_eos_returned_by_prefill() {
+    let mut session = ScriptedSession::new([Ok(token_result(99))], []);
+
+    let generated = generate_token_ids(
+        &mut session,
+        &[10],
+        GenerationConfig {
+            max_new_tokens: 4,
+            context_tokens: 8,
+        },
+        |token| token == 99,
+    )
+    .expect("generation");
+
+    assert!(generated.is_empty());
+    assert!(session.decode_inputs.is_empty());
+}
+
+#[test]
+fn greedy_generation_stops_on_eot_returned_by_decode() {
+    let mut session = ScriptedSession::new([Ok(token_result(20))], [Ok(token_result(98))]);
+
+    let generated = generate_token_ids(
+        &mut session,
+        &[10],
+        GenerationConfig {
+            max_new_tokens: 4,
+            context_tokens: 8,
+        },
+        |token| matches!(token, 98 | 99),
+    )
+    .expect("generation");
+
+    assert_eq!(generated, vec![20]);
+    assert_eq!(session.decode_inputs, vec![20]);
+}
+
+#[test]
+fn greedy_generation_obeys_the_max_token_limit_without_an_extra_decode() {
+    let mut session = ScriptedSession::new([Ok(token_result(20))], []);
+
+    let generated = generate_token_ids(
+        &mut session,
+        &[10],
+        GenerationConfig {
+            max_new_tokens: 1,
+            context_tokens: 8,
+        },
+        |_| false,
+    )
+    .expect("generation");
+
+    assert_eq!(generated, vec![20]);
+    assert!(session.decode_inputs.is_empty());
+}
+
+#[test]
+fn greedy_generation_rejects_context_overflow_before_touching_the_session() {
+    let mut session = ScriptedSession::new([], []);
+
+    let error = generate_token_ids(
+        &mut session,
+        &[10, 11, 12],
+        GenerationConfig {
+            max_new_tokens: 2,
+            context_tokens: 4,
+        },
+        |_| false,
+    )
+    .expect_err("three prompt and two generated tokens do not fit");
+
+    assert!(
+        error
+            .to_string()
+            .contains("3 prompt tokens plus 2 requested new tokens exceed the 4-token context")
+    );
+    assert_eq!(session.reset_calls, 0);
+    assert!(session.prefill_inputs.is_empty());
+}
+
+#[test]
+fn greedy_generation_resets_the_session_for_safe_reuse() {
+    let mut session = ScriptedSession::new([Ok(token_result(20)), Ok(token_result(30))], []);
+    let config = GenerationConfig {
+        max_new_tokens: 1,
+        context_tokens: 8,
+    };
+
+    let first =
+        generate_token_ids(&mut session, &[10], config, |_| false).expect("first generation");
+    let second =
+        generate_token_ids(&mut session, &[11], config, |_| false).expect("second generation");
+
+    assert_eq!(first, vec![20]);
+    assert_eq!(second, vec![30]);
+    assert_eq!(session.reset_calls, 2);
+    assert_eq!(session.prefill_inputs, vec![vec![10], vec![11]]);
+}
+
+#[test]
+fn benchmark_warms_up_then_measures_prefill_and_generated_tokens_in_one_session() {
+    let mut session = ScriptedSession::new(
+        [
+            Ok(token_result(20)),
+            Ok(token_result(30)),
+            Ok(token_result(40)),
+        ],
+        [
+            Ok(token_result(21)),
+            Ok(token_result(22)),
+            Ok(token_result(31)),
+            Ok(token_result(32)),
+            Ok(token_result(41)),
+            Ok(token_result(42)),
+        ],
+    );
+
+    let timings = benchmark_session(
+        &mut session,
+        &[10, 11],
+        BenchmarkConfig {
+            warmup_iterations: 2,
+            measured_iterations: 1,
+            generated_tokens: 3,
+        },
+    )
+    .expect("benchmark");
+
+    assert_eq!(timings.prefill_microseconds.len(), 1);
+    assert_eq!(timings.generation_microseconds.len(), 1);
+    assert_eq!(session.reset_calls, 3);
+    assert_eq!(
+        session.prefill_inputs,
+        vec![vec![10, 11], vec![10, 11], vec![10, 11]]
+    );
+    assert_eq!(session.decode_inputs, vec![20, 21, 30, 31, 40, 41]);
+}
+
 #[allow(dead_code)]
 fn session_lifetime_is_tied_to_model<'engine, 'model>(
     model: &'model Model<'engine>,
@@ -96,6 +275,59 @@ fn session_lifetime_is_tied_to_model<'engine, 'model>(
             max_context_tokens: 8,
         })
         .expect("session creation")
+}
+
+fn token_result(token_id: i32) -> TokenResult {
+    TokenResult {
+        token_id,
+        position: 0,
+    }
+}
+
+struct ScriptedSession {
+    reset_calls: usize,
+    prefill_inputs: Vec<Vec<i32>>,
+    decode_inputs: Vec<i32>,
+    prefill_results: VecDeque<Result<TokenResult, &'static str>>,
+    decode_results: VecDeque<Result<TokenResult, &'static str>>,
+}
+
+impl ScriptedSession {
+    fn new(
+        prefill_results: impl IntoIterator<Item = Result<TokenResult, &'static str>>,
+        decode_results: impl IntoIterator<Item = Result<TokenResult, &'static str>>,
+    ) -> Self {
+        Self {
+            reset_calls: 0,
+            prefill_inputs: Vec::new(),
+            decode_inputs: Vec::new(),
+            prefill_results: prefill_results.into_iter().collect(),
+            decode_results: decode_results.into_iter().collect(),
+        }
+    }
+}
+
+impl GenerationSession for ScriptedSession {
+    type Error = &'static str;
+
+    fn reset(&mut self) -> Result<(), Self::Error> {
+        self.reset_calls += 1;
+        Ok(())
+    }
+
+    fn prefill(&mut self, tokens: &[i32]) -> Result<TokenResult, Self::Error> {
+        self.prefill_inputs.push(tokens.to_vec());
+        self.prefill_results
+            .pop_front()
+            .expect("scripted prefill result")
+    }
+
+    fn decode(&mut self, token_id: i32) -> Result<TokenResult, Self::Error> {
+        self.decode_inputs.push(token_id);
+        self.decode_results
+            .pop_front()
+            .expect("scripted decode result")
+    }
 }
 
 struct TemporaryGguf {

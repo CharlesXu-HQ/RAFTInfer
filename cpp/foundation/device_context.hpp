@@ -45,6 +45,7 @@ class DeviceContext {
   DeviceContext(int device_id, uint64_t initial_pool_bytes);
   ~DeviceContext() noexcept;
   BrtSmokeResult run_smoke();
+  std::uint64_t peak_allocated_bytes();
   std::unique_ptr<DeviceExecutionOwner>
   create_execution_owner(std::size_t workspace_bytes) const;
   std::unique_ptr<model::CudaWeightPlan>

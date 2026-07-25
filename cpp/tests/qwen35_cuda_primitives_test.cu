@@ -377,6 +377,39 @@ void run_dtype_tests(brt::ExecutionContext& context) {
                              brt::reference::SwiGluShape{gate.size()});
       assert_matches<T>(actual, expected);
     }
+
+    {
+      constexpr std::size_t heads = 3;
+      constexpr std::size_t head_dim = 5;
+      constexpr std::size_t hidden = heads * head_dim;
+      const auto query_gate_f32 = sequence(rows * hidden * 2, 0.013F, 0.2F);
+      const auto query_gate = encode<T>(query_gate_f32);
+      const auto device_query_gate = upload(context, std::span{query_gate});
+      DeviceBuffer device_query{context, rows * hidden * sizeof(T)};
+      DeviceBuffer device_gate{context, rows * hidden * sizeof(T)};
+      brt::kernels::qwen35_split_full_query_gate(
+          device_query_gate.data(), device_query.data(), device_gate.data(),
+          rows, heads, head_dim, DTypeTraits<T>::dtype, context.stream());
+      const auto actual_query =
+          download<T>(context, device_query.data(), rows * hidden);
+      const auto actual_gate =
+          download<T>(context, device_gate.data(), rows * hidden);
+      std::vector<float> expected_query(rows * hidden);
+      std::vector<float> expected_gate(rows * hidden);
+      for (std::size_t token = 0; token < rows; ++token) {
+        for (std::size_t head = 0; head < heads; ++head) {
+          for (std::size_t dim = 0; dim < head_dim; ++dim) {
+            const std::size_t dest = token * hidden + head * head_dim + dim;
+            const std::size_t source =
+                token * hidden * 2 + head * head_dim * 2 + dim;
+            expected_query[dest] = query_gate_f32[source];
+            expected_gate[dest] = query_gate_f32[source + head_dim];
+          }
+        }
+      }
+      assert_matches<T>(actual_query, expected_query);
+      assert_matches<T>(actual_gate, expected_gate);
+    }
   }
 }
 

@@ -20,6 +20,7 @@ public:
   ~Engine();
   bool cuda_enabled() const noexcept;
   BrtSmokeResult run_smoke();
+  std::uint64_t peak_allocated_gpu_bytes();
   std::shared_ptr<model::Model> load_model(const std::string &gguf_path) const;
 
 private:

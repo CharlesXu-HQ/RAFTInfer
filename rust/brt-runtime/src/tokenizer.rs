@@ -81,6 +81,7 @@ pub struct Tokenizer {
     merges: HashMap<(String, String), usize>,
     protected_tokens: Vec<(String, i32)>,
     skip_special_ids: HashSet<i32>,
+    stop_token_ids: HashSet<i32>,
     byte_encoder: [char; 256],
     byte_decoder: HashMap<char, u8>,
     bos_token_id: Option<i32>,
@@ -180,13 +181,11 @@ impl Tokenizer {
         let mut skip_special_ids = HashSet::new();
         let bos_token_id = metadata.optional_u32("tokenizer.ggml.bos_token_id")?;
         let eos_token_id = metadata.optional_u32("tokenizer.ggml.eos_token_id")?;
+        let eot_token_id = metadata.optional_u32("tokenizer.ggml.eot_token_id")?;
         for (key, id) in [
             ("tokenizer.ggml.bos_token_id", bos_token_id),
             ("tokenizer.ggml.eos_token_id", eos_token_id),
-            (
-                "tokenizer.ggml.eot_token_id",
-                metadata.optional_u32("tokenizer.ggml.eot_token_id")?,
-            ),
+            ("tokenizer.ggml.eot_token_id", eot_token_id),
             (
                 "tokenizer.ggml.padding_token_id",
                 metadata.optional_u32("tokenizer.ggml.padding_token_id")?,
@@ -223,6 +222,11 @@ impl Tokenizer {
         protected_tokens.sort_by_key(|entry| Reverse(entry.0.len()));
 
         let (byte_encoder, byte_decoder) = byte_maps();
+        let stop_token_ids = [eos_token_id, eot_token_id]
+            .into_iter()
+            .flatten()
+            .map(|id| id as i32)
+            .collect();
 
         Ok(Self {
             vocab,
@@ -230,6 +234,7 @@ impl Tokenizer {
             merges: merge_ranks,
             protected_tokens,
             skip_special_ids,
+            stop_token_ids,
             byte_encoder,
             byte_decoder,
             bos_token_id: bos_token_id.map(|id| id as i32),
@@ -377,6 +382,10 @@ impl Tokenizer {
             rendered.push_str("<|im_start|>assistant\n<think>\n");
         }
         Ok(rendered)
+    }
+
+    pub fn is_stop_token(&self, token_id: i32) -> bool {
+        self.stop_token_ids.contains(&token_id)
     }
 
     fn encode_piece(&self, piece: &str, tokens: &mut Vec<i32>) -> Result<(), TokenizerError> {

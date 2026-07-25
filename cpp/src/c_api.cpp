@@ -126,6 +126,28 @@ extern "C" BrtStatus brt_engine_run_smoke(BrtEngineHandle *engine,
   }
 }
 
+extern "C" BrtStatus brt_engine_peak_allocated_gpu_bytes(
+    BrtEngineHandle *engine, uint64_t *out_peak_allocated_gpu_bytes) {
+  clear_last_error();
+  if (engine == nullptr || out_peak_allocated_gpu_bytes == nullptr) {
+    return fail(
+        BRT_STATUS_INVALID_ARGUMENT,
+        "engine and out_peak_allocated_gpu_bytes are required");
+  }
+  if (!engine->engine.cuda_enabled()) {
+    return fail(BRT_STATUS_UNAVAILABLE, "CUDA backend is not enabled");
+  }
+  try {
+    *out_peak_allocated_gpu_bytes =
+        engine->engine.peak_allocated_gpu_bytes();
+    return BrtStatus{BRT_STATUS_OK, nullptr};
+  } catch (const std::exception &error) {
+    return fail(BRT_STATUS_CUDA_ERROR, error.what());
+  } catch (...) {
+    return fail(BRT_STATUS_CUDA_ERROR, "CUDA error");
+  }
+}
+
 extern "C" BrtStatus brt_engine_load_model(BrtEngineHandle *engine,
                                            const char *gguf_path,
                                            BrtModelHandle **out_model) {
@@ -236,6 +258,8 @@ extern "C" BrtStatus brt_session_create(BrtModelHandle *model,
     return fail(BRT_STATUS_INVALID_ARGUMENT, error.what());
   } catch (const std::length_error &error) {
     return fail(BRT_STATUS_RESOURCE_EXHAUSTED, error.what());
+  } catch (const brt::SessionCudaError &error) {
+    return fail(BRT_STATUS_CUDA_ERROR, error.what());
   } catch (const std::exception &error) {
     return fail(BRT_STATUS_INTERNAL, error.what());
   } catch (...) {
@@ -257,9 +281,20 @@ extern "C" BrtStatus brt_session_prefill(BrtSessionHandle *session,
       return fail(BRT_STATUS_INVALID_ARGUMENT,
                   "prefill token_count must be non-zero");
     }
-    (void)session;
-    return fail(BRT_STATUS_UNAVAILABLE,
-                "Qwen3.5 prefill backend is not available in host-only build");
+    const auto result =
+        session->session->prefill({tokens, token_count});
+    out_result->token_id = result.token_id;
+    out_result->position = result.position;
+    return BrtStatus{BRT_STATUS_OK, nullptr};
+  } catch (const std::invalid_argument &error) {
+    return fail(BRT_STATUS_INVALID_ARGUMENT, error.what());
+  } catch (const brt::SessionUnavailableError &error) {
+    return fail(BRT_STATUS_UNAVAILABLE, error.what());
+  } catch (const brt::SessionCudaError &error) {
+    return fail(BRT_STATUS_CUDA_ERROR, error.what());
+  } catch (const std::bad_alloc &) {
+    return fail(BRT_STATUS_RESOURCE_EXHAUSTED,
+                "prefill exhausted host memory");
   } catch (const std::exception &error) {
     return fail(BRT_STATUS_INTERNAL, error.what());
   } catch (...) {
@@ -276,10 +311,19 @@ extern "C" BrtStatus brt_session_decode(BrtSessionHandle *session,
       return fail(BRT_STATUS_INVALID_ARGUMENT,
                   "session and out_result are required");
     }
-    (void)session;
-    (void)token_id;
-    return fail(BRT_STATUS_UNAVAILABLE,
-                "Qwen3.5 decode backend is not available in host-only build");
+    const auto result = session->session->decode(token_id);
+    out_result->token_id = result.token_id;
+    out_result->position = result.position;
+    return BrtStatus{BRT_STATUS_OK, nullptr};
+  } catch (const std::invalid_argument &error) {
+    return fail(BRT_STATUS_INVALID_ARGUMENT, error.what());
+  } catch (const brt::SessionUnavailableError &error) {
+    return fail(BRT_STATUS_UNAVAILABLE, error.what());
+  } catch (const brt::SessionCudaError &error) {
+    return fail(BRT_STATUS_CUDA_ERROR, error.what());
+  } catch (const std::bad_alloc &) {
+    return fail(BRT_STATUS_RESOURCE_EXHAUSTED,
+                "decode exhausted host memory");
   } catch (const std::exception &error) {
     return fail(BRT_STATUS_INTERNAL, error.what());
   } catch (...) {
@@ -295,6 +339,8 @@ extern "C" BrtStatus brt_session_reset(BrtSessionHandle *session) {
     }
     session->session->reset();
     return BrtStatus{BRT_STATUS_OK, nullptr};
+  } catch (const brt::SessionCudaError &error) {
+    return fail(BRT_STATUS_CUDA_ERROR, error.what());
   } catch (const std::exception &error) {
     return fail(BRT_STATUS_INTERNAL, error.what());
   } catch (...) {

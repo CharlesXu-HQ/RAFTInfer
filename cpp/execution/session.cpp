@@ -1,22 +1,143 @@
 #include "session.hpp"
 
+#if BRT_ENABLE_CUDA
+#include "qwen35_executor.hpp"
+
+#include "../foundation/device_context.hpp"
+#include "../model/cuda_weights.hpp"
+#endif
+
 #include <stdexcept>
 #include <utility>
 
 namespace brt {
+namespace {
+
+Qwen35StateLayout
+create_session_layout(const std::shared_ptr<const model::Model> &model,
+                      std::uint32_t max_context_tokens) {
+  if (!model) {
+    throw std::invalid_argument("model is required");
+  }
+  if (max_context_tokens > model->qwen35_config().context_length) {
+    throw std::invalid_argument(
+        "max_context_tokens exceeds model context length");
+  }
+  return Qwen35StateLayout::create(model->qwen35_config(),
+                                   max_context_tokens);
+}
+
+void validate_request(const model::Qwen35Config &config,
+                      const Qwen35HostState &state,
+                      std::span<const std::int32_t> tokens) {
+  if (tokens.empty()) {
+    throw std::invalid_argument("Qwen3.5 token span must not be empty");
+  }
+  const auto position = state.position();
+  const auto max_context = state.layout().max_context_tokens;
+  if (tokens.size() > max_context - position) {
+    throw std::invalid_argument("Qwen3.5 request exceeds session context");
+  }
+  for (const auto token : tokens) {
+    if (token < 0) {
+      throw std::invalid_argument("Qwen3.5 token id is negative");
+    }
+    if (static_cast<std::size_t>(token) >= config.vocabulary_size) {
+      throw std::invalid_argument("Qwen3.5 token id is out of range");
+    }
+  }
+}
+
+} // namespace
 
 Session::Session(std::shared_ptr<const model::Model> model,
                  std::uint32_t max_context_tokens)
     : model_(std::move(model)),
-      state_(Qwen35StateLayout::create(model_ ? model_->qwen35_config()
-                                              : throw std::invalid_argument(
-                                                    "model is required"),
-                                      max_context_tokens)) {}
+      state_(create_session_layout(model_, max_context_tokens),
+             Qwen35HostStorage::LogicalOnly) {
+#if BRT_ENABLE_CUDA
+  if (!model_->cuda_ready()) {
+    return;
+  }
+  try {
+    const auto device = model_->device_context();
+    const auto *weights = model_->cuda_weights();
+    if (!device || weights == nullptr) {
+      throw std::logic_error("CUDA model attachment is incomplete");
+    }
+    execution_owner_ = device->create_execution_owner(
+        Qwen35Executor::workspace_bytes(model_->qwen35_config(),
+                                        max_context_tokens));
+    auto context = execution_owner_->execution_context();
+    executor_ = std::make_unique<Qwen35Executor>(
+        context, model_->qwen35_config(), *weights, max_context_tokens);
+  } catch (const std::bad_alloc &) {
+    throw;
+  } catch (const std::exception &error) {
+    throw SessionCudaError(error.what());
+  }
+#endif
+}
+
+Session::~Session() noexcept = default;
 
 const model::Model &Session::model() const noexcept { return *model_; }
 
 const Qwen35HostState &Session::host_state() const noexcept { return state_; }
 
-void Session::reset() noexcept { state_.reset(); }
+SessionTokenResult
+Session::prefill(std::span<const std::int32_t> tokens) {
+  validate_request(model_->qwen35_config(), state_, tokens);
+#if BRT_ENABLE_CUDA
+  if (executor_) {
+    try {
+      const auto result = executor_->prefill(tokens);
+      state_.commit_tokens(static_cast<std::uint32_t>(tokens.size()));
+      return SessionTokenResult{.token_id = result.token,
+                                .position = result.position};
+    } catch (const std::bad_alloc &) {
+      throw;
+    } catch (const std::exception &error) {
+      throw SessionCudaError(error.what());
+    }
+  }
+#endif
+  throw SessionUnavailableError(
+      "Qwen3.5 prefill backend requires a CUDA-loaded model");
+}
+
+SessionTokenResult Session::decode(std::int32_t token) {
+  const std::span<const std::int32_t> tokens{&token, 1};
+  validate_request(model_->qwen35_config(), state_, tokens);
+#if BRT_ENABLE_CUDA
+  if (executor_) {
+    try {
+      const auto result = executor_->decode(token);
+      state_.commit_tokens(1);
+      return SessionTokenResult{.token_id = result.token,
+                                .position = result.position};
+    } catch (const std::bad_alloc &) {
+      throw;
+    } catch (const std::exception &error) {
+      throw SessionCudaError(error.what());
+    }
+  }
+#endif
+  throw SessionUnavailableError(
+      "Qwen3.5 decode backend requires a CUDA-loaded model");
+}
+
+void Session::reset() {
+#if BRT_ENABLE_CUDA
+  if (executor_) {
+    try {
+      executor_->reset();
+    } catch (const std::exception &error) {
+      throw SessionCudaError(error.what());
+    }
+  }
+#endif
+  state_.reset();
+}
 
 } // namespace brt

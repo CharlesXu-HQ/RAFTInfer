@@ -12,6 +12,7 @@
 #include <new>
 #include <span>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -155,6 +156,12 @@ int main() {
   expect_throw<std::invalid_argument>(
       "empty layout in host state constructor",
       [] { (void)brt::Qwen35HostState{brt::Qwen35StateLayout{}}; });
+  expect_throw<std::invalid_argument>(
+      "unknown host storage mode",
+      [&] {
+        (void)brt::Qwen35HostState{
+            small_layout, static_cast<brt::Qwen35HostStorage>(99)};
+      });
 
   auto zero_count_with_slot = valid_small_layout();
   zero_count_with_slot.linear_layer_count = 0;
@@ -236,6 +243,7 @@ int main() {
       [&] { (void)brt::Qwen35StateLayout::create(overflowing, 2); });
 
   brt::Qwen35HostState state{small_layout};
+  assert(state.has_tensor_storage());
   const auto *convolution_base = state.linear_convolution(0).data();
   const auto *recurrent_base = state.linear_recurrent(1).data();
   const auto *kv_base = state.full_kv(2).data();
@@ -308,4 +316,27 @@ int main() {
   expect_all_zero(state.linear_convolution(0));
   expect_all_zero(state.linear_recurrent(1));
   expect_all_zero(state.full_kv(2));
+
+  auto logical_layout = valid_small_layout();
+  g_allocation_count.store(0, std::memory_order_relaxed);
+  brt::Qwen35HostState logical_only{std::move(logical_layout),
+                                    brt::Qwen35HostStorage::LogicalOnly};
+  assert(g_allocation_count.load(std::memory_order_relaxed) == 1);
+  assert(!logical_only.has_tensor_storage());
+  assert(logical_only.position() == 0);
+  assert(logical_only.full_kv_length(2) == 0);
+  expect_throw<std::logic_error>(
+      "logical-only state rejects convolution access",
+      [&] { (void)logical_only.linear_convolution(0); });
+  expect_throw<std::logic_error>(
+      "logical-only state rejects recurrent access",
+      [&] { (void)logical_only.linear_recurrent(0); });
+  expect_throw<std::logic_error>("logical-only state rejects KV access",
+                                 [&] { (void)logical_only.full_kv(2); });
+  g_allocation_count.store(0, std::memory_order_relaxed);
+  logical_only.commit_tokens(3);
+  logical_only.reset();
+  assert(g_allocation_count.load(std::memory_order_relaxed) == 0);
+  assert(logical_only.position() == 0);
+  assert(logical_only.full_kv_length(2) == 0);
 }

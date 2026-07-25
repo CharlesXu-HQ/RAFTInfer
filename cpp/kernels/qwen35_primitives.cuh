@@ -70,4 +70,19 @@ void qwen35_swiglu(const void* gate, const void* up, void* output,
 void qwen35_argmax(const float* logits, std::int32_t* output_index,
                    std::size_t elements, cudaStream_t stream);
 
+void qwen35_argmax_typed(const void* logits, std::int32_t* output_index,
+                         std::size_t elements, BrtDataType dtype,
+                         cudaStream_t stream);
+
+void qwen35_split_full_query_gate(const void* query_gate, void* query,
+                                  void* gate, std::size_t tokens,
+                                  std::size_t heads, std::size_t head_dim,
+                                  BrtDataType dtype, cudaStream_t stream);
+
+void qwen35_pack_linear_delta_input(
+    const void* qkv, const void* beta, const void* alpha, const void* gate,
+    void* packed, std::size_t tokens, std::size_t qkv_width,
+    std::size_t beta_width, std::size_t alpha_width, std::size_t gate_width,
+    BrtDataType dtype, cudaStream_t stream);
+
 }  // namespace brt::kernels

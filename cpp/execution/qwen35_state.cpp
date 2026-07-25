@@ -267,18 +267,37 @@ Qwen35StateLayout::create(const model::Qwen35Config &config,
   return layout;
 }
 
-Qwen35HostState::Qwen35HostState(Qwen35StateLayout layout)
+Qwen35HostState::Qwen35HostState(Qwen35StateLayout layout,
+                                 Qwen35HostStorage storage)
     : layout_(require_valid_layout(std::move(layout))),
+      storage_(storage),
       full_kv_lengths_(layout_.full_layer_count),
-      linear_convolution_(checked_mul(
-          layout_.linear_layer_count, layout_.linear_convolution_floats_per_layer)),
-      linear_recurrent_(checked_mul(
-          layout_.linear_layer_count, layout_.linear_recurrent_floats_per_layer)),
-      full_kv_(checked_mul(layout_.full_layer_count,
-                           layout_.full_kv_floats_per_layer)) {}
+      linear_convolution_(
+          storage_ == Qwen35HostStorage::Full
+              ? checked_mul(layout_.linear_layer_count,
+                            layout_.linear_convolution_floats_per_layer)
+              : 0),
+      linear_recurrent_(
+          storage_ == Qwen35HostStorage::Full
+              ? checked_mul(layout_.linear_layer_count,
+                            layout_.linear_recurrent_floats_per_layer)
+              : 0),
+      full_kv_(storage_ == Qwen35HostStorage::Full
+                   ? checked_mul(layout_.full_layer_count,
+                                 layout_.full_kv_floats_per_layer)
+                   : 0) {
+  if (storage_ != Qwen35HostStorage::Full &&
+      storage_ != Qwen35HostStorage::LogicalOnly) {
+    throw std::invalid_argument("unknown Qwen3.5 host storage mode");
+  }
+}
 
 const Qwen35StateLayout &Qwen35HostState::layout() const noexcept {
   return layout_;
+}
+
+bool Qwen35HostState::has_tensor_storage() const noexcept {
+  return storage_ == Qwen35HostStorage::Full;
 }
 
 std::uint32_t Qwen35HostState::position() const noexcept { return position_; }
@@ -295,6 +314,10 @@ std::uint32_t Qwen35HostState::full_kv_length(std::uint32_t layer) const {
 }
 
 std::span<float> Qwen35HostState::linear_convolution(std::uint32_t layer) {
+  if (!has_tensor_storage()) {
+    throw std::logic_error(
+        "Qwen3.5 logical-only host state has no convolution storage");
+  }
   if (layer >= layout_.linear_slots_by_block.size()) {
     throw std::out_of_range("Qwen3.5 linear layer index out of range");
   }
@@ -308,6 +331,10 @@ std::span<float> Qwen35HostState::linear_convolution(std::uint32_t layer) {
 
 std::span<const float>
 Qwen35HostState::linear_convolution(std::uint32_t layer) const {
+  if (!has_tensor_storage()) {
+    throw std::logic_error(
+        "Qwen3.5 logical-only host state has no convolution storage");
+  }
   if (layer >= layout_.linear_slots_by_block.size()) {
     throw std::out_of_range("Qwen3.5 linear layer index out of range");
   }
@@ -320,6 +347,10 @@ Qwen35HostState::linear_convolution(std::uint32_t layer) const {
 }
 
 std::span<float> Qwen35HostState::linear_recurrent(std::uint32_t layer) {
+  if (!has_tensor_storage()) {
+    throw std::logic_error(
+        "Qwen3.5 logical-only host state has no recurrent storage");
+  }
   if (layer >= layout_.linear_slots_by_block.size()) {
     throw std::out_of_range("Qwen3.5 linear layer index out of range");
   }
@@ -333,6 +364,10 @@ std::span<float> Qwen35HostState::linear_recurrent(std::uint32_t layer) {
 
 std::span<const float>
 Qwen35HostState::linear_recurrent(std::uint32_t layer) const {
+  if (!has_tensor_storage()) {
+    throw std::logic_error(
+        "Qwen3.5 logical-only host state has no recurrent storage");
+  }
   if (layer >= layout_.linear_slots_by_block.size()) {
     throw std::out_of_range("Qwen3.5 linear layer index out of range");
   }
@@ -345,6 +380,10 @@ Qwen35HostState::linear_recurrent(std::uint32_t layer) const {
 }
 
 std::span<float> Qwen35HostState::full_kv(std::uint32_t layer) {
+  if (!has_tensor_storage()) {
+    throw std::logic_error(
+        "Qwen3.5 logical-only host state has no full-attention KV storage");
+  }
   if (layer >= layout_.full_slots_by_block.size()) {
     throw std::out_of_range("Qwen3.5 full KV layer index out of range");
   }
@@ -356,6 +395,10 @@ std::span<float> Qwen35HostState::full_kv(std::uint32_t layer) {
 }
 
 std::span<const float> Qwen35HostState::full_kv(std::uint32_t layer) const {
+  if (!has_tensor_storage()) {
+    throw std::logic_error(
+        "Qwen3.5 logical-only host state has no full-attention KV storage");
+  }
   if (layer >= layout_.full_slots_by_block.size()) {
     throw std::out_of_range("Qwen3.5 full KV layer index out of range");
   }

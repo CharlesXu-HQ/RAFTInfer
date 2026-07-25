@@ -1,4 +1,4 @@
-add_library(brt_cpp STATIC src/status.cpp)
+add_library(brt_cpp ${BRT_NATIVE_LIBRARY_TYPE} src/status.cpp)
 target_sources(brt_cpp PRIVATE
   src/c_api.cpp
   src/engine.cpp
@@ -13,9 +13,13 @@ target_sources(brt_cpp PRIVATE registry/operator_registry.cpp)
 target_sources(brt_cpp PRIVATE benchmarks/benchmark_record.cpp)
 target_compile_features(brt_cpp PUBLIC cxx_std_20)
 target_include_directories(brt_cpp PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-target_compile_definitions(brt_cpp PRIVATE BRT_ENABLE_CUDA=$<BOOL:${BRT_ENABLE_CUDA}>)
+target_compile_definitions(brt_cpp PUBLIC BRT_ENABLE_CUDA=$<BOOL:${BRT_ENABLE_CUDA}>)
 
-add_library(brt_reference STATIC reference/operators.cpp reference/correctness.cpp reference/qwen35.cpp)
+add_library(brt_reference STATIC
+  reference/operators.cpp
+  reference/correctness.cpp
+  reference/qwen35.cpp
+  reference/qwen35_executor.cpp)
 target_compile_features(brt_reference PUBLIC cxx_std_20)
 target_include_directories(brt_reference PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/reference)
 
@@ -31,6 +35,7 @@ if(BRT_ENABLE_CUDA)
     kernels/qwen35_attention.cu
     kernels/qwen35_delta.cu
     kernels/qwen35_primitives.cu
+    execution/qwen35_executor.cu
     kernels/smoke.cu)
   target_link_libraries(brt_cpp PUBLIC raft::raft rmm::rmm CUDA::cudart CUDA::cublasLt)
   target_compile_options(brt_cpp PRIVATE
@@ -38,7 +43,10 @@ if(BRT_ENABLE_CUDA)
 endif()
 
 include(GNUInstallDirs)
-install(TARGETS brt_cpp ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
+install(TARGETS brt_cpp
+  ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+  LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+  RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 
 add_executable(brt-smoke tools/brt_smoke.cpp)
@@ -59,6 +67,9 @@ if(BRT_BUILD_TESTS)
   target_link_libraries(brt_c_api_test PRIVATE brt_cpp)
   target_compile_definitions(brt_c_api_test PRIVATE
     BRT_TEST_CUDA_ENABLED=$<BOOL:${BRT_ENABLE_CUDA}>)
+  if(BRT_ENABLE_CUDA)
+    set_tests_properties(brt_c_api_test PROPERTIES SKIP_RETURN_CODE 77)
+  endif()
   brt_add_assert_test(brt_tensor_validation_test tests/tensor_validation_test.cpp)
   target_link_libraries(brt_tensor_validation_test PRIVATE brt_cpp)
   brt_add_assert_test(brt_workspace_layout_test tests/workspace_layout_test.cpp)
@@ -69,6 +80,10 @@ if(BRT_BUILD_TESTS)
   target_link_libraries(brt_reference_operators_test PRIVATE brt_reference)
   brt_add_assert_test(brt_qwen35_reference_test tests/qwen35_reference_test.cpp)
   target_link_libraries(brt_qwen35_reference_test PRIVATE brt_reference brt_cpp)
+  brt_add_assert_test(brt_qwen35_executor_reference_test
+    tests/qwen35_executor_reference_test.cpp)
+  target_link_libraries(brt_qwen35_executor_reference_test
+    PRIVATE brt_reference brt_cpp)
   brt_add_assert_test(brt_qwen35_fixture_test tests/qwen35_fixture_test.cpp)
   target_link_libraries(brt_qwen35_fixture_test PRIVATE brt_reference brt_cpp)
   target_compile_definitions(brt_qwen35_fixture_test PRIVATE
@@ -86,6 +101,8 @@ if(BRT_BUILD_TESTS)
   target_link_libraries(brt_qwen35_manifest_test PRIVATE brt_cpp)
   brt_add_assert_test(brt_qwen35_state_test tests/qwen35_state_test.cpp)
   target_link_libraries(brt_qwen35_state_test PRIVATE brt_cpp)
+  brt_add_assert_test(brt_session_test tests/session_test.cpp)
+  target_link_libraries(brt_session_test PRIVATE brt_cpp)
   add_test(
     NAME brt_c_api_source_test
     COMMAND ${CMAKE_COMMAND}
@@ -127,5 +144,12 @@ if(BRT_BUILD_TESTS)
     target_link_libraries(brt_qwen35_cuda_delta_test PRIVATE brt_cpp brt_reference)
     target_compile_options(brt_qwen35_cuda_delta_test PRIVATE
       $<$<COMPILE_LANGUAGE:CUDA>:--expt-extended-lambda --expt-relaxed-constexpr>)
+    brt_add_assert_test(brt_qwen35_executor_test
+      tests/qwen35_executor_test.cu)
+    target_link_libraries(brt_qwen35_executor_test PRIVATE brt_reference brt_cpp)
+    target_compile_options(brt_qwen35_executor_test PRIVATE
+      $<$<COMPILE_LANGUAGE:CUDA>:--expt-extended-lambda --expt-relaxed-constexpr>)
+    set_tests_properties(brt_qwen35_executor_test PROPERTIES
+      SKIP_RETURN_CODE 77)
   endif()
 endif()

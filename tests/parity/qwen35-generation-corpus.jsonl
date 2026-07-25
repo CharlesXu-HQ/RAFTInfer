@@ -1,0 +1,4 @@
+{"name":"english-factual","prompt":"What is the capital of France? Answer in one short sentence."}
+{"name":"english-code","prompt":"Write a Rust function that returns the larger of two i32 values."}
+{"name":"simplified-chinese","prompt":"请用一句话解释为什么天空通常看起来是蓝色的。"}
+{"name":"mixed-punctuation","prompt":"解释 GPU/CPU 的区别：latency、throughput，以及“并行度”！"}

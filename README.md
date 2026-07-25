@@ -1,70 +1,125 @@
 # Blackwell RAFT Runtime
 
-Blackwell RAFT Runtime is an RTX 50-series LLM inference runtime foundation. It
-uses RAFT/RMM as the GPU resource and memory layer, then leaves
-performance-critical operators to custom CUDA/CUTLASS kernels.
+Blackwell RAFT Runtime (BRT) is an open-source Qwen3.5 inference runtime for
+RTX 50-series GPUs. RAFT and RMM provide the device-resource, stream, and memory
+foundation; performance-critical model operators are implemented in project
+C++/CUDA code and selected through stable execution plans.
 
-Current milestone: M2A Qwen3.5-9B loader foundation. The runtime now parses
-GGUF v3 catalogs, derives the Qwen3.5 hybrid 3-linear/1-full block plan,
-validates the text-model tensor manifest, memory-maps validated model files,
-and exposes model/tokenizer metadata through coarse C++/Rust handles. It does
-not yet upload weights or run Qwen3.5 inference.
+Current status: the M2 Qwen3.5-9B text-path implementation and host-side
+verification are present. M2 is **not accepted yet**: the current source still
+needs to be synchronized to the RTX 50 target and pass the CUDA build,
+operator/executor correctness tests, exact llama.cpp greedy-token parity,
+performance floor, and real peak-memory measurement described in
+[docs/m2-verification.md](docs/m2-verification.md).
 
 ## Scope
 
-- Targets RTX 50-series consumer Blackwell only. v0.1 does not support RTX 40
-  series.
-- C++ owns GPU pointers, streams, events, allocations, graphs, RAFT resources,
-  RMM resources, and custom kernel launches.
-- Rust uses coarse FFI calls into opaque C++ engine handles. It does not call
-  individual GPU operators directly.
-- M0 imports no `bw24` source code. Future `bw24` custom kernels may be reused
-  directly only when they are already performance-optimized and after license,
-  provenance, functional/numerical correctness, and target-performance evidence
-  are recorded.
+- RTX 50-series consumer Blackwell only (`sm_120a`). RTX 40 is not supported.
+- Qwen3.5-9B text generation in BF16/F16. Vision, MTP, and general quantized
+  execution are deferred.
+- C++ owns GPU pointers, streams, events, RMM allocations, persistent model
+  state, cuBLASLt plans, and custom kernel launches.
+- Rust owns the safe public runtime, tokenizer/chat template, generation loop,
+  machine-readable CLI output, and benchmark orchestration.
+- Rust crosses the coarse C ABI at model/session operations such as prefill,
+  decode, reset, and logits copy; it does not call individual CUDA operators.
+- A `bw24` custom operator may be reused directly when it is already optimized
+  and passes license, provenance, functional/numerical correctness, and RTX 50
+  performance gates. The current M2 CUDA operators are project-native because
+  the audited `bw24` material contained no reusable optimized implementation.
 
-## Host checks
+## What M2 contains
+
+- Bounds-checked GGUF v3 catalog, Qwen3.5 hybrid block-plan validation, named
+  immutable CUDA weights, and fixed cuBLASLt projection plans.
+- Independent CPU FP32 reference semantics for the full hybrid executor.
+- BF16/F16 CUDA primitives for RMSNorm, RoPE/full attention, Gated DeltaNet,
+  gated MLP, residual flow, prefill, decode, and persistent session state.
+- RMM-backed fixed workspace/state allocation; execution loops are tested to
+  perform no additional RMM allocation.
+- Rust Qwen3.5 tokenizer/chat-template handling and greedy generation.
+- JSON generation output carrying both prompt and generated token IDs.
+- One-process prefill/decode benchmark support.
+- RMM logical-allocation peak tracking exposed through the stable C ABI and
+  included in benchmark JSON.
+- Reproducible GGUF preparation, fixed-corpus llama.cpp parity, and fair
+  PP128/PP512 + TG128 benchmark scripts.
+
+## Host verification
 
 ```bash
 scripts/local-check.sh
+cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-This runs the host-only CMake build, CTest, Rust formatting check, and Rust
-workspace tests with the CUDA backend disabled.
+`local-check.sh` builds the host-only C++ implementation, runs CTest, verifies
+native static/shared library selection, exercises the parity/benchmark/GGUF
+scripts with controlled fakes, checks Rust formatting, and runs all Rust tests.
 
-## RTX 50 GPU smoke
+## CUDA build and CLI
 
-The target-verified image build used explicit regional endpoints because the
-official Rustup endpoint stalled on the validation host:
+The CUDA build requires CUDA 13, RAFT 26.06, and RMM 26.06. The repository's
+development image supplies this environment.
 
 ```bash
-docker build --progress=plain \
-  --build-arg CMAKE_PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
-  --build-arg RUSTUP_DIST_SERVER=https://rsproxy.cn \
-  --build-arg RUSTUP_UPDATE_ROOT=https://rsproxy.cn/rustup \
-  -f containers/Dockerfile.dev \
-  -t brt-dev:26.06-cuda13 .
-scripts/gpu-smoke.sh
+cmake -S . -B build/cuda -G Ninja \
+  -DBRT_ENABLE_CUDA=ON \
+  -DBRT_BUILD_TESTS=ON
+cmake --build build/cuda
+scripts/gpu-preflight.sh
+ctest --test-dir build/cuda --output-on-failure
+
+BRT_ENABLE_CUDA=ON cargo build --release -p brt-cli
+target/release/brt-cli generate \
+  --model /path/to/Qwen3.5-9B-bf16.gguf \
+  --prompt "用一句话解释 RAFT 在本项目中的作用。" \
+  --max-new-tokens 32 \
+  --context 4096 \
+  --output-format json
 ```
 
-The Dockerfile defaults remain the official PyPI and Rust endpoints. Use the
-build arguments only when the target environment requires an explicit mirror.
+CUDA builds default `brt_cpp` to a shared native library so the CMake target
+encapsulates the CUDA/RAFT/RMM/cuBLASLt dependency closure. Host builds default
+to a static library. `BRT_NATIVE_LIBRARY_TYPE=STATIC|SHARED` can override this
+choice explicitly.
 
-The GPU runner refuses to start when it detects another compute workload,
-insufficient memory headroom, excessive utilization, invalid GPU telemetry, or
-another active BRT smoke run. It exposes only GPU 0 to the container and repeats
-the preflight inside the container before launching the smoke kernel.
+## Parity and performance
 
-The verified M0 golden output is:
+Prepare a new artifact only from pinned model, Transformers, converter, and
+reference revisions:
 
-```json
-{"device_id":0,"element_count":1024,"checksum":523776}
+```bash
+HF_MODEL_DIR=/path/to/Qwen3.5-9B \
+HF_MODEL_REVISION=<40-char-revision> \
+TRANSFORMERS_REVISION=<40-char-revision> \
+LLAMA_CONVERTER_DIR=/path/to/llama.cpp-converter \
+LLAMA_CONVERTER_REVISION=<40-char-revision> \
+LLAMA_REFERENCE_DIR=/path/to/llama.cpp-reference \
+LLAMA_REFERENCE_REVISION=<40-char-revision> \
+OUTPUT_GGUF=/path/to/Qwen3.5-9B-bf16.gguf \
+PROVENANCE_OUTPUT=/path/to/Qwen3.5-9B-bf16.provenance.json \
+scripts/prepare-qwen35-gguf.sh
 ```
 
-See [docs/m1-verification.md](docs/m1-verification.md) for the current M1
-verification contract, [docs/m2a-verification.md](docs/m2a-verification.md) for
-the host-only Qwen3.5 loader evidence,
-[docs/m0-verification.md](docs/m0-verification.md) for the original target
-smoke evidence, and
-[docs/provenance/dependencies.md](docs/provenance/dependencies.md) for
+Then run exact token parity before benchmarking:
+
+```bash
+BRT_MODEL=/path/to/Qwen3.5-9B-bf16.gguf \
+LLAMA_SERVER_BIN=/path/to/llama-server \
+scripts/qwen35-parity.sh
+
+BRT_MODEL=/path/to/Qwen3.5-9B-bf16.gguf \
+LLAMA_SERVER_BIN=/path/to/llama-server \
+scripts/qwen35-benchmark.sh
+```
+
+Both GPU scripts take a cooperative lock and execute
+`scripts/gpu-preflight.sh`. The benchmark refuses to start unless every parity
+record passes. On a shared GPU, do not bypass this guard or stop unrelated
+processes.
+
+See [docs/m2-verification.md](docs/m2-verification.md) for the current evidence,
+[docs/provenance/qwen35-9b.md](docs/provenance/qwen35-9b.md) for artifact
+provenance status, [docs/m1-verification.md](docs/m1-verification.md) for M1,
+and [docs/provenance/dependencies.md](docs/provenance/dependencies.md) for
 dependency provenance.

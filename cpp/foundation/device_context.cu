@@ -11,6 +11,7 @@
 #include <rmm/cuda_stream_view.hpp>
 #include <rmm/mr/cuda_memory_resource.hpp>
 #include <rmm/mr/pool_memory_resource.hpp>
+#include <rmm/mr/statistics_resource_adaptor.hpp>
 #include <cuda/stream_ref>
 #include <cuda_runtime_api.h>
 
@@ -72,9 +73,12 @@ class DeviceGuard {
 class DeviceContext::Resources {
  public:
   Resources(int device_id, uint64_t initial_pool_bytes)
-      : cuda_resource_(), pool_(cuda_resource_, initial_pool_bytes), workspace_arena_(), resources_() {
-    raft::resource::set_workspace_resource(resources_, raft::mr::device_resource{pool_});
-    raft::resource::set_large_workspace_resource(resources_, raft::mr::device_resource{pool_});
+      : cuda_resource_(), pool_(cuda_resource_, initial_pool_bytes),
+        statistics_(pool_), workspace_arena_(), resources_() {
+    raft::resource::set_workspace_resource(
+        resources_, raft::mr::device_resource{statistics_});
+    raft::resource::set_large_workspace_resource(
+        resources_, raft::mr::device_resource{statistics_});
     cudaDeviceProp properties{};
     cudaError_t error = cudaGetDeviceProperties(&properties, device_id);
     if (error != cudaSuccess) throw_cuda_error(error);
@@ -84,7 +88,8 @@ class DeviceContext::Resources {
     auto stream_view = raft::resource::get_cuda_stream(resources_);
     cudaStream_t stream = stream_view.value();
     workspace_arena_.emplace(
-        rmm::device_async_resource_ref{pool_}, cuda::stream_ref{stream}, stream, kWorkspaceBytes);
+        rmm::device_async_resource_ref{statistics_}, cuda::stream_ref{stream},
+        stream, kWorkspaceBytes);
   }
 
   ExecutionContext execution_context(int device_id) {
@@ -97,7 +102,7 @@ class DeviceContext::Resources {
     cudaStream_t stream = stream_view.value();
     return ExecutionContext{
         resources_,
-        rmm::device_async_resource_ref{pool_},
+        rmm::device_async_resource_ref{statistics_},
         stream,
         workspace,
         device_id,
@@ -113,9 +118,15 @@ class DeviceContext::Resources {
     workspace.reset();
   }
 
+  std::uint64_t peak_allocated_bytes() const noexcept {
+    return static_cast<std::uint64_t>(
+        statistics_.get_bytes_counter().peak);
+  }
+
   static constexpr std::size_t kWorkspaceBytes = 1024 * 1024;
   rmm::mr::cuda_memory_resource cuda_resource_;
   rmm::mr::pool_memory_resource pool_;
+  rmm::mr::statistics_resource_adaptor statistics_;
   std::optional<WorkspaceArena> workspace_arena_;
   raft::device_resources resources_;
   int compute_capability_major_{};
@@ -234,7 +245,7 @@ DeviceContext::create_execution_owner(std::size_t workspace_bytes) const {
   auto impl = std::make_unique<DeviceExecutionOwner::Impl>(
       std::static_pointer_cast<void>(resources_),
       resources_->resources_,
-      rmm::device_async_resource_ref{resources_->pool_},
+      rmm::device_async_resource_ref{resources_->statistics_},
       stream,
       device_id_,
       resources_->compute_capability_major_,
@@ -245,6 +256,13 @@ DeviceContext::create_execution_owner(std::size_t workspace_bytes) const {
       new DeviceExecutionOwner(std::move(impl)));
   device_guard.restore();
   return owner;
+}
+
+std::uint64_t DeviceContext::peak_allocated_bytes() {
+  DeviceGuard device_guard{device_id_};
+  const auto peak = resources_->peak_allocated_bytes();
+  device_guard.restore();
+  return peak;
 }
 
 BrtSmokeResult DeviceContext::run_smoke() {

@@ -71,6 +71,10 @@ unsafe extern "C" {
         engine: *mut BrtEngineHandle,
         out_result: *mut BrtSmokeResult,
     ) -> BrtStatus;
+    pub fn brt_engine_peak_allocated_gpu_bytes(
+        engine: *mut BrtEngineHandle,
+        out_peak_allocated_gpu_bytes: *mut u64,
+    ) -> BrtStatus;
     pub fn brt_engine_load_model(
         engine: *mut BrtEngineHandle,
         gguf_path: *const c_char,

@@ -497,19 +497,19 @@ Rust 2024, GGUF v3, pinned llama.cpp.
                    --max-new-tokens N --context N
   ```
 
-- [ ] **Step 1: Add CLI argument/error tests**
+- [x] **Step 1: Add CLI argument/error tests**
 
   Require model, prompt, positive context, and positive max-new-tokens. Reject
   context overflow and host-only execution with actionable errors.
 
-- [ ] **Step 2: Observe RED**
+- [x] **Step 2: Observe RED**
 
-- [ ] **Step 3: Implement deterministic greedy generation**
+- [x] **Step 3: Implement deterministic greedy generation**
 
   Tokenize once, submit one prefill call, then one decode call per generated
   token until EOS/EOT or the limit. Do not expose per-layer/operator calls.
 
-- [ ] **Step 4: Add reset/reuse integration test and commit**
+- [x] **Step 4: Add reset/reuse integration test and commit**
 
   Commit: `feat: add Qwen3.5 greedy generation CLI`
 

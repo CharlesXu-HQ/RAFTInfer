@@ -3,9 +3,9 @@
 #include "../execution/execution_context.hpp"
 #include "model.hpp"
 
-#include <rmm/aligned.hpp>
 #include <cuda/stream_ref>
 #include <cuda_runtime_api.h>
+#include <rmm/aligned.hpp>
 
 #include <algorithm>
 #include <cstddef>
@@ -14,6 +14,8 @@
 #include <memory>
 #include <span>
 #include <string>
+#include <string_view>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -21,40 +23,43 @@ namespace brt::model {
 namespace {
 
 class BestEffortDeviceGuard {
- public:
+public:
   explicit BestEffortDeviceGuard(int device_id) noexcept {
-    if (cudaGetDevice(&previous_device_) != cudaSuccess) return;
+    if (cudaGetDevice(&previous_device_) != cudaSuccess)
+      return;
     captured_previous_ = true;
-    if (cudaSetDevice(device_id) != cudaSuccess) return;
+    if (cudaSetDevice(device_id) != cudaSuccess)
+      return;
     selected_target_ = true;
   }
 
   ~BestEffortDeviceGuard() noexcept { restore(); }
 
-  BestEffortDeviceGuard(const BestEffortDeviceGuard&) = delete;
-  BestEffortDeviceGuard& operator=(const BestEffortDeviceGuard&) = delete;
+  BestEffortDeviceGuard(const BestEffortDeviceGuard &) = delete;
+  BestEffortDeviceGuard &operator=(const BestEffortDeviceGuard &) = delete;
 
   bool selected_target() const noexcept { return selected_target_; }
 
   void restore() noexcept {
-    if (!captured_previous_) return;
+    if (!captured_previous_)
+      return;
     (void)cudaSetDevice(previous_device_);
     captured_previous_ = false;
   }
 
- private:
+private:
   int previous_device_{};
   bool captured_previous_{};
   bool selected_target_{};
 };
 
 [[noreturn]] void throw_cuda_weight_error(cudaError_t error,
-                                          const std::string& tensor_name) {
+                                          const std::string &tensor_name) {
   throw CudaWeightError("CUDA weight upload failed for " + tensor_name + ": " +
                         cudaGetErrorString(error));
 }
 
-CudaWeightType checked_type(const gguf::TensorInfo& tensor) {
+CudaWeightType checked_type(const gguf::TensorInfo &tensor) {
   if (tensor.type == static_cast<std::uint32_t>(CudaWeightType::f16)) {
     return CudaWeightType::f16;
   }
@@ -65,21 +70,31 @@ CudaWeightType checked_type(const gguf::TensorInfo& tensor) {
                         tensor.name);
 }
 
-std::vector<const gguf::TensorInfo*> primary_tensors(
-    const Qwen35Manifest& manifest) {
-  std::vector<const gguf::TensorInfo*> tensors;
+std::vector<const gguf::TensorInfo *>
+primary_tensors(const Qwen35Manifest &manifest) {
+  std::vector<const gguf::TensorInfo *> tensors;
   tensors.reserve(3 + manifest.layers.size() * 14);
   tensors.push_back(manifest.token_embedding);
   tensors.push_back(manifest.output_norm);
   tensors.push_back(manifest.output);
-  for (const auto& layer : manifest.layers) {
+  for (std::size_t layer_position = 0; layer_position < manifest.layers.size();
+       ++layer_position) {
+    const auto &layer = manifest.layers[layer_position];
+    if (layer.index != layer_position) {
+      throw CudaWeightError("Qwen3.5 CUDA weight layers must be contiguous");
+    }
+    if (layer.full_attention.has_value() ==
+        layer.linear_attention.has_value()) {
+      throw CudaWeightError(
+          "Qwen3.5 CUDA weight layer must have exactly one attention branch");
+    }
     tensors.push_back(layer.common.input_norm);
     tensors.push_back(layer.common.post_attention_norm);
     tensors.push_back(layer.common.ffn_gate);
     tensors.push_back(layer.common.ffn_down);
     tensors.push_back(layer.common.ffn_up);
     if (layer.full_attention.has_value()) {
-      const auto& full = *layer.full_attention;
+      const auto &full = *layer.full_attention;
       tensors.push_back(full.query);
       tensors.push_back(full.key);
       tensors.push_back(full.value);
@@ -88,7 +103,7 @@ std::vector<const gguf::TensorInfo*> primary_tensors(
       tensors.push_back(full.key_norm);
     }
     if (layer.linear_attention.has_value()) {
-      const auto& linear = *layer.linear_attention;
+      const auto &linear = *layer.linear_attention;
       tensors.push_back(linear.qkv);
       tensors.push_back(linear.gate);
       tensors.push_back(linear.convolution);
@@ -101,45 +116,50 @@ std::vector<const gguf::TensorInfo*> primary_tensors(
     }
   }
   if (std::any_of(tensors.begin(), tensors.end(),
-                  [](const auto* tensor) { return tensor == nullptr; })) {
+                  [](const auto *tensor) { return tensor == nullptr; })) {
     throw CudaWeightError("Qwen3.5 manifest contains a null primary tensor");
   }
   return tensors;
 }
 
+bool descriptors_equal(const gguf::TensorInfo &left,
+                       const gguf::TensorInfo &right) {
+  return left.name == right.name && left.dimensions == right.dimensions &&
+         left.type == right.type && left.offset == right.offset &&
+         left.byte_size == right.byte_size;
+}
+
 class DeviceAllocation {
- public:
-  DeviceAllocation(ExecutionContext& context, std::size_t bytes)
-      : resource_(context.memory_resource()),
-        stream_ref_(context.stream()),
-        stream_(context.stream()),
-        device_id_(context.device_id()),
+public:
+  DeviceAllocation(ExecutionContext &context, std::size_t bytes)
+      : resource_(context.memory_resource()), stream_ref_(context.stream()),
+        stream_(context.stream()), device_id_(context.device_id()),
         bytes_(bytes == 0 ? 1 : bytes),
         data_(resource_.allocate(stream_ref_, bytes_,
                                  rmm::CUDA_ALLOCATION_ALIGNMENT)) {}
 
   ~DeviceAllocation() noexcept { reset(); }
 
-  DeviceAllocation(const DeviceAllocation&) = delete;
-  DeviceAllocation& operator=(const DeviceAllocation&) = delete;
+  DeviceAllocation(const DeviceAllocation &) = delete;
+  DeviceAllocation &operator=(const DeviceAllocation &) = delete;
 
-  DeviceAllocation(DeviceAllocation&& other) noexcept
-      : resource_(other.resource_),
-        stream_ref_(other.stream_ref_),
-        stream_(other.stream_),
-        device_id_(other.device_id_),
+  DeviceAllocation(DeviceAllocation &&other) noexcept
+      : resource_(other.resource_), stream_ref_(other.stream_ref_),
+        stream_(other.stream_), device_id_(other.device_id_),
         bytes_(std::exchange(other.bytes_, 0)),
         data_(std::exchange(other.data_, nullptr)) {}
 
-  DeviceAllocation& operator=(DeviceAllocation&& other) noexcept = delete;
+  DeviceAllocation &operator=(DeviceAllocation &&other) noexcept = delete;
 
-  void* data() const noexcept { return data_; }
+  void *data() const noexcept { return data_; }
 
- private:
+private:
   void reset() noexcept {
-    if (data_ == nullptr) return;
+    if (data_ == nullptr)
+      return;
     BestEffortDeviceGuard device_guard{device_id_};
-    if (!device_guard.selected_target()) return;
+    if (!device_guard.selected_target())
+      return;
     (void)cudaStreamSynchronize(stream_);
     try {
       resource_.deallocate(stream_ref_, data_, bytes_,
@@ -155,92 +175,210 @@ class DeviceAllocation {
   cudaStream_t stream_{};
   int device_id_{};
   std::size_t bytes_{};
-  void* data_{};
+  void *data_{};
 };
 
-}  // namespace
+} // namespace
 
 class CudaWeightPlan::Impl {
- public:
+public:
   std::shared_ptr<void> lifetime_anchor;
   std::vector<DeviceAllocation> allocations;
   std::vector<CudaTensorView> views;
+  std::vector<gguf::TensorInfo> descriptors;
+  std::unordered_map<std::string, std::size_t> indices_by_name;
+  std::vector<Qwen35CudaLayerWeights> layers;
 };
 
 CudaWeightPlan::CudaWeightPlan(std::unique_ptr<Impl> impl) noexcept
     : impl_(std::move(impl)) {}
 
 CudaWeightPlan::~CudaWeightPlan() noexcept = default;
-CudaWeightPlan::CudaWeightPlan(CudaWeightPlan&&) noexcept = default;
-CudaWeightPlan& CudaWeightPlan::operator=(CudaWeightPlan&&) noexcept = default;
+CudaWeightPlan::CudaWeightPlan(CudaWeightPlan &&) noexcept = default;
+CudaWeightPlan &CudaWeightPlan::operator=(CudaWeightPlan &&) noexcept = default;
 
 std::size_t CudaWeightPlan::tensor_count() const noexcept {
   return impl_->views.size();
 }
 
-const CudaTensorView& CudaWeightPlan::token_embedding() const noexcept {
+const CudaTensorView &CudaWeightPlan::token_embedding() const noexcept {
   return impl_->views[0];
 }
 
-const CudaTensorView& CudaWeightPlan::output_norm() const noexcept {
+const CudaTensorView &CudaWeightPlan::output_norm() const noexcept {
   return impl_->views[1];
 }
 
-const CudaTensorView& CudaWeightPlan::output() const noexcept {
+const CudaTensorView &CudaWeightPlan::output() const noexcept {
   return impl_->views[2];
 }
 
-const CudaTensorView& CudaWeightPlan::tensor(std::size_t index) const {
+const CudaTensorView &CudaWeightPlan::tensor(std::size_t index) const {
   return impl_->views.at(index);
 }
 
+const CudaTensorView &CudaWeightPlan::tensor(std::string_view name) const {
+  const auto found = impl_->indices_by_name.find(std::string{name});
+  if (found == impl_->indices_by_name.end()) {
+    throw CudaWeightError("unknown Qwen3.5 CUDA weight: " + std::string{name});
+  }
+  return impl_->views[found->second];
+}
+
+const CudaTensorView &
+CudaWeightPlan::tensor(const gguf::TensorInfo &descriptor) const {
+  const auto found = impl_->indices_by_name.find(descriptor.name);
+  if (found == impl_->indices_by_name.end() ||
+      !descriptors_equal(impl_->descriptors[found->second], descriptor)) {
+    throw CudaWeightError(
+        "GGUF tensor descriptor does not belong to CUDA weight plan: " +
+        descriptor.name);
+  }
+  return impl_->views[found->second];
+}
+
+std::size_t CudaWeightPlan::layer_count() const noexcept {
+  return impl_->layers.size();
+}
+
+const Qwen35CudaLayerWeights &CudaWeightPlan::layer(std::size_t index) const {
+  return impl_->layers.at(index);
+}
+
 std::unique_ptr<CudaWeightPlan>
-CudaWeightPlan::upload(ExecutionContext& context, const Model& model,
-                       const Qwen35Manifest& manifest,
+CudaWeightPlan::upload(ExecutionContext &context, const Model &model,
+                       const Qwen35Manifest &manifest,
                        std::shared_ptr<void> lifetime_anchor) {
   if (!lifetime_anchor) {
-    throw CudaWeightError("CUDA weight upload requires a device resource lifetime anchor");
+    throw CudaWeightError(
+        "CUDA weight upload requires a device resource lifetime anchor");
   }
   const auto tensors = primary_tensors(manifest);
-  auto impl = std::unique_ptr<CudaWeightPlan::Impl>(
-      new CudaWeightPlan::Impl);
-  impl->lifetime_anchor = std::move(lifetime_anchor);
-  impl->allocations.reserve(tensors.size());
-  impl->views.reserve(tensors.size());
-
+  struct ValidatedTensor {
+    const gguf::TensorInfo *descriptor;
+    CudaWeightType type;
+    std::span<const std::uint8_t> payload;
+  };
+  std::vector<ValidatedTensor> validated;
+  validated.reserve(tensors.size());
+  std::unordered_map<std::string, std::size_t> indices_by_name;
+  indices_by_name.reserve(tensors.size());
   try {
-    for (const auto* tensor : tensors) {
+    for (std::size_t index = 0; index < tensors.size(); ++index) {
+      const auto *tensor = tensors[index];
+      const bool inserted = indices_by_name.emplace(tensor->name, index).second;
+      if (!inserted) {
+        throw CudaWeightError("duplicate Qwen3.5 CUDA weight name: " +
+                              tensor->name);
+      }
       const CudaWeightType type = checked_type(*tensor);
       const auto payload = model.tensor_payload(*tensor);
       if (payload.size() != tensor->byte_size) {
         throw CudaWeightError("truncated Qwen3.5 tensor payload: " +
                               tensor->name);
       }
+      validated.push_back(ValidatedTensor{
+          .descriptor = tensor, .type = type, .payload = payload});
+    }
+  } catch (const CudaWeightError &) {
+    throw;
+  } catch (const std::exception &error) {
+    throw CudaWeightError(error.what());
+  }
+
+  auto impl = std::unique_ptr<CudaWeightPlan::Impl>(new CudaWeightPlan::Impl);
+  impl->lifetime_anchor = std::move(lifetime_anchor);
+  impl->allocations.reserve(tensors.size());
+  impl->views.reserve(tensors.size());
+  impl->descriptors.reserve(tensors.size());
+  impl->indices_by_name = std::move(indices_by_name);
+
+  try {
+    for (const auto &tensor : validated) {
+      const auto payload = tensor.payload;
       impl->allocations.emplace_back(context, payload.size());
-      void* device = impl->allocations.back().data();
+      void *device = impl->allocations.back().data();
       const auto copy_error =
           cudaMemcpyAsync(device, payload.data(), payload.size(),
                           cudaMemcpyHostToDevice, context.stream());
       if (copy_error != cudaSuccess) {
-        throw_cuda_weight_error(copy_error, tensor->name);
+        throw_cuda_weight_error(copy_error, tensor.descriptor->name);
       }
-      impl->views.push_back(CudaTensorView{.device_data = device,
-                                           .bytes = payload.size(),
-                                           .type = type});
+      impl->views.push_back(CudaTensorView{
+          .device_data = device, .bytes = payload.size(), .type = tensor.type});
+      impl->descriptors.push_back(*tensor.descriptor);
     }
     const auto sync_error = cudaStreamSynchronize(context.stream());
     if (sync_error != cudaSuccess) {
       throw CudaWeightError("CUDA weight upload synchronization failed: " +
                             std::string(cudaGetErrorString(sync_error)));
     }
-  } catch (const CudaWeightError&) {
+  } catch (const CudaWeightError &) {
     throw;
-  } catch (const std::exception& error) {
+  } catch (const std::exception &error) {
     throw CudaWeightError(error.what());
   }
 
-  return std::unique_ptr<CudaWeightPlan>(
-      new CudaWeightPlan(std::move(impl)));
+  if (impl->views.size() != impl->indices_by_name.size() ||
+      impl->descriptors.size() != impl->views.size()) {
+    throw CudaWeightError("incomplete Qwen3.5 CUDA weight view map");
+  }
+
+  const auto view_for =
+      [&impl](const gguf::TensorInfo &descriptor) -> const CudaTensorView & {
+    const auto found = impl->indices_by_name.find(descriptor.name);
+    if (found == impl->indices_by_name.end() ||
+        !descriptors_equal(impl->descriptors[found->second], descriptor)) {
+      throw CudaWeightError(
+          "Qwen3.5 manifest descriptor is absent from CUDA weight plan: " +
+          descriptor.name);
+    }
+    return impl->views[found->second];
+  };
+  impl->layers.reserve(manifest.layers.size());
+  for (const auto &layer : manifest.layers) {
+    Qwen35CudaLayerWeights cuda_layer{
+        .index = layer.index,
+        .common =
+            Qwen35CudaCommonLayerWeights{
+                .input_norm = view_for(*layer.common.input_norm),
+                .post_attention_norm =
+                    view_for(*layer.common.post_attention_norm),
+                .ffn_gate = view_for(*layer.common.ffn_gate),
+                .ffn_down = view_for(*layer.common.ffn_down),
+                .ffn_up = view_for(*layer.common.ffn_up),
+            },
+        .full_attention = std::nullopt,
+        .linear_attention = std::nullopt,
+    };
+    if (layer.full_attention.has_value()) {
+      const auto &full = *layer.full_attention;
+      cuda_layer.full_attention.emplace(Qwen35CudaFullAttentionWeights{
+          .query = view_for(*full.query),
+          .key = view_for(*full.key),
+          .value = view_for(*full.value),
+          .output = view_for(*full.output),
+          .query_norm = view_for(*full.query_norm),
+          .key_norm = view_for(*full.key_norm),
+      });
+    } else {
+      const auto &linear = *layer.linear_attention;
+      cuda_layer.linear_attention.emplace(Qwen35CudaLinearAttentionWeights{
+          .qkv = view_for(*linear.qkv),
+          .gate = view_for(*linear.gate),
+          .convolution = view_for(*linear.convolution),
+          .time_step_bias = view_for(*linear.time_step_bias),
+          .recurrent_a = view_for(*linear.recurrent_a),
+          .beta = view_for(*linear.beta),
+          .alpha = view_for(*linear.alpha),
+          .output_norm = view_for(*linear.output_norm),
+          .output = view_for(*linear.output),
+      });
+    }
+    impl->layers.push_back(std::move(cuda_layer));
+  }
+
+  return std::unique_ptr<CudaWeightPlan>(new CudaWeightPlan(std::move(impl)));
 }
 
-}  // namespace brt::model
+} // namespace brt::model

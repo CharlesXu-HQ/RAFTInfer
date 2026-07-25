@@ -4,6 +4,7 @@
 #include "qwen35_gguf_fixture.hpp"
 
 #include <cassert>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -37,6 +38,12 @@ private:
 } // namespace
 
 int main() {
+#if BRT_TEST_CUDA_ENABLED
+  const char *opt_in = std::getenv("BRT_RUN_GPU_TESTS");
+  if (opt_in == nullptr || std::strcmp(opt_in, "1") != 0) {
+    return 77;
+  }
+#endif
   BrtEngineConfig config{};
   config.struct_size = sizeof(BrtEngineConfig);
   config.device_id = 0;
@@ -87,6 +94,25 @@ int main() {
   assert(engine != nullptr);
   assert(brt_engine_is_cuda_enabled(engine) == BRT_TEST_CUDA_ENABLED);
 
+  std::uint64_t peak_allocated_bytes = 123;
+  status = brt_engine_peak_allocated_gpu_bytes(nullptr, &peak_allocated_bytes);
+  assert(status.code == BRT_STATUS_INVALID_ARGUMENT);
+  assert(peak_allocated_bytes == 123);
+
+  status = brt_engine_peak_allocated_gpu_bytes(engine, nullptr);
+  assert(status.code == BRT_STATUS_INVALID_ARGUMENT);
+
+  status =
+      brt_engine_peak_allocated_gpu_bytes(engine, &peak_allocated_bytes);
+#if BRT_TEST_CUDA_ENABLED
+  assert(status.code == BRT_STATUS_OK);
+  assert(peak_allocated_bytes >= 1024U * 1024U);
+  const std::uint64_t engine_peak_allocated_bytes = peak_allocated_bytes;
+#else
+  assert(status.code == BRT_STATUS_UNAVAILABLE);
+  assert(peak_allocated_bytes == 123);
+#endif
+
   BrtModelHandle *model = reinterpret_cast<BrtModelHandle *>(1);
   status = brt_engine_load_model(engine, nullptr, &model);
   assert(status.code == BRT_STATUS_INVALID_ARGUMENT);
@@ -100,6 +126,13 @@ int main() {
   status = brt_engine_load_model(engine, fixture.path().c_str(), &model);
   assert(status.code == BRT_STATUS_OK);
   assert(model != nullptr);
+#if BRT_TEST_CUDA_ENABLED
+  status =
+      brt_engine_peak_allocated_gpu_bytes(engine, &peak_allocated_bytes);
+  assert(status.code == BRT_STATUS_OK);
+  assert(peak_allocated_bytes > engine_peak_allocated_bytes);
+  const std::uint64_t model_peak_allocated_bytes = peak_allocated_bytes;
+#endif
 
   BrtOwnedBuffer buffer{};
   buffer.struct_size = sizeof(BrtOwnedBuffer);
@@ -147,6 +180,13 @@ int main() {
   status = brt_session_create(model, &session_config, &session);
   assert(status.code == BRT_STATUS_OK);
   assert(session != nullptr);
+#if BRT_TEST_CUDA_ENABLED
+  status =
+      brt_engine_peak_allocated_gpu_bytes(engine, &peak_allocated_bytes);
+  assert(status.code == BRT_STATUS_OK);
+  assert(peak_allocated_bytes > model_peak_allocated_bytes);
+  const std::uint64_t session_peak_allocated_bytes = peak_allocated_bytes;
+#endif
 
   brt_model_destroy(model);
   model = nullptr;
@@ -171,16 +211,51 @@ int main() {
   assert(result.token_id == 123);
   assert(result.position == 456);
 
+  status = brt_session_decode(session, -1, &result);
+  assert(status.code == BRT_STATUS_INVALID_ARGUMENT);
+  assert(result.token_id == 123);
+  assert(result.position == 456);
+
+  status = brt_session_decode(session, 16, &result);
+  assert(status.code == BRT_STATUS_INVALID_ARGUMENT);
+  assert(result.token_id == 123);
+  assert(result.position == 456);
+
+  const std::int32_t tokens[] = {1, 2, 3};
+#if BRT_TEST_CUDA_ENABLED
+  status = brt_session_decode(session, token, &result);
+  assert(status.code == BRT_STATUS_OK);
+  assert(result.token_id == 0);
+  assert(result.position == 0);
+
+  status = brt_session_prefill(session, tokens, 3, &result);
+  assert(status.code == BRT_STATUS_OK);
+  assert(result.token_id == 0);
+  assert(result.position == 3);
+
+  status = brt_session_reset(session);
+  assert(status.code == BRT_STATUS_OK);
+
+  status = brt_session_prefill(session, tokens, 3, &result);
+  assert(status.code == BRT_STATUS_OK);
+  assert(result.token_id == 0);
+  assert(result.position == 2);
+
+  status =
+      brt_engine_peak_allocated_gpu_bytes(engine, &peak_allocated_bytes);
+  assert(status.code == BRT_STATUS_OK);
+  assert(peak_allocated_bytes == session_peak_allocated_bytes);
+#else
   status = brt_session_decode(session, token, &result);
   assert(status.code == BRT_STATUS_UNAVAILABLE);
   assert(result.token_id == 123);
   assert(result.position == 456);
 
-  const std::int32_t tokens[] = {1, 2, 3};
   status = brt_session_prefill(session, tokens, 3, &result);
   assert(status.code == BRT_STATUS_UNAVAILABLE);
   assert(result.token_id == 123);
   assert(result.position == 456);
+#endif
 
   status = brt_session_reset(session);
   assert(status.code == BRT_STATUS_OK);

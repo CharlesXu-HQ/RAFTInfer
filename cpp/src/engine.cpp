@@ -41,6 +41,14 @@ BrtSmokeResult Engine::run_smoke() {
 #endif
 }
 
+std::uint64_t Engine::peak_allocated_gpu_bytes() {
+#if BRT_ENABLE_CUDA
+  return device_->peak_allocated_bytes();
+#else
+  throw std::runtime_error("CUDA backend is not enabled");
+#endif
+}
+
 std::shared_ptr<model::Model>
 Engine::load_model(const std::string &gguf_path) const {
   auto model = std::make_shared<model::Model>(gguf_path);

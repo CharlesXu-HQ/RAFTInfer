@@ -48,6 +48,8 @@ void brt_engine_destroy(BrtEngineHandle *engine);
 int32_t brt_engine_is_cuda_enabled(const BrtEngineHandle *engine);
 BrtStatus brt_engine_run_smoke(BrtEngineHandle *engine,
                                BrtSmokeResult *out_result);
+BrtStatus brt_engine_peak_allocated_gpu_bytes(
+    BrtEngineHandle *engine, uint64_t *out_peak_allocated_gpu_bytes);
 BrtStatus brt_engine_load_model(BrtEngineHandle *engine, const char *gguf_path,
                                 BrtModelHandle **out_model);
 void brt_model_destroy(BrtModelHandle *model);
