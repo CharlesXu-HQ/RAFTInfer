@@ -28,6 +28,7 @@ if(BRT_ENABLE_CUDA)
     foundation/device_context.cu
     model/cuda_weights.cu
     kernels/qwen35_attention.cu
+    kernels/qwen35_delta.cu
     kernels/qwen35_primitives.cu
     kernels/smoke.cu)
   target_link_libraries(brt_cpp PUBLIC raft::raft rmm::rmm CUDA::cudart)
@@ -114,6 +115,11 @@ if(BRT_BUILD_TESTS)
       tests/qwen35_cuda_attention_test.cu)
     target_link_libraries(brt_qwen35_cuda_attention_test PRIVATE brt_cpp brt_reference)
     target_compile_options(brt_qwen35_cuda_attention_test PRIVATE
+      $<$<COMPILE_LANGUAGE:CUDA>:--expt-extended-lambda --expt-relaxed-constexpr>)
+    brt_add_assert_test(brt_qwen35_cuda_delta_test
+      tests/qwen35_cuda_delta_test.cu)
+    target_link_libraries(brt_qwen35_cuda_delta_test PRIVATE brt_cpp brt_reference)
+    target_compile_options(brt_qwen35_cuda_delta_test PRIVATE
       $<$<COMPILE_LANGUAGE:CUDA>:--expt-extended-lambda --expt-relaxed-constexpr>)
   endif()
 endif()
