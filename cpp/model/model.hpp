@@ -8,6 +8,7 @@
 
 #include "gguf_types.hpp"
 #include "qwen35_config.hpp"
+#include "qwen35_manifest.hpp"
 
 namespace brt::model {
 
@@ -29,6 +30,7 @@ public:
 
   std::span<const std::uint8_t> tokenizer_spec() const noexcept;
   const Qwen35Config &qwen35_config() const noexcept;
+  const Qwen35Manifest &qwen35_manifest() const noexcept;
   std::span<const std::uint8_t>
   tensor_payload(const gguf::TensorInfo &tensor) const;
 

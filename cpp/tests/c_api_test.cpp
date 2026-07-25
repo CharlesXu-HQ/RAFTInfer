@@ -85,7 +85,7 @@ int main() {
   status = brt_engine_create(&config, &engine);
   assert(status.code == BRT_STATUS_OK);
   assert(engine != nullptr);
-  assert(brt_engine_is_cuda_enabled(engine) == 0);
+  assert(brt_engine_is_cuda_enabled(engine) == BRT_TEST_CUDA_ENABLED);
 
   BrtModelHandle *model = reinterpret_cast<BrtModelHandle *>(1);
   status = brt_engine_load_model(engine, nullptr, &model);

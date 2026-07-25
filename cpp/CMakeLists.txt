@@ -26,6 +26,7 @@ if(BRT_ENABLE_CUDA)
   target_sources(brt_cpp PRIVATE
     execution/workspace_arena.cu
     foundation/device_context.cu
+    model/cuda_weights.cu
     kernels/smoke.cu)
   target_link_libraries(brt_cpp PUBLIC raft::raft rmm::rmm CUDA::cudart)
   target_compile_options(brt_cpp PRIVATE
@@ -52,6 +53,8 @@ if(BRT_BUILD_TESTS)
 
   brt_add_assert_test(brt_c_api_test tests/c_api_test.cpp)
   target_link_libraries(brt_c_api_test PRIVATE brt_cpp)
+  target_compile_definitions(brt_c_api_test PRIVATE
+    BRT_TEST_CUDA_ENABLED=$<BOOL:${BRT_ENABLE_CUDA}>)
   brt_add_assert_test(brt_tensor_validation_test tests/tensor_validation_test.cpp)
   target_link_libraries(brt_tensor_validation_test PRIVATE brt_cpp)
   brt_add_assert_test(brt_workspace_layout_test tests/workspace_layout_test.cpp)
@@ -92,5 +95,13 @@ if(BRT_BUILD_TESTS)
       -DWORKSPACE_ARENA_HEADER=${CMAKE_CURRENT_SOURCE_DIR}/execution/workspace_arena.hpp
       -DWORKSPACE_ARENA_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/execution/workspace_arena.cu
       -DEXECUTION_CONTEXT_HEADER=${CMAKE_CURRENT_SOURCE_DIR}/execution/execution_context.hpp
+      -DCUDA_WEIGHTS_HEADER=${CMAKE_CURRENT_SOURCE_DIR}/model/cuda_weights.hpp
+      -DCUDA_WEIGHTS_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/model/cuda_weights.cu
       -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/device_context_source_test.cmake)
+  if(BRT_ENABLE_CUDA)
+    brt_add_assert_test(brt_cuda_weights_test tests/cuda_weights_test.cu)
+    target_link_libraries(brt_cuda_weights_test PRIVATE brt_cpp)
+    target_compile_options(brt_cuda_weights_test PRIVATE
+      $<$<COMPILE_LANGUAGE:CUDA>:--expt-extended-lambda --expt-relaxed-constexpr>)
+  endif()
 endif()

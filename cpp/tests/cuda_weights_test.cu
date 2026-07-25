@@ -1,0 +1,180 @@
+#include "../execution/execution_context.hpp"
+#include "../foundation/device_context.hpp"
+#include "../model/cuda_weights.hpp"
+#include "../model/gguf_reader.hpp"
+#include "../model/model.hpp"
+#include "../model/qwen35_manifest.hpp"
+
+#include "assert_enabled.hpp"
+#include "qwen35_gguf_fixture.hpp"
+
+#include <cuda_runtime_api.h>
+
+#include <algorithm>
+#include <cassert>
+#include <cstdint>
+#include <filesystem>
+#include <fstream>
+#include <memory>
+#include <span>
+#include <string>
+#include <vector>
+
+namespace {
+
+std::filesystem::path write_fixture(std::vector<std::uint8_t> bytes,
+                                    const std::string &suffix) {
+  const auto path = std::filesystem::temp_directory_path() /
+                    ("brt_cuda_weights_" + suffix + ".gguf");
+  std::ofstream output{path, std::ios::binary};
+  output.write(reinterpret_cast<const char *>(bytes.data()),
+               static_cast<std::streamsize>(bytes.size()));
+  output.close();
+  assert(output);
+  return path;
+}
+
+std::vector<std::uint8_t> filled_fixture() {
+  auto bytes = brt::test::make_qwen35_gguf_fixture();
+  const auto catalog = brt::gguf::read_catalog(std::span{bytes});
+  for (std::size_t tensor_index = 0; tensor_index < catalog.tensors.size();
+       ++tensor_index) {
+    const auto &tensor = catalog.tensors[tensor_index];
+    const std::size_t begin =
+        static_cast<std::size_t>(catalog.tensor_data_offset + tensor.offset);
+    for (std::size_t byte = 0; byte < tensor.byte_size; ++byte) {
+      bytes[begin + byte] =
+          static_cast<std::uint8_t>((tensor_index * 17 + byte) & 0xff);
+    }
+  }
+  return bytes;
+}
+
+std::vector<std::uint8_t> read_device_bytes(const void *device,
+                                            std::size_t size) {
+  int previous_device = 0;
+  const bool restore_device = cudaGetDevice(&previous_device) == cudaSuccess;
+  assert(cudaSetDevice(0) == cudaSuccess);
+  std::vector<std::uint8_t> bytes(size);
+  const auto error =
+      cudaMemcpy(bytes.data(), device, size, cudaMemcpyDeviceToHost);
+  if (restore_device) {
+    assert(cudaSetDevice(previous_device) == cudaSuccess);
+  }
+  assert(error == cudaSuccess);
+  return bytes;
+}
+
+bool device_bytes_equal(const brt::model::CudaTensorView &view,
+                        std::span<const std::uint8_t> expected) {
+  const auto actual = read_device_bytes(view.device_data, view.bytes);
+  return actual.size() == expected.size() &&
+         std::equal(actual.begin(), actual.end(), expected.begin());
+}
+
+void expect_weight_error(auto &&fn) {
+  bool thrown = false;
+  try {
+    fn();
+  } catch (const brt::model::CudaWeightError &) {
+    thrown = true;
+  }
+  assert(thrown);
+}
+
+std::vector<std::uint8_t>
+fixture_with_tensor_type(std::vector<std::uint8_t> bytes,
+                         std::uint32_t tensor_type) {
+  auto catalog = brt::gguf::read_catalog(std::span{bytes});
+  for (const auto &tensor : catalog.tensors) {
+    auto name_position = std::search(bytes.begin(), bytes.end(),
+                                     tensor.name.begin(), tensor.name.end());
+    assert(name_position != bytes.end());
+    std::size_t position =
+        static_cast<std::size_t>(std::distance(bytes.begin(), name_position));
+    position += tensor.name.size();
+    position += sizeof(std::uint32_t);
+    position += tensor.dimensions.size() * sizeof(std::uint64_t);
+    auto *type_bytes = bytes.data() + position;
+    type_bytes[0] = static_cast<std::uint8_t>(tensor_type);
+    type_bytes[1] = static_cast<std::uint8_t>(tensor_type >> 8);
+    type_bytes[2] = static_cast<std::uint8_t>(tensor_type >> 16);
+    type_bytes[3] = static_cast<std::uint8_t>(tensor_type >> 24);
+  }
+  return bytes;
+}
+
+} // namespace
+
+int main() {
+  brt::DeviceContext device{0, 64 * 1024 * 1024};
+
+  {
+    const auto fixture = filled_fixture();
+    const auto path = write_fixture(fixture, "f16");
+    brt::model::Model model{path.string()};
+    const auto plan = device.upload_qwen35_weights(model);
+    assert(plan->tensor_count() == 56);
+    const auto &token_embedding = plan->token_embedding();
+    assert(token_embedding.type == brt::model::CudaWeightType::f16);
+    assert(token_embedding.bytes == 256);
+    assert(token_embedding.device_data != nullptr);
+    assert(device_bytes_equal(
+        token_embedding,
+        model.tensor_payload(*model.qwen35_manifest().token_embedding)));
+    const void *first_address = token_embedding.device_data;
+    assert(plan->token_embedding().device_data == first_address);
+  }
+
+  {
+    const auto path =
+        write_fixture(fixture_with_tensor_type(filled_fixture(), 30), "bf16");
+    brt::model::Model model{path.string()};
+    const auto plan = device.upload_qwen35_weights(model);
+    assert(plan->token_embedding().type == brt::model::CudaWeightType::bf16);
+    assert(device_bytes_equal(
+        plan->output_norm(),
+        model.tensor_payload(*model.qwen35_manifest().output_norm)));
+  }
+
+  {
+    brt::model::Model model{write_fixture(filled_fixture(), "f32").string()};
+    auto fake_manifest = model.qwen35_manifest();
+    auto f32_token_embedding = *fake_manifest.token_embedding;
+    f32_token_embedding.type = 0;
+    fake_manifest.token_embedding = &f32_token_embedding;
+    expect_weight_error([&] {
+      (void)device.upload_qwen35_weights_for_tests(model, fake_manifest);
+    });
+  }
+
+  {
+    brt::model::Model model{write_fixture(filled_fixture(), "descriptor")
+                                .string()};
+    auto foreign = *model.qwen35_manifest().token_embedding;
+    foreign.offset += 32;
+    auto fake_manifest = model.qwen35_manifest();
+    fake_manifest.token_embedding = &foreign;
+    expect_weight_error([&] {
+      (void)device.upload_qwen35_weights_for_tests(model, fake_manifest);
+    });
+  }
+
+  {
+    const auto path = write_fixture(filled_fixture(), "outlive");
+    brt::model::Model model{path.string()};
+    std::unique_ptr<brt::model::CudaWeightPlan> plan;
+    std::vector<std::uint8_t> expected;
+    {
+      brt::DeviceContext scoped_device{0, 64 * 1024 * 1024};
+      plan = scoped_device.upload_qwen35_weights(model);
+      expected.assign(model.tensor_payload(*model.qwen35_manifest().output)
+                          .begin(),
+                      model.tensor_payload(*model.qwen35_manifest().output)
+                          .end());
+    }
+    assert(plan != nullptr);
+    assert(device_bytes_equal(plan->output(), expected));
+    plan.reset();
+  }
+}

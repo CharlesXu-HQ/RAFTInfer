@@ -276,6 +276,10 @@ const Qwen35Config &Model::qwen35_config() const noexcept {
   return impl_->config;
 }
 
+const Qwen35Manifest &Model::qwen35_manifest() const noexcept {
+  return impl_->manifest;
+}
+
 std::span<const std::uint8_t>
 Model::tensor_payload(const gguf::TensorInfo &tensor) const {
   return impl_->tensor_payload(tensor);

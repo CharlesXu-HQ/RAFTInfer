@@ -2,6 +2,8 @@
 
 #include "../execution/execution_context.hpp"
 #include "../execution/workspace_arena.hpp"
+#include "../model/cuda_weights.hpp"
+#include "../model/model.hpp"
 
 #include <raft/core/device_resources.hpp>
 #include <raft/core/resource/cuda_stream.hpp>
@@ -19,6 +21,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 extern void brt_launch_smoke(uint32_t* values, uint32_t count, cudaStream_t stream);
 
@@ -118,30 +121,25 @@ class DeviceContext::Resources {
 
 DeviceContext::DeviceContext(int device_id, uint64_t initial_pool_bytes) : device_id_(device_id) {
   DeviceGuard device_guard{device_id_};
-  try {
-    resources_ = std::make_unique<Resources>(device_id_, initial_pool_bytes);
-    device_guard.restore();
-  } catch (...) {
-    // If the caller's device cannot be restored, do not let RAFT/RMM
-    // destructors run under an unknown device. The allocation is deliberately
-    // leaked; construction reports the CUDA failure through the C ABI.
-    (void)resources_.release();
-    throw;
-  }
+  resources_ = std::shared_ptr<Resources>(
+      new Resources(device_id_, initial_pool_bytes),
+      [device_id = device_id_](Resources* resources) noexcept {
+        if (resources == nullptr) return;
+        try {
+          DeviceGuard device_guard{device_id};
+          delete resources;
+          device_guard.restore();
+        } catch (...) {
+          // If the original device cannot be selected/restored, do not run
+          // RAFT/RMM destructors under an unknown device. This is the same
+          // safety policy used by DeviceContext teardown.
+        }
+      });
+  device_guard.restore();
 }
 
 DeviceContext::~DeviceContext() noexcept {
-  try {
-    DeviceGuard device_guard{device_id_};
-    resources_.reset();
-    device_guard.restore();
-  } catch (...) {
-    // A failed CUDA device query/selection cannot safely preserve the caller's
-    // current device. If resources remain, deliberately leak them rather than
-    // invoke RAFT/RMM destructors under an unknown device. Teardown is
-    // best-effort and must never let an exception cross the C ABI.
-    (void)resources_.release();
-  }
+  resources_.reset();
 }
 
 BrtSmokeResult DeviceContext::run_smoke() {
@@ -175,6 +173,23 @@ BrtSmokeResult DeviceContext::run_smoke() {
   BrtSmokeResult result{device_id_, count, checksum};
   device_guard.restore();
   return result;
+}
+
+std::unique_ptr<model::CudaWeightPlan>
+DeviceContext::upload_qwen35_weights(const model::Model& model) {
+  return upload_qwen35_weights_for_tests(model, model.qwen35_manifest());
+}
+
+std::unique_ptr<model::CudaWeightPlan>
+DeviceContext::upload_qwen35_weights_for_tests(
+    const model::Model& model, const model::Qwen35Manifest& manifest) {
+  DeviceGuard device_guard{device_id_};
+  ExecutionContext execution_context = resources_->execution_context(device_id_);
+  auto plan = model::CudaWeightPlan::upload(
+      execution_context, model, manifest,
+      std::static_pointer_cast<void>(resources_));
+  device_guard.restore();
+  return plan;
 }
 
 }  // namespace brt
