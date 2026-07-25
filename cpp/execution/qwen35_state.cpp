@@ -41,6 +41,12 @@ std::size_t checked_bytes(std::size_t floats) {
   return checked_mul(floats, sizeof(float));
 }
 
+void require_vector_capacity(std::size_t size, std::size_t max_size) {
+  if (size > max_size) {
+    throw std::length_error("Qwen3.5 host state vector size overflow");
+  }
+}
+
 std::span<float> slot_span(std::vector<float> &storage, std::size_t slot,
                            std::size_t floats_per_slot) noexcept {
   return std::span<float>{storage.data() + slot * floats_per_slot,
@@ -63,6 +69,109 @@ Qwen35StateLayout require_valid_layout(Qwen35StateLayout layout) {
       layout.full_slots_by_block.size() != layout.block_count) {
     throw std::invalid_argument("Qwen3.5 host state layout slot map mismatch");
   }
+  require_nonzero(layout.max_context_tokens,
+                  "Qwen3.5 max context tokens must be nonzero");
+  require_nonzero(layout.linear_convolution_width,
+                  "Qwen3.5 linear convolution width must be nonzero");
+  require_nonzero(layout.linear_value_head_count,
+                  "Qwen3.5 linear value head count must be nonzero");
+  require_nonzero(layout.linear_key_head_count,
+                  "Qwen3.5 linear key head count must be nonzero");
+  require_nonzero(layout.linear_head_dimension,
+                  "Qwen3.5 linear head dimension must be nonzero");
+  require_nonzero(layout.full_attention_kv_head_count,
+                  "Qwen3.5 full attention KV head count must be nonzero");
+  require_nonzero(layout.full_attention_head_dimension,
+                  "Qwen3.5 full attention head dimension must be nonzero");
+
+  const auto expected_qkv = checked_u32(checked_add(
+      checked_mul(checked_mul(std::size_t{2}, layout.linear_key_head_count),
+                  layout.linear_head_dimension),
+      checked_mul(layout.linear_value_head_count,
+                  layout.linear_head_dimension)));
+  const auto expected_convolution =
+      checked_mul(expected_qkv, layout.linear_convolution_width - std::size_t{1});
+  const auto expected_recurrent =
+      checked_mul(layout.linear_value_head_count,
+                  checked_mul(layout.linear_head_dimension,
+                              layout.linear_head_dimension));
+  const auto expected_full_kv = checked_mul(
+      checked_mul(std::size_t{2}, layout.max_context_tokens),
+      checked_mul(layout.full_attention_kv_head_count,
+                  layout.full_attention_head_dimension));
+  if (layout.linear_qkv_channel_count != expected_qkv ||
+      layout.linear_convolution_floats_per_layer != expected_convolution ||
+      layout.linear_recurrent_floats_per_layer != expected_recurrent ||
+      layout.full_kv_floats_per_layer != expected_full_kv) {
+    throw std::invalid_argument("Qwen3.5 host state layout size mismatch");
+  }
+
+  std::uint32_t linear_slots = 0;
+  std::uint32_t full_slots = 0;
+  for (std::uint32_t block = 0; block < layout.block_count; ++block) {
+    const auto linear_slot = layout.linear_slots_by_block[block];
+    const auto full_slot = layout.full_slots_by_block[block];
+    const bool has_linear = linear_slot != kNoSlot;
+    const bool has_full = full_slot != kNoSlot;
+    if (has_linear == has_full) {
+      throw std::invalid_argument(
+          "Qwen3.5 host state requires exactly one slot per block");
+    }
+    if (has_linear) {
+      if (linear_slot >= layout.linear_layer_count) {
+        throw std::invalid_argument("Qwen3.5 linear slot out of range");
+      }
+      for (std::uint32_t previous = 0; previous < block; ++previous) {
+        if (layout.linear_slots_by_block[previous] == linear_slot) {
+          throw std::invalid_argument("Qwen3.5 duplicate linear slot");
+        }
+      }
+      ++linear_slots;
+    } else {
+      if (full_slot >= layout.full_layer_count) {
+        throw std::invalid_argument("Qwen3.5 full slot out of range");
+      }
+      for (std::uint32_t previous = 0; previous < block; ++previous) {
+        if (layout.full_slots_by_block[previous] == full_slot) {
+          throw std::invalid_argument("Qwen3.5 duplicate full slot");
+        }
+      }
+      ++full_slots;
+    }
+  }
+  if (linear_slots != layout.linear_layer_count ||
+      full_slots != layout.full_layer_count) {
+    throw std::invalid_argument("Qwen3.5 host state slot count mismatch");
+  }
+
+  const auto linear_convolution_floats =
+      checked_mul(layout.linear_layer_count,
+                  layout.linear_convolution_floats_per_layer);
+  const auto linear_recurrent_floats =
+      checked_mul(layout.linear_layer_count,
+                  layout.linear_recurrent_floats_per_layer);
+  const auto full_kv_floats =
+      checked_mul(layout.full_layer_count, layout.full_kv_floats_per_layer);
+  const auto expected_convolution_bytes =
+      checked_bytes(linear_convolution_floats);
+  const auto expected_recurrent_bytes = checked_bytes(linear_recurrent_floats);
+  const auto expected_full_kv_bytes = checked_bytes(full_kv_floats);
+  (void)checked_add(checked_add(expected_convolution_bytes,
+                                expected_recurrent_bytes),
+                    expected_full_kv_bytes);
+  if (layout.linear_convolution_bytes != expected_convolution_bytes ||
+      layout.linear_recurrent_bytes != expected_recurrent_bytes ||
+      layout.full_kv_bytes != expected_full_kv_bytes) {
+    throw std::invalid_argument("Qwen3.5 host state byte-size mismatch");
+  }
+
+  require_vector_capacity(layout.full_layer_count,
+                          std::vector<std::uint32_t>{}.max_size());
+  require_vector_capacity(linear_convolution_floats,
+                          std::vector<float>{}.max_size());
+  require_vector_capacity(linear_recurrent_floats,
+                          std::vector<float>{}.max_size());
+  require_vector_capacity(full_kv_floats, std::vector<float>{}.max_size());
   return layout;
 }
 

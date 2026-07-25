@@ -15,6 +15,8 @@
 #include <vector>
 
 namespace {
+
+constexpr std::uint32_t kNoSlot = std::numeric_limits<std::uint32_t>::max();
 std::atomic<std::size_t> g_allocation_count{0};
 }
 
@@ -109,24 +111,22 @@ void expect_all_zero(std::span<const float> values) {
   }
 }
 
+brt::Qwen35StateLayout valid_small_layout() {
+  return brt::Qwen35StateLayout::create(small_hybrid_config(), 8);
+}
+
 } // namespace
 
 int main() {
-  const auto small_layout =
-      brt::Qwen35StateLayout::create(small_hybrid_config(), 8);
+  const auto small_layout = valid_small_layout();
   assert(small_layout.max_context_tokens == 8);
   assert(small_layout.block_count == 4);
   assert(small_layout.linear_layer_count == 3);
   assert(small_layout.full_layer_count == 1);
-  assert(small_layout.linear_slots_by_block == (std::vector<std::uint32_t>{
-                                                   0, 1,
-                                                   std::numeric_limits<std::uint32_t>::max(),
-                                                   2}));
-  assert(small_layout.full_slots_by_block == (std::vector<std::uint32_t>{
-                                                 std::numeric_limits<std::uint32_t>::max(),
-                                                 std::numeric_limits<std::uint32_t>::max(),
-                                                 0,
-                                                 std::numeric_limits<std::uint32_t>::max()}));
+  assert(small_layout.linear_slots_by_block ==
+         (std::vector<std::uint32_t>{0, 1, kNoSlot, 2}));
+  assert(small_layout.full_slots_by_block ==
+         (std::vector<std::uint32_t>{kNoSlot, kNoSlot, 0, kNoSlot}));
   assert(small_layout.linear_qkv_channel_count == 24);
   assert(small_layout.linear_convolution_floats_per_layer == 72);
   assert(small_layout.linear_recurrent_floats_per_layer == 36);
@@ -155,6 +155,74 @@ int main() {
   expect_throw<std::invalid_argument>(
       "empty layout in host state constructor",
       [] { (void)brt::Qwen35HostState{brt::Qwen35StateLayout{}}; });
+
+  auto zero_count_with_slot = valid_small_layout();
+  zero_count_with_slot.linear_layer_count = 0;
+  expect_throw<std::invalid_argument>(
+      "host state rejects zero linear count with slots",
+      [&] { (void)brt::Qwen35HostState{zero_count_with_slot}; });
+
+  auto out_of_range_slot = valid_small_layout();
+  out_of_range_slot.linear_slots_by_block[0] =
+      out_of_range_slot.linear_layer_count;
+  expect_throw<std::invalid_argument>(
+      "host state rejects out-of-range linear slot",
+      [&] { (void)brt::Qwen35HostState{out_of_range_slot}; });
+
+  auto duplicate_slot = valid_small_layout();
+  duplicate_slot.linear_slots_by_block[1] = 0;
+  expect_throw<std::invalid_argument>(
+      "host state rejects duplicate linear slot",
+      [&] { (void)brt::Qwen35HostState{duplicate_slot}; });
+
+  auto non_exhaustive_slots = valid_small_layout();
+  ++non_exhaustive_slots.linear_layer_count;
+  expect_throw<std::invalid_argument>(
+      "host state rejects non-exhaustive linear slots",
+      [&] { (void)brt::Qwen35HostState{non_exhaustive_slots}; });
+
+  auto both_type_slots = valid_small_layout();
+  both_type_slots.full_slots_by_block[0] = 0;
+  expect_throw<std::invalid_argument>(
+      "host state rejects block with both slot types",
+      [&] { (void)brt::Qwen35HostState{both_type_slots}; });
+
+  auto neither_type_slot = valid_small_layout();
+  neither_type_slot.linear_slots_by_block[0] = kNoSlot;
+  expect_throw<std::invalid_argument>(
+      "host state rejects block with neither slot type",
+      [&] { (void)brt::Qwen35HostState{neither_type_slot}; });
+
+  auto zero_context_layout = valid_small_layout();
+  zero_context_layout.max_context_tokens = 0;
+  expect_throw<std::invalid_argument>(
+      "host state rejects zero context in public layout",
+      [&] { (void)brt::Qwen35HostState{zero_context_layout}; });
+
+  auto malformed_dimension_layout = valid_small_layout();
+  malformed_dimension_layout.linear_head_dimension = 0;
+  expect_throw<std::invalid_argument>(
+      "host state rejects malformed public dimensions",
+      [&] { (void)brt::Qwen35HostState{malformed_dimension_layout}; });
+
+  auto constructor_overflow_layout = valid_small_layout();
+  constructor_overflow_layout.linear_key_head_count =
+      std::numeric_limits<std::uint32_t>::max();
+  constructor_overflow_layout.linear_head_dimension =
+      std::numeric_limits<std::uint32_t>::max();
+  expect_throw<std::length_error>(
+      "host state rejects constructor-side layout formula overflow",
+      [&] { (void)brt::Qwen35HostState{constructor_overflow_layout}; });
+
+  auto too_large_vector_layout = valid_small_layout();
+  too_large_vector_layout.max_context_tokens = std::uint32_t{1} << 31;
+  too_large_vector_layout.full_attention_kv_head_count = 1;
+  too_large_vector_layout.full_attention_head_dimension =
+      std::uint32_t{1} << 30;
+  too_large_vector_layout.full_kv_floats_per_layer = std::size_t{1} << 62;
+  expect_throw<std::length_error>(
+      "host state rejects vector max_size overflow before allocation",
+      [&] { (void)brt::Qwen35HostState{too_large_vector_layout}; });
 
   auto overflowing = small_hybrid_config();
   overflowing.blocks = {{.index = 0,
