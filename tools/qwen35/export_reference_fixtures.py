@@ -10,7 +10,7 @@ import os
 import struct
 from pathlib import Path
 
-os.environ.setdefault("CUDA_VISIBLE_DEVICES", "")
+os.environ["CUDA_VISIBLE_DEVICES"] = ""
 
 import torch
 import torch.nn.functional as F
