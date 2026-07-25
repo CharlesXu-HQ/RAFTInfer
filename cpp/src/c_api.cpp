@@ -4,6 +4,7 @@
 #include "../model/model.hpp"
 #include "../model/qwen35_config.hpp"
 #include "../model/qwen35_manifest.hpp"
+#include "../execution/session.hpp"
 #include "engine.hpp"
 
 #include <algorithm>
@@ -21,10 +22,17 @@ struct BrtEngineHandle {
 };
 
 struct BrtModelHandle {
-  explicit BrtModelHandle(std::unique_ptr<brt::model::Model> value)
+  explicit BrtModelHandle(std::shared_ptr<brt::model::Model> value)
       : model(std::move(value)) {}
 
-  std::unique_ptr<brt::model::Model> model;
+  std::shared_ptr<brt::model::Model> model;
+};
+
+struct BrtSessionHandle {
+  explicit BrtSessionHandle(std::unique_ptr<brt::Session> value)
+      : session(std::move(value)) {}
+
+  std::unique_ptr<brt::Session> session;
 };
 
 namespace {
@@ -190,6 +198,115 @@ extern "C" BrtStatus brt_model_copy_tokenizer_spec(const BrtModelHandle *model,
     return fail(BRT_STATUS_INTERNAL, error.what());
   } catch (...) {
     return fail(BRT_STATUS_INTERNAL, "internal error");
+  }
+}
+
+extern "C" BrtStatus brt_session_create(BrtModelHandle *model,
+                                         const BrtSessionConfig *config,
+                                         BrtSessionHandle **out_session) {
+  try {
+    clear_last_error();
+    if (out_session == nullptr) {
+      return fail(BRT_STATUS_INVALID_ARGUMENT, "out_session is required");
+    }
+    *out_session = nullptr;
+    if (model == nullptr || config == nullptr) {
+      return fail(BRT_STATUS_INVALID_ARGUMENT,
+                  "model, config, and out_session are required");
+    }
+    if (config->struct_size < sizeof(BrtSessionConfig)) {
+      return fail(BRT_STATUS_INVALID_ARGUMENT, "BrtSessionConfig size mismatch");
+    }
+    if (config->max_context_tokens == 0) {
+      return fail(BRT_STATUS_INVALID_ARGUMENT,
+                  "max_context_tokens must be non-zero");
+    }
+    if (model->model == nullptr) {
+      return fail(BRT_STATUS_INVALID_ARGUMENT, "model is invalid");
+    }
+    auto session = std::make_unique<BrtSessionHandle>(
+        std::make_unique<brt::Session>(model->model,
+                                       config->max_context_tokens));
+    *out_session = session.release();
+    return BrtStatus{BRT_STATUS_OK, nullptr};
+  } catch (const std::bad_alloc &) {
+    return fail(BRT_STATUS_RESOURCE_EXHAUSTED,
+                "session allocation exhausted host memory");
+  } catch (const std::invalid_argument &error) {
+    return fail(BRT_STATUS_INVALID_ARGUMENT, error.what());
+  } catch (const std::length_error &error) {
+    return fail(BRT_STATUS_RESOURCE_EXHAUSTED, error.what());
+  } catch (const std::exception &error) {
+    return fail(BRT_STATUS_INTERNAL, error.what());
+  } catch (...) {
+    return fail(BRT_STATUS_INTERNAL, "internal error");
+  }
+}
+
+extern "C" BrtStatus brt_session_prefill(BrtSessionHandle *session,
+                                          const int32_t *tokens,
+                                          size_t token_count,
+                                          BrtTokenResult *out_result) {
+  try {
+    clear_last_error();
+    if (session == nullptr || tokens == nullptr || out_result == nullptr) {
+      return fail(BRT_STATUS_INVALID_ARGUMENT,
+                  "session, tokens, and out_result are required");
+    }
+    if (token_count == 0) {
+      return fail(BRT_STATUS_INVALID_ARGUMENT,
+                  "prefill token_count must be non-zero");
+    }
+    (void)session;
+    return fail(BRT_STATUS_UNAVAILABLE,
+                "Qwen3.5 prefill backend is not available in host-only build");
+  } catch (const std::exception &error) {
+    return fail(BRT_STATUS_INTERNAL, error.what());
+  } catch (...) {
+    return fail(BRT_STATUS_INTERNAL, "internal error");
+  }
+}
+
+extern "C" BrtStatus brt_session_decode(BrtSessionHandle *session,
+                                         int32_t token_id,
+                                         BrtTokenResult *out_result) {
+  try {
+    clear_last_error();
+    if (session == nullptr || out_result == nullptr) {
+      return fail(BRT_STATUS_INVALID_ARGUMENT,
+                  "session and out_result are required");
+    }
+    (void)session;
+    (void)token_id;
+    return fail(BRT_STATUS_UNAVAILABLE,
+                "Qwen3.5 decode backend is not available in host-only build");
+  } catch (const std::exception &error) {
+    return fail(BRT_STATUS_INTERNAL, error.what());
+  } catch (...) {
+    return fail(BRT_STATUS_INTERNAL, "internal error");
+  }
+}
+
+extern "C" BrtStatus brt_session_reset(BrtSessionHandle *session) {
+  try {
+    clear_last_error();
+    if (session == nullptr) {
+      return fail(BRT_STATUS_INVALID_ARGUMENT, "session is required");
+    }
+    session->session->reset();
+    return BrtStatus{BRT_STATUS_OK, nullptr};
+  } catch (const std::exception &error) {
+    return fail(BRT_STATUS_INTERNAL, error.what());
+  } catch (...) {
+    return fail(BRT_STATUS_INTERNAL, "internal error");
+  }
+}
+
+extern "C" void brt_session_destroy(BrtSessionHandle *session) {
+  try {
+    delete session;
+  } catch (...) {
+    fail(BRT_STATUS_INTERNAL, "internal error");
   }
 }
 

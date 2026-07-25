@@ -14,6 +14,11 @@ pub struct BrtModelHandle {
 }
 
 #[repr(C)]
+pub struct BrtSessionHandle {
+    _private: [u8; 0],
+}
+
+#[repr(C)]
 pub struct BrtEngineConfig {
     pub struct_size: usize,
     pub device_id: i32,
@@ -42,6 +47,19 @@ pub struct BrtOwnedBuffer {
     pub size: usize,
 }
 
+#[repr(C)]
+pub struct BrtSessionConfig {
+    pub struct_size: usize,
+    pub max_context_tokens: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct BrtTokenResult {
+    pub token_id: i32,
+    pub position: u32,
+}
+
 unsafe extern "C" {
     pub fn brt_engine_create(
         config: *const BrtEngineConfig,
@@ -63,6 +81,24 @@ unsafe extern "C" {
         model: *const BrtModelHandle,
         out_buffer: *mut BrtOwnedBuffer,
     ) -> BrtStatus;
+    pub fn brt_session_create(
+        model: *mut BrtModelHandle,
+        config: *const BrtSessionConfig,
+        out_session: *mut *mut BrtSessionHandle,
+    ) -> BrtStatus;
+    pub fn brt_session_prefill(
+        session: *mut BrtSessionHandle,
+        tokens: *const i32,
+        token_count: usize,
+        out_result: *mut BrtTokenResult,
+    ) -> BrtStatus;
+    pub fn brt_session_decode(
+        session: *mut BrtSessionHandle,
+        token_id: i32,
+        out_result: *mut BrtTokenResult,
+    ) -> BrtStatus;
+    pub fn brt_session_reset(session: *mut BrtSessionHandle) -> BrtStatus;
+    pub fn brt_session_destroy(session: *mut BrtSessionHandle);
     pub fn brt_owned_buffer_free(buffer: *mut BrtOwnedBuffer);
     pub fn brt_last_error_message() -> *const c_char;
 }

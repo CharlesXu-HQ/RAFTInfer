@@ -20,7 +20,7 @@ public:
   ~Engine();
   bool cuda_enabled() const noexcept;
   BrtSmokeResult run_smoke();
-  std::unique_ptr<model::Model> load_model(const std::string &gguf_path) const;
+  std::shared_ptr<model::Model> load_model(const std::string &gguf_path) const;
 
 private:
   int device_id_;

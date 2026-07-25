@@ -55,6 +55,13 @@ pub struct Model<'engine> {
     _not_send_sync: PhantomData<Rc<()>>,
 }
 
+#[derive(Debug)]
+pub struct Session<'model, 'engine> {
+    raw: NonNull<brt_sys::BrtSessionHandle>,
+    _model: PhantomData<&'model Model<'engine>>,
+    _not_send_sync: PhantomData<Rc<()>>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TokenizerSpec {
     pub version: u32,
@@ -66,6 +73,17 @@ pub struct SmokeResult {
     pub device_id: i32,
     pub element_count: u32,
     pub checksum: u64,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct SessionConfig {
+    pub max_context_tokens: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TokenResult {
+    pub token_id: i32,
+    pub position: u32,
 }
 
 impl Engine {
@@ -127,7 +145,7 @@ impl Drop for Engine {
     }
 }
 
-impl Model<'_> {
+impl<'engine> Model<'engine> {
     pub fn tokenizer_spec(&self) -> Result<TokenizerSpec, Error> {
         let mut native = brt_sys::BrtOwnedBuffer {
             struct_size: std::mem::size_of::<brt_sys::BrtOwnedBuffer>(),
@@ -147,11 +165,68 @@ impl Model<'_> {
         unsafe { brt_sys::brt_owned_buffer_free(&mut native) };
         Ok(TokenizerSpec { version, bytes })
     }
+
+    pub fn create_session<'model>(
+        &'model self,
+        config: SessionConfig,
+    ) -> Result<Session<'model, 'engine>, Error> {
+        let native = brt_sys::BrtSessionConfig {
+            struct_size: std::mem::size_of::<brt_sys::BrtSessionConfig>(),
+            max_context_tokens: config.max_context_tokens,
+        };
+        let mut raw = std::ptr::null_mut();
+        let status = unsafe { brt_sys::brt_session_create(self.raw.as_ptr(), &native, &mut raw) };
+        status_to_result(status)?;
+        Ok(Session {
+            raw: NonNull::new(raw).expect("successful session create returned null"),
+            _model: PhantomData,
+            _not_send_sync: PhantomData,
+        })
+    }
 }
 
 impl Drop for Model<'_> {
     fn drop(&mut self) {
         unsafe { brt_sys::brt_model_destroy(self.raw.as_ptr()) }
+    }
+}
+
+impl Session<'_, '_> {
+    pub fn prefill(&mut self, tokens: &[i32]) -> Result<TokenResult, Error> {
+        let mut native = brt_sys::BrtTokenResult::default();
+        let status = unsafe {
+            brt_sys::brt_session_prefill(
+                self.raw.as_ptr(),
+                tokens.as_ptr(),
+                tokens.len(),
+                &mut native,
+            )
+        };
+        status_to_result(status).map(|()| TokenResult {
+            token_id: native.token_id,
+            position: native.position,
+        })
+    }
+
+    pub fn decode(&mut self, token_id: i32) -> Result<TokenResult, Error> {
+        let mut native = brt_sys::BrtTokenResult::default();
+        let status =
+            unsafe { brt_sys::brt_session_decode(self.raw.as_ptr(), token_id, &mut native) };
+        status_to_result(status).map(|()| TokenResult {
+            token_id: native.token_id,
+            position: native.position,
+        })
+    }
+
+    pub fn reset(&mut self) -> Result<(), Error> {
+        let status = unsafe { brt_sys::brt_session_reset(self.raw.as_ptr()) };
+        status_to_result(status)
+    }
+}
+
+impl Drop for Session<'_, '_> {
+    fn drop(&mut self) {
+        unsafe { brt_sys::brt_session_destroy(self.raw.as_ptr()) }
     }
 }
 

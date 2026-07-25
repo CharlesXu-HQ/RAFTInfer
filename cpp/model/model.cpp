@@ -272,6 +272,10 @@ std::span<const std::uint8_t> Model::tokenizer_spec() const noexcept {
   return impl_->tokenizer_spec_bytes;
 }
 
+const Qwen35Config &Model::qwen35_config() const noexcept {
+  return impl_->config;
+}
+
 std::span<const std::uint8_t>
 Model::tensor_payload(const gguf::TensorInfo &tensor) const {
   return impl_->tensor_payload(tensor);

@@ -114,7 +114,78 @@ int main() {
   assert(buffer.data == nullptr);
   assert(buffer.size == 0);
   assert(buffer.version == 0);
+
+  BrtSessionHandle *session = reinterpret_cast<BrtSessionHandle *>(1);
+  BrtSessionConfig session_config{};
+  session_config.struct_size = sizeof(BrtSessionConfig);
+  session_config.max_context_tokens = 8;
+
+  status = brt_session_create(nullptr, &session_config, &session);
+  assert(status.code == BRT_STATUS_INVALID_ARGUMENT);
+  assert(session == nullptr);
+
+  session = reinterpret_cast<BrtSessionHandle *>(1);
+  status = brt_session_create(model, nullptr, &session);
+  assert(status.code == BRT_STATUS_INVALID_ARGUMENT);
+  assert(session == nullptr);
+
+  BrtSessionConfig invalid_session_config = session_config;
+  invalid_session_config.struct_size = 0;
+  session = reinterpret_cast<BrtSessionHandle *>(1);
+  status = brt_session_create(model, &invalid_session_config, &session);
+  assert(status.code == BRT_STATUS_INVALID_ARGUMENT);
+  assert(session == nullptr);
+
+  invalid_session_config = session_config;
+  invalid_session_config.max_context_tokens = 0;
+  session = reinterpret_cast<BrtSessionHandle *>(1);
+  status = brt_session_create(model, &invalid_session_config, &session);
+  assert(status.code == BRT_STATUS_INVALID_ARGUMENT);
+  assert(session == nullptr);
+
+  session = nullptr;
+  status = brt_session_create(model, &session_config, &session);
+  assert(status.code == BRT_STATUS_OK);
+  assert(session != nullptr);
+
   brt_model_destroy(model);
+  model = nullptr;
+
+  BrtTokenResult result{.token_id = 123, .position = 456};
+  status = brt_session_decode(nullptr, 7, &result);
+  assert(status.code == BRT_STATUS_INVALID_ARGUMENT);
+  assert(result.token_id == 123);
+  assert(result.position == 456);
+
+  status = brt_session_decode(session, 7, nullptr);
+  assert(status.code == BRT_STATUS_INVALID_ARGUMENT);
+
+  status = brt_session_prefill(session, nullptr, 1, &result);
+  assert(status.code == BRT_STATUS_INVALID_ARGUMENT);
+  assert(result.token_id == 123);
+  assert(result.position == 456);
+
+  const std::int32_t token = 3;
+  status = brt_session_prefill(session, &token, 0, &result);
+  assert(status.code == BRT_STATUS_INVALID_ARGUMENT);
+  assert(result.token_id == 123);
+  assert(result.position == 456);
+
+  status = brt_session_decode(session, token, &result);
+  assert(status.code == BRT_STATUS_UNAVAILABLE);
+  assert(result.token_id == 123);
+  assert(result.position == 456);
+
+  const std::int32_t tokens[] = {1, 2, 3};
+  status = brt_session_prefill(session, tokens, 3, &result);
+  assert(status.code == BRT_STATUS_UNAVAILABLE);
+  assert(result.token_id == 123);
+  assert(result.position == 456);
+
+  status = brt_session_reset(session);
+  assert(status.code == BRT_STATUS_OK);
+
+  brt_session_destroy(session);
 
   brt_engine_destroy(engine);
   assert(std::strlen(brt_last_error_message()) == 0);

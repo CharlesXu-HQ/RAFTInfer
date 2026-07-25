@@ -7,6 +7,7 @@
 #include <string>
 
 #include "gguf_types.hpp"
+#include "qwen35_config.hpp"
 
 namespace brt::model {
 
@@ -27,6 +28,7 @@ public:
   Model &operator=(Model &&) = delete;
 
   std::span<const std::uint8_t> tokenizer_spec() const noexcept;
+  const Qwen35Config &qwen35_config() const noexcept;
   std::span<const std::uint8_t>
   tensor_payload(const gguf::TensorInfo &tensor) const;
 

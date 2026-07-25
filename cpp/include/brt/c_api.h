@@ -10,6 +10,7 @@ extern "C" {
 
 typedef struct BrtEngineHandle BrtEngineHandle;
 typedef struct BrtModelHandle BrtModelHandle;
+typedef struct BrtSessionHandle BrtSessionHandle;
 
 typedef struct BrtEngineConfig {
   size_t struct_size;
@@ -31,6 +32,16 @@ typedef struct BrtOwnedBuffer {
   size_t size;
 } BrtOwnedBuffer;
 
+typedef struct BrtSessionConfig {
+  size_t struct_size;
+  uint32_t max_context_tokens;
+} BrtSessionConfig;
+
+typedef struct BrtTokenResult {
+  int32_t token_id;
+  uint32_t position;
+} BrtTokenResult;
+
 BrtStatus brt_engine_create(const BrtEngineConfig *config,
                             BrtEngineHandle **out_engine);
 void brt_engine_destroy(BrtEngineHandle *engine);
@@ -42,6 +53,16 @@ BrtStatus brt_engine_load_model(BrtEngineHandle *engine, const char *gguf_path,
 void brt_model_destroy(BrtModelHandle *model);
 BrtStatus brt_model_copy_tokenizer_spec(const BrtModelHandle *model,
                                         BrtOwnedBuffer *out_buffer);
+BrtStatus brt_session_create(BrtModelHandle *model,
+                             const BrtSessionConfig *config,
+                             BrtSessionHandle **out_session);
+BrtStatus brt_session_prefill(BrtSessionHandle *session, const int32_t *tokens,
+                              size_t token_count,
+                              BrtTokenResult *out_result);
+BrtStatus brt_session_decode(BrtSessionHandle *session, int32_t token_id,
+                             BrtTokenResult *out_result);
+BrtStatus brt_session_reset(BrtSessionHandle *session);
+void brt_session_destroy(BrtSessionHandle *session);
 void brt_owned_buffer_free(BrtOwnedBuffer *buffer);
 const char *brt_last_error_message(void);
 

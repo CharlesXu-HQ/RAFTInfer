@@ -40,9 +40,9 @@ BrtSmokeResult Engine::run_smoke() {
 #endif
 }
 
-std::unique_ptr<model::Model>
+std::shared_ptr<model::Model>
 Engine::load_model(const std::string &gguf_path) const {
-  return std::make_unique<model::Model>(gguf_path);
+  return std::make_shared<model::Model>(gguf_path);
 }
 
 } // namespace brt

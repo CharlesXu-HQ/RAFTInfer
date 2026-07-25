@@ -7,6 +7,7 @@ target_sources(brt_cpp PRIVATE
   model/model.cpp
   model/qwen35_config.cpp
   model/qwen35_manifest.cpp
+  execution/session.cpp
   execution/qwen35_state.cpp)
 target_sources(brt_cpp PRIVATE registry/operator_registry.cpp)
 target_sources(brt_cpp PRIVATE benchmarks/benchmark_record.cpp)
