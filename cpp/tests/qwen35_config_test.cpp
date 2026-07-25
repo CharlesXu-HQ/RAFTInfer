@@ -125,6 +125,39 @@ int main() {
   }
   assert(full_count == 8);
 
+  auto nextn_catalog = catalog;
+  nextn_catalog.metadata.at("qwen35.block_count") =
+      brt::gguf::MetadataValue{std::uint32_t{33}};
+  put_u32(nextn_catalog, "qwen35.nextn_predict_layers", 1);
+  nextn_catalog.metadata.erase("qwen35.layer_types");
+  const auto nextn_config = brt::model::derive_qwen35_config(nextn_catalog);
+  assert(nextn_config.blocks.size() == 32);
+  assert(nextn_config.blocks.back().index == 31);
+  assert(nextn_config.blocks.back().kind ==
+         brt::model::Qwen35BlockKind::full_attention);
+
+  auto nextn_with_main_layer_types = catalog;
+  nextn_with_main_layer_types.metadata.at("qwen35.block_count") =
+      brt::gguf::MetadataValue{std::uint32_t{33}};
+  put_u32(nextn_with_main_layer_types, "qwen35.nextn_predict_layers", 1);
+  const auto nextn_typed_config =
+      brt::model::derive_qwen35_config(nextn_with_main_layer_types);
+  assert(nextn_typed_config.blocks.size() == 32);
+
+  auto nextn_with_total_layer_types = nextn_with_main_layer_types;
+  auto extra_layer_values = layer_types_interval4();
+  extra_layer_values.emplace_back(std::string{"linear_attention"});
+  replace_layer_types(nextn_with_total_layer_types,
+                      std::move(extra_layer_values));
+  expect_config_error([&] {
+    (void)brt::model::derive_qwen35_config(nextn_with_total_layer_types);
+  });
+
+  auto invalid_nextn = catalog;
+  put_u32(invalid_nextn, "qwen35.nextn_predict_layers", 32);
+  expect_config_error(
+      [&] { (void)brt::model::derive_qwen35_config(invalid_nextn); });
+
   auto wrong_architecture = catalog;
   wrong_architecture.metadata.at("general.architecture") =
       brt::gguf::MetadataValue{std::string{"qwen3"}};

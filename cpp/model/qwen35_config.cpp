@@ -17,9 +17,8 @@ const gguf::MetadataValue &require(const gguf::Catalog &catalog,
   return *value;
 }
 
-std::uint32_t require_u32(const gguf::Catalog &catalog,
-                          const std::string &key) {
-  const auto &value = require(catalog, key);
+std::uint32_t require_u32_value(const gguf::MetadataValue &value,
+                                const std::string &key) {
   if (const auto *typed = value.get_if<std::uint32_t>()) {
     return *typed;
   }
@@ -29,6 +28,22 @@ std::uint32_t require_u32(const gguf::Catalog &catalog,
   }
   throw ConfigError("Qwen3.5 metadata must be an unsigned 32-bit value: " +
                     key);
+}
+
+std::uint32_t require_u32(const gguf::Catalog &catalog,
+                          const std::string &key) {
+  const auto &value = require(catalog, key);
+  return require_u32_value(value, key);
+}
+
+std::uint32_t optional_u32(const gguf::Catalog &catalog,
+                           const std::string &key,
+                           std::uint32_t default_value) {
+  const auto *value = catalog.find_metadata(key);
+  if (value == nullptr) {
+    return default_value;
+  }
+  return require_u32_value(*value, key);
 }
 
 float require_float(const gguf::Catalog &catalog, const std::string &key) {
@@ -79,7 +94,9 @@ Qwen35Config derive_qwen35_config(const gguf::Catalog &catalog) {
   config.hidden_size = require_u32(catalog, "qwen35.embedding_length");
   config.intermediate_size = require_u32(catalog, "qwen35.feed_forward_length");
   config.context_length = require_u32(catalog, "qwen35.context_length");
-  const auto block_count = require_u32(catalog, "qwen35.block_count");
+  const auto total_block_count = require_u32(catalog, "qwen35.block_count");
+  const auto nextn_predict_layers =
+      optional_u32(catalog, "qwen35.nextn_predict_layers", 0);
   config.full_attention_head_count =
       require_u32(catalog, "qwen35.attention.head_count");
   config.full_attention_kv_head_count =
@@ -117,7 +134,7 @@ Qwen35Config derive_qwen35_config(const gguf::Catalog &catalog) {
   require_nonzero(config.hidden_size, "qwen35.embedding_length");
   require_nonzero(config.intermediate_size, "qwen35.feed_forward_length");
   require_nonzero(config.context_length, "qwen35.context_length");
-  require_nonzero(block_count, "qwen35.block_count");
+  require_nonzero(total_block_count, "qwen35.block_count");
   require_nonzero(config.full_attention_head_count,
                   "qwen35.attention.head_count");
   require_nonzero(config.full_attention_kv_head_count,
@@ -171,7 +188,12 @@ Qwen35Config derive_qwen35_config(const gguf::Catalog &catalog) {
       config.rope_frequency_base <= 0.0F) {
     throw ConfigError("Qwen3.5 RoPE frequency base must be positive");
   }
-  if (block_count % full_attention_interval != 0) {
+  if (nextn_predict_layers >= total_block_count) {
+    throw ConfigError(
+        "qwen35.nextn_predict_layers must be smaller than block count");
+  }
+  const auto main_block_count = total_block_count - nextn_predict_layers;
+  if (main_block_count % full_attention_interval != 0) {
     throw ConfigError(
         "Qwen3.5 block count must be divisible by the attention interval");
   }
@@ -182,14 +204,14 @@ Qwen35Config derive_qwen35_config(const gguf::Catalog &catalog) {
     layer_types = layer_types_value->get_if<gguf::MetadataArray>();
     if (layer_types == nullptr ||
         layer_types->element_type != gguf::MetadataType::string ||
-        layer_types->values.size() != block_count) {
+        layer_types->values.size() != main_block_count) {
       throw ConfigError(
           "qwen35.layer_types must be a string array matching block count");
     }
   }
 
-  config.blocks.reserve(block_count);
-  for (std::uint32_t index = 0; index < block_count; ++index) {
+  config.blocks.reserve(main_block_count);
+  for (std::uint32_t index = 0; index < main_block_count; ++index) {
     const bool interval_full_attention =
         (index + 1) % full_attention_interval == 0;
     const auto kind =
