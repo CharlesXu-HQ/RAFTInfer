@@ -4,6 +4,7 @@
 
 #if BRT_ENABLE_CUDA
 #include "../foundation/device_context.hpp"
+#include "../model/cuda_weights.hpp"
 #endif
 
 #include <stdexcept>
@@ -18,7 +19,7 @@ Engine::Engine(const BrtEngineConfig &config)
   if (initial_pool_bytes_ == 0)
     throw std::invalid_argument("initial_pool_bytes must be non-zero");
 #if BRT_ENABLE_CUDA
-  device_ = std::make_unique<DeviceContext>(device_id_, initial_pool_bytes_);
+  device_ = std::make_shared<DeviceContext>(device_id_, initial_pool_bytes_);
 #endif
 }
 
@@ -42,7 +43,14 @@ BrtSmokeResult Engine::run_smoke() {
 
 std::shared_ptr<model::Model>
 Engine::load_model(const std::string &gguf_path) const {
-  return std::make_shared<model::Model>(gguf_path);
+  auto model = std::make_shared<model::Model>(gguf_path);
+#if BRT_ENABLE_CUDA
+  auto cuda_weights = device_->upload_qwen35_weights(*model);
+  model->attach_cuda(
+      device_,
+      std::shared_ptr<model::CudaWeightPlan>(std::move(cuda_weights)));
+#endif
+  return model;
 }
 
 } // namespace brt

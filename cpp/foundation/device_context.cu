@@ -89,6 +89,10 @@ class DeviceContext::Resources {
 
   ExecutionContext execution_context(int device_id) {
     WorkspaceArena& workspace = *workspace_arena_;
+    return execution_context(device_id, workspace);
+  }
+
+  ExecutionContext execution_context(int device_id, WorkspaceArena& workspace) {
     auto stream_view = raft::resource::get_cuda_stream(resources_);
     cudaStream_t stream = stream_view.value();
     return ExecutionContext{
@@ -119,6 +123,51 @@ class DeviceContext::Resources {
   int max_shared_memory_per_block_{};
 };
 
+class DeviceExecutionOwner::Impl {
+ public:
+  Impl(std::shared_ptr<void> resource_anchor,
+       raft::device_resources& resources,
+       rmm::device_async_resource_ref memory_resource,
+       cudaStream_t stream,
+       int device_id,
+       int compute_capability_major,
+       int compute_capability_minor,
+       int max_shared_memory_per_block,
+       std::size_t workspace_bytes)
+      : resource_anchor_(std::move(resource_anchor)),
+        resources_(&resources),
+        memory_resource_(memory_resource),
+        stream_(stream),
+        device_id_(device_id),
+        compute_capability_major_(compute_capability_major),
+        compute_capability_minor_(compute_capability_minor),
+        max_shared_memory_per_block_(max_shared_memory_per_block),
+        workspace_(memory_resource_, cuda::stream_ref{stream_}, stream_,
+                   workspace_bytes) {}
+
+  ExecutionContext execution_context() {
+    return ExecutionContext{
+        *resources_,
+        memory_resource_,
+        stream_,
+        workspace_,
+        device_id_,
+        compute_capability_major_,
+        compute_capability_minor_,
+        max_shared_memory_per_block_};
+  }
+
+  std::shared_ptr<void> resource_anchor_;
+  raft::device_resources* resources_;
+  rmm::device_async_resource_ref memory_resource_;
+  cudaStream_t stream_{};
+  int device_id_{};
+  int compute_capability_major_{};
+  int compute_capability_minor_{};
+  int max_shared_memory_per_block_{};
+  WorkspaceArena workspace_;
+};
+
 DeviceContext::DeviceContext(int device_id, uint64_t initial_pool_bytes) : device_id_(device_id) {
   DeviceGuard device_guard{device_id_};
   resources_ = std::shared_ptr<Resources>(
@@ -140,6 +189,62 @@ DeviceContext::DeviceContext(int device_id, uint64_t initial_pool_bytes) : devic
 
 DeviceContext::~DeviceContext() noexcept {
   resources_.reset();
+}
+
+DeviceExecutionOwner::DeviceExecutionOwner(std::unique_ptr<Impl> impl) noexcept
+    : impl_(std::move(impl)) {}
+
+DeviceExecutionOwner::~DeviceExecutionOwner() noexcept {
+  if (impl_ == nullptr) return;
+  try {
+    DeviceGuard device_guard{impl_->device_id_};
+    impl_.reset();
+    device_guard.restore();
+  } catch (...) {
+    // Avoid running CUDA/RMM destructors under the wrong device when device
+    // selection or restoration fails. The allocation is deliberately leaked.
+    (void)impl_.release();
+  }
+}
+
+ExecutionContext DeviceExecutionOwner::execution_context() {
+  if (impl_ == nullptr) {
+    throw std::logic_error("device execution owner is not initialized");
+  }
+  return impl_->execution_context();
+}
+
+std::size_t DeviceExecutionOwner::workspace_bytes() const noexcept {
+  return impl_ == nullptr ? 0 : impl_->workspace_.capacity();
+}
+
+int DeviceExecutionOwner::device_id() const noexcept {
+  return impl_ == nullptr ? -1 : impl_->device_id_;
+}
+
+std::unique_ptr<DeviceExecutionOwner>
+DeviceContext::create_execution_owner(std::size_t workspace_bytes) const {
+  if (workspace_bytes == 0) {
+    throw std::invalid_argument(
+        "device execution workspace_bytes must be non-zero");
+  }
+  DeviceGuard device_guard{device_id_};
+  auto stream_view = raft::resource::get_cuda_stream(resources_->resources_);
+  cudaStream_t stream = stream_view.value();
+  auto impl = std::make_unique<DeviceExecutionOwner::Impl>(
+      std::static_pointer_cast<void>(resources_),
+      resources_->resources_,
+      rmm::device_async_resource_ref{resources_->pool_},
+      stream,
+      device_id_,
+      resources_->compute_capability_major_,
+      resources_->compute_capability_minor_,
+      resources_->max_shared_memory_per_block_,
+      workspace_bytes);
+  auto owner = std::unique_ptr<DeviceExecutionOwner>(
+      new DeviceExecutionOwner(std::move(impl)));
+  device_guard.restore();
+  return owner;
 }
 
 BrtSmokeResult DeviceContext::run_smoke() {

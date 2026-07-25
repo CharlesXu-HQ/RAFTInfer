@@ -2,6 +2,7 @@
 
 #include <brt/c_api.h>
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 
@@ -14,12 +15,38 @@ struct Qwen35Manifest;
 namespace brt {
 
 class ExecutionContext;
+class DeviceContext;
+
+class DeviceExecutionOwner {
+ public:
+  ~DeviceExecutionOwner() noexcept;
+
+  DeviceExecutionOwner(const DeviceExecutionOwner&) = delete;
+  DeviceExecutionOwner& operator=(const DeviceExecutionOwner&) = delete;
+  DeviceExecutionOwner(DeviceExecutionOwner&&) = delete;
+  DeviceExecutionOwner& operator=(DeviceExecutionOwner&&) = delete;
+
+  ExecutionContext execution_context();
+  std::size_t workspace_bytes() const noexcept;
+  int device_id() const noexcept;
+
+ private:
+  class Impl;
+
+  explicit DeviceExecutionOwner(std::unique_ptr<Impl> impl) noexcept;
+
+  std::unique_ptr<Impl> impl_;
+
+  friend class DeviceContext;
+};
 
 class DeviceContext {
  public:
   DeviceContext(int device_id, uint64_t initial_pool_bytes);
   ~DeviceContext() noexcept;
   BrtSmokeResult run_smoke();
+  std::unique_ptr<DeviceExecutionOwner>
+  create_execution_owner(std::size_t workspace_bytes) const;
   std::unique_ptr<model::CudaWeightPlan>
   upload_qwen35_weights(const model::Model& model);
   std::unique_ptr<model::CudaWeightPlan>

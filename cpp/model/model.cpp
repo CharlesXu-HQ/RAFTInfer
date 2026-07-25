@@ -13,6 +13,7 @@
 #include <fcntl.h>
 #include <limits>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -256,11 +257,17 @@ public:
                          static_cast<std::size_t>(tensor.byte_size));
   }
 
+  struct CudaState {
+    std::shared_ptr<DeviceContext> device;
+    std::shared_ptr<CudaWeightPlan> weights;
+  };
+
   MappedFile file;
   gguf::Catalog catalog;
   Qwen35Config config;
   Qwen35Manifest manifest;
   std::vector<std::uint8_t> tokenizer_spec_bytes;
+  std::unique_ptr<CudaState> cuda_state;
 };
 
 Model::Model(const std::string &gguf_path)
@@ -283,6 +290,34 @@ const Qwen35Manifest &Model::qwen35_manifest() const noexcept {
 std::span<const std::uint8_t>
 Model::tensor_payload(const gguf::TensorInfo &tensor) const {
   return impl_->tensor_payload(tensor);
+}
+
+bool Model::cuda_ready() const noexcept {
+  return impl_->cuda_state != nullptr;
+}
+
+const CudaWeightPlan *Model::cuda_weights() const noexcept {
+  return impl_->cuda_state == nullptr ? nullptr
+                                      : impl_->cuda_state->weights.get();
+}
+
+std::shared_ptr<const DeviceContext> Model::device_context() const noexcept {
+  return impl_->cuda_state == nullptr ? std::shared_ptr<const DeviceContext>{}
+                                      : impl_->cuda_state->device;
+}
+
+void Model::attach_cuda(std::shared_ptr<DeviceContext> device,
+                        std::shared_ptr<CudaWeightPlan> weights) {
+  if (!device || !weights) {
+    throw std::invalid_argument(
+        "CUDA model attachment requires device and weight ownership");
+  }
+  if (impl_->cuda_state != nullptr) {
+    throw std::logic_error("CUDA model attachment is immutable");
+  }
+  auto cuda_state = std::make_unique<Impl::CudaState>(
+      Impl::CudaState{std::move(device), std::move(weights)});
+  impl_->cuda_state = std::move(cuda_state);
 }
 
 } // namespace brt::model

@@ -26,7 +26,7 @@ private:
   int device_id_;
   uint64_t initial_pool_bytes_;
 #if BRT_ENABLE_CUDA
-  std::unique_ptr<DeviceContext> device_;
+  std::shared_ptr<DeviceContext> device_;
 #endif
 };
 
