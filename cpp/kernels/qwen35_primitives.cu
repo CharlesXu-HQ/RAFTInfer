@@ -29,6 +29,12 @@ std::size_t checked_mul(std::size_t lhs, std::size_t rhs,
   return lhs * rhs;
 }
 
+std::size_t checked_add(std::size_t lhs, std::size_t rhs,
+                        const char* message) {
+  require(rhs <= std::numeric_limits<std::size_t>::max() - lhs, message);
+  return lhs + rhs;
+}
+
 void check_launch(const char* name) {
   const cudaError_t error = cudaGetLastError();
   if (error != cudaSuccess) {
