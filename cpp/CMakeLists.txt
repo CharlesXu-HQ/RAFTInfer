@@ -24,6 +24,7 @@ if(BRT_ENABLE_CUDA)
   find_package(raft 26.06 CONFIG REQUIRED)
   find_package(rmm 26.06 CONFIG REQUIRED)
   target_sources(brt_cpp PRIVATE
+    execution/cublaslt_matmul.cu
     execution/workspace_arena.cu
     foundation/device_context.cu
     model/cuda_weights.cu
@@ -31,7 +32,7 @@ if(BRT_ENABLE_CUDA)
     kernels/qwen35_delta.cu
     kernels/qwen35_primitives.cu
     kernels/smoke.cu)
-  target_link_libraries(brt_cpp PUBLIC raft::raft rmm::rmm CUDA::cudart)
+  target_link_libraries(brt_cpp PUBLIC raft::raft rmm::rmm CUDA::cudart CUDA::cublasLt)
   target_compile_options(brt_cpp PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--expt-extended-lambda --expt-relaxed-constexpr>)
 endif()
@@ -102,6 +103,11 @@ if(BRT_BUILD_TESTS)
       -DCUDA_WEIGHTS_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/model/cuda_weights.cu
       -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/device_context_source_test.cmake)
   if(BRT_ENABLE_CUDA)
+    brt_add_assert_test(brt_cublaslt_matmul_test
+      tests/cublaslt_matmul_test.cu)
+    target_link_libraries(brt_cublaslt_matmul_test PRIVATE brt_cpp)
+    target_compile_options(brt_cublaslt_matmul_test PRIVATE
+      $<$<COMPILE_LANGUAGE:CUDA>:--expt-extended-lambda --expt-relaxed-constexpr>)
     brt_add_assert_test(brt_cuda_weights_test tests/cuda_weights_test.cu)
     target_link_libraries(brt_cuda_weights_test PRIVATE brt_cpp)
     target_compile_options(brt_cuda_weights_test PRIVATE
