@@ -376,26 +376,116 @@ std::size_t qwen35_attention_workspace_bytes(Qwen35AttentionShape shape) {
                      "attention workspace byte size overflow");
 }
 
-void qwen35_causal_attention(const void *query, const void *key,
-                             const void *value, const void *gate, void *output,
-                             float *kv_cache, float *logits_workspace,
-                             std::size_t logits_workspace_floats,
-                             Qwen35AttentionShape shape, BrtDataType dtype,
-                             cudaStream_t stream) {
+namespace {
+
+void validate_launch_policy(Qwen35AttentionLaunchPolicy policy) {
+  switch (policy.implementation) {
+  case brt::Qwen35AttentionImplementation::materialized_reference:
+  case brt::Qwen35AttentionImplementation::online_tiled:
+    break;
+  default:
+    require(false, "unsupported Qwen3.5 attention implementation");
+  }
+  switch (policy.kv_cache_dtype) {
+  case brt::Qwen35KvCacheDType::f32:
+  case brt::Qwen35KvCacheDType::bf16:
+    break;
+  default:
+    require(false, "unsupported Qwen3.5 KV cache dtype");
+  }
+  switch (policy.kv_cache_layout) {
+  case brt::Qwen35KvCacheLayout::token_major:
+  case brt::Qwen35KvCacheLayout::head_major:
+    break;
+  default:
+    require(false, "unsupported Qwen3.5 KV cache layout");
+  }
+}
+
+std::size_t kv_cache_element_bytes(brt::Qwen35KvCacheDType dtype) {
+  switch (dtype) {
+  case brt::Qwen35KvCacheDType::f32:
+    return sizeof(float);
+  case brt::Qwen35KvCacheDType::bf16:
+    return sizeof(__nv_bfloat16);
+  }
+  require(false, "unsupported Qwen3.5 KV cache dtype");
+  return 0;
+}
+
+void validate_attention_pointers(const void *query, const void *key,
+                                 const void *value, const void *gate,
+                                 void *output, void *kv_cache, void *workspace,
+                                 std::size_t required_workspace_bytes,
+                                 cudaStream_t stream) {
   require(query != nullptr, "attention query pointer is null");
   require(key != nullptr, "attention key pointer is null");
   require(value != nullptr, "attention value pointer is null");
   require(gate != nullptr, "attention gate pointer is null");
   require(output != nullptr, "attention output pointer is null");
   require(kv_cache != nullptr, "attention kv_cache pointer is null");
-  require(logits_workspace != nullptr,
-          "attention logits_workspace pointer is null");
+  require(required_workspace_bytes == 0 || workspace != nullptr,
+          "attention workspace pointer is null");
   require(stream != nullptr, "CUDA stream is null");
-  require_dtype(dtype);
+}
+
+} // namespace
+
+std::size_t qwen35_attention_cache_bytes(Qwen35AttentionShape shape,
+                                         Qwen35AttentionLaunchPolicy policy) {
+  validate_shape(shape);
+  validate_launch_policy(policy);
+  const std::size_t elements =
+      checked_mul(std::size_t{2},
+                  checked_mul(shape.max_context_tokens, kv_vector_size(shape),
+                              "attention cache shape overflow"),
+                  "attention cache shape overflow");
+  return checked_mul(elements, kv_cache_element_bytes(policy.kv_cache_dtype),
+                     "attention cache byte size overflow");
+}
+
+std::size_t
+qwen35_attention_workspace_bytes(Qwen35AttentionShape shape,
+                                 Qwen35AttentionLaunchPolicy policy) {
+  validate_launch_policy(policy);
+  switch (policy.implementation) {
+  case brt::Qwen35AttentionImplementation::materialized_reference:
+    return qwen35_attention_workspace_bytes(shape);
+  case brt::Qwen35AttentionImplementation::online_tiled:
+    validate_shape(shape);
+    return 0;
+  }
+  require(false, "unsupported Qwen3.5 attention implementation");
+  return 0;
+}
+
+void qwen35_causal_attention_materialized(
+    const void *query, const void *key, const void *value, const void *gate,
+    void *output, void *kv_cache, std::size_t kv_cache_bytes, void *workspace,
+    std::size_t workspace_bytes, Qwen35AttentionShape shape,
+    BrtDataType activation_dtype, brt::Qwen35KvCacheDType cache_dtype,
+    cudaStream_t stream) {
+  require(cache_dtype == brt::Qwen35KvCacheDType::f32,
+          "materialized attention requires an F32 KV cache");
+  const Qwen35AttentionLaunchPolicy materialized_policy{
+      .implementation =
+          brt::Qwen35AttentionImplementation::materialized_reference,
+      .kv_cache_dtype = cache_dtype,
+      .kv_cache_layout = brt::Qwen35KvCacheLayout::token_major,
+  };
   const std::size_t required_workspace =
-      qwen35_attention_workspace_floats(shape);
-  require(logits_workspace_floats >= required_workspace,
-          "attention logits workspace is too small");
+      qwen35_attention_workspace_bytes(shape, materialized_policy);
+  validate_attention_pointers(query, key, value, gate, output, kv_cache,
+                              workspace, required_workspace, stream);
+  require(kv_cache_bytes >=
+              qwen35_attention_cache_bytes(shape, materialized_policy),
+          "attention KV cache is too small");
+  require(workspace_bytes >= required_workspace,
+          "attention workspace is too small");
+  require_dtype(activation_dtype);
+
+  auto *const f32_kv_cache = static_cast<float *>(kv_cache);
+  auto *const logits_workspace = static_cast<float *>(workspace);
 
   const std::size_t kv_elements =
       checked_mul(shape.tokens, kv_vector_size(shape),
@@ -408,9 +498,9 @@ void qwen35_causal_attention(const void *query, const void *key,
   const int pair_grid =
       checked_grid_for(attention_pairs, "attention grid dimension overflow");
 
-  launch_by_dtype(dtype, [&]<typename T>() {
+  launch_by_dtype(activation_dtype, [&]<typename T>() {
     append_cache_kernel<T><<<append_grid, kBlockSize, 0, stream>>>(
-        key, value, kv_cache, shape.tokens, shape.kv_heads, shape.head_dim,
+        key, value, f32_kv_cache, shape.tokens, shape.kv_heads, shape.head_dim,
         shape.max_context_tokens, shape.past_tokens);
   });
   check_launch("qwen35_attention_append_cache");
@@ -421,10 +511,10 @@ void qwen35_causal_attention(const void *query, const void *key,
         checked_grid_for(checked_mul(shape.query_heads, current_context,
                                      "decode attention logits grid overflow"),
                          "decode attention logits grid overflow");
-    launch_by_dtype(dtype, [&]<typename T>() {
+    launch_by_dtype(activation_dtype, [&]<typename T>() {
       decode_logits_kernel<T>
           <<<decode_logits_grid, kBlockSize, kBlockSize * sizeof(float),
-             stream>>>(query, kv_cache, logits_workspace, shape.query_heads,
+             stream>>>(query, f32_kv_cache, logits_workspace, shape.query_heads,
                        shape.kv_heads, shape.head_dim, current_context);
     });
     check_launch("qwen35_decode_attention_logits");
@@ -442,10 +532,10 @@ void qwen35_causal_attention(const void *query, const void *key,
         checked_grid_for(checked_mul(shape.query_heads, dimension_tiles,
                                      "decode attention output grid overflow"),
                          "decode attention output grid overflow");
-    launch_by_dtype(dtype, [&]<typename T>() {
+    launch_by_dtype(activation_dtype, [&]<typename T>() {
       decode_output_kernel<T>
           <<<decode_output_grid, static_cast<int>(kOutputTile), 0, stream>>>(
-              kv_cache, gate, output, logits_workspace, shape.query_heads,
+              f32_kv_cache, gate, output, logits_workspace, shape.query_heads,
               shape.kv_heads, shape.head_dim, shape.max_context_tokens,
               current_context, dimension_tiles);
     });
@@ -453,22 +543,75 @@ void qwen35_causal_attention(const void *query, const void *key,
     return;
   }
 
-  launch_by_dtype(dtype, [&]<typename T>() {
+  launch_by_dtype(activation_dtype, [&]<typename T>() {
     logits_kernel<T>
         <<<pair_grid, kBlockSize, kBlockSize * sizeof(float), stream>>>(
-            query, kv_cache, logits_workspace, shape.tokens, shape.query_heads,
-            shape.kv_heads, shape.head_dim, shape.max_context_tokens,
-            shape.past_tokens);
+            query, f32_kv_cache, logits_workspace, shape.tokens,
+            shape.query_heads, shape.kv_heads, shape.head_dim,
+            shape.max_context_tokens, shape.past_tokens);
   });
   check_launch("qwen35_attention_logits");
 
-  launch_by_dtype(dtype, [&]<typename T>() {
+  launch_by_dtype(activation_dtype, [&]<typename T>() {
     output_kernel<T><<<pair_grid, kBlockSize, 2 * sizeof(float), stream>>>(
-        kv_cache, gate, output, logits_workspace, shape.tokens,
+        f32_kv_cache, gate, output, logits_workspace, shape.tokens,
         shape.query_heads, shape.kv_heads, shape.head_dim,
         shape.max_context_tokens, shape.past_tokens);
   });
   check_launch("qwen35_attention_output");
+}
+
+void qwen35_causal_attention(const void *query, const void *key,
+                             const void *value, const void *gate, void *output,
+                             void *kv_cache, std::size_t kv_cache_bytes,
+                             void *workspace, std::size_t workspace_bytes,
+                             Qwen35AttentionShape shape,
+                             BrtDataType activation_dtype,
+                             Qwen35AttentionLaunchPolicy policy,
+                             cudaStream_t stream) {
+  const std::size_t required_workspace =
+      qwen35_attention_workspace_bytes(shape, policy);
+  validate_attention_pointers(query, key, value, gate, output, kv_cache,
+                              workspace, required_workspace, stream);
+  require(kv_cache_bytes >= qwen35_attention_cache_bytes(shape, policy),
+          "attention KV cache is too small");
+  require(workspace_bytes >= required_workspace,
+          "attention workspace is too small");
+  require_dtype(activation_dtype);
+
+  switch (policy.implementation) {
+  case brt::Qwen35AttentionImplementation::materialized_reference:
+    require(policy.kv_cache_layout == brt::Qwen35KvCacheLayout::token_major,
+            "materialized attention requires a token-major KV cache");
+    qwen35_causal_attention_materialized(
+        query, key, value, gate, output, kv_cache, kv_cache_bytes, workspace,
+        workspace_bytes, shape, activation_dtype, policy.kv_cache_dtype,
+        stream);
+    return;
+  case brt::Qwen35AttentionImplementation::online_tiled:
+    require(false, "online tiled Qwen3.5 attention is not available");
+  }
+  require(false, "unsupported Qwen3.5 attention implementation");
+}
+
+void qwen35_causal_attention(const void *query, const void *key,
+                             const void *value, const void *gate, void *output,
+                             float *kv_cache, float *logits_workspace,
+                             std::size_t logits_workspace_floats,
+                             Qwen35AttentionShape shape, BrtDataType dtype,
+                             cudaStream_t stream) {
+  const Qwen35AttentionLaunchPolicy policy{
+      .implementation =
+          brt::Qwen35AttentionImplementation::materialized_reference,
+      .kv_cache_dtype = brt::Qwen35KvCacheDType::f32,
+      .kv_cache_layout = brt::Qwen35KvCacheLayout::token_major,
+  };
+  qwen35_causal_attention(query, key, value, gate, output, kv_cache,
+                          qwen35_attention_cache_bytes(shape, policy),
+                          logits_workspace,
+                          checked_mul(logits_workspace_floats, sizeof(float),
+                                      "attention workspace byte size overflow"),
+                          shape, dtype, policy, stream);
 }
 
 } // namespace brt::kernels

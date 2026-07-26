@@ -33,6 +33,21 @@
 
 namespace {
 
+static_assert(
+    std::is_same_v<std::underlying_type_t<brt::Qwen35AttentionImplementation>,
+                   std::uint8_t>);
+static_assert(brt::Qwen35AttentionImplementation::materialized_reference !=
+              brt::Qwen35AttentionImplementation::online_tiled);
+static_assert(brt::Qwen35ExecutionPolicy{}.attention ==
+              brt::Qwen35AttentionImplementation::online_tiled);
+
+constexpr brt::kernels::Qwen35AttentionLaunchPolicy kReferenceAttentionPolicy{
+    .implementation =
+        brt::Qwen35AttentionImplementation::materialized_reference,
+    .kv_cache_dtype = brt::Qwen35KvCacheDType::f32,
+    .kv_cache_layout = brt::Qwen35KvCacheLayout::token_major,
+};
+
 class TestResources {
 public:
   explicit TestResources(std::size_t pool_bytes)
@@ -180,6 +195,64 @@ void expect_primitive_error(auto &&fn) {
     thrown = true;
   }
   assert(thrown);
+}
+
+void run_attention_policy_contract_tests(brt::ExecutionContext &context) {
+  const brt::kernels::Qwen35AttentionShape shape{
+      .tokens = 1,
+      .query_heads = 2,
+      .kv_heads = 1,
+      .head_dim = 7,
+      .max_context_tokens = 4,
+      .past_tokens = 0,
+  };
+  const brt::kernels::Qwen35AttentionLaunchPolicy bf16_online{
+      .implementation = brt::Qwen35AttentionImplementation::online_tiled,
+      .kv_cache_dtype = brt::Qwen35KvCacheDType::bf16,
+      .kv_cache_layout = brt::Qwen35KvCacheLayout::token_major,
+  };
+  const brt::kernels::Qwen35AttentionLaunchPolicy bf16_materialized{
+      .implementation =
+          brt::Qwen35AttentionImplementation::materialized_reference,
+      .kv_cache_dtype = brt::Qwen35KvCacheDType::bf16,
+      .kv_cache_layout = brt::Qwen35KvCacheLayout::token_major,
+  };
+  assert(brt::kernels::qwen35_attention_cache_bytes(
+             shape, kReferenceAttentionPolicy) ==
+         2 * shape.max_context_tokens * shape.kv_heads * shape.head_dim *
+             sizeof(float));
+  assert(brt::kernels::qwen35_attention_workspace_bytes(
+             shape, kReferenceAttentionPolicy) ==
+         shape.tokens * shape.query_heads * (shape.past_tokens + shape.tokens) *
+             sizeof(float));
+  assert(brt::kernels::qwen35_attention_cache_bytes(shape, bf16_online) ==
+         2 * shape.max_context_tokens * shape.kv_heads * shape.head_dim *
+             sizeof(__nv_bfloat16));
+  assert(brt::kernels::qwen35_attention_workspace_bytes(shape, bf16_online) ==
+         0);
+
+  auto *pointer = reinterpret_cast<void *>(0x1000);
+  auto *const_pointer = reinterpret_cast<const void *>(0x1000);
+  expect_primitive_error([&] {
+    brt::kernels::qwen35_causal_attention(
+        const_pointer, const_pointer, const_pointer, const_pointer, pointer,
+        pointer,
+        brt::kernels::qwen35_attention_cache_bytes(shape, bf16_online) - 1,
+        pointer,
+        brt::kernels::qwen35_attention_workspace_bytes(
+            shape, kReferenceAttentionPolicy),
+        shape, BRT_DTYPE_F16, bf16_online, context.stream());
+  });
+  expect_primitive_error([&] {
+    brt::kernels::qwen35_causal_attention(
+        const_pointer, const_pointer, const_pointer, const_pointer, pointer,
+        pointer,
+        brt::kernels::qwen35_attention_cache_bytes(shape, bf16_materialized),
+        pointer,
+        brt::kernels::qwen35_attention_workspace_bytes(
+            shape, kReferenceAttentionPolicy),
+        shape, BRT_DTYPE_F16, bf16_materialized, context.stream());
+  });
 }
 
 void apply_qk_norm_rope_reference(std::span<const float> input,
@@ -341,14 +414,19 @@ void run_prefill_case(brt::ExecutionContext &context, std::size_t tokens,
       1.0e-5F, DTypeTraits<T>::dtype, DTypeTraits<T>::dtype, context.stream());
   brt::kernels::qwen35_causal_attention(
       device_q.data(), device_k.data(), device_v.data(), device_gate.data(),
-      device_output.data(), static_cast<float *>(device_cache.data()),
-      static_cast<float *>(device_logits.data()),
-      brt::kernels::qwen35_attention_workspace_floats(
+      device_output.data(), device_cache.data(),
+      brt::kernels::qwen35_attention_cache_bytes(
           brt::kernels::Qwen35AttentionShape{tokens, query_heads, kv_heads,
-                                             head_dim, tokens, 0}),
+                                             head_dim, tokens, 0},
+          kReferenceAttentionPolicy),
+      device_logits.data(),
+      brt::kernels::qwen35_attention_workspace_bytes(
+          brt::kernels::Qwen35AttentionShape{tokens, query_heads, kv_heads,
+                                             head_dim, tokens, 0},
+          kReferenceAttentionPolicy),
       brt::kernels::Qwen35AttentionShape{tokens, query_heads, kv_heads,
                                          head_dim, tokens, 0},
-      DTypeTraits<T>::dtype, context.stream());
+      DTypeTraits<T>::dtype, kReferenceAttentionPolicy, context.stream());
 
   const auto actual_encoded =
       download<T>(context, device_output.data(), tokens * hidden_size);
@@ -593,6 +671,7 @@ int main() {
   TestResources resources{128 * 1024 * 1024};
   auto &context = resources.context();
 
+  run_attention_policy_contract_tests(context);
   run_prefill_dtype_cases<__half>(context);
   run_prefill_dtype_cases<__nv_bfloat16>(context);
   run_prefill_dtype_cases<float>(context);
