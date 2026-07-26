@@ -590,6 +590,8 @@ void qwen35_causal_attention(const void *query, const void *key,
         stream);
     return;
   case brt::Qwen35AttentionImplementation::online_tiled:
+    require(workspace == nullptr && workspace_bytes == 0,
+            "online tiled attention forbids logits workspace");
     require(qwen35_online_attention_prefill_supported(shape, activation_dtype,
                                                       policy),
             "unsupported online tiled prefill signature; select the "

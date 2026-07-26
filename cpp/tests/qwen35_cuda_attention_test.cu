@@ -293,6 +293,43 @@ void run_attention_policy_contract_tests(brt::ExecutionContext &context) {
         pointer, std::numeric_limits<std::size_t>::max(), nullptr, 0,
         oversized_head, BRT_DTYPE_F32, f32_online, context.stream());
   });
+
+  const std::size_t supported_output_elements = supported_prefill.tokens *
+                                                supported_prefill.query_heads *
+                                                supported_prefill.head_dim;
+  const std::size_t supported_kv_elements = supported_prefill.tokens *
+                                            supported_prefill.kv_heads *
+                                            supported_prefill.head_dim;
+  DeviceBuffer supported_query{context,
+                               supported_output_elements * sizeof(float)};
+  DeviceBuffer supported_key{context, supported_kv_elements * sizeof(float)};
+  DeviceBuffer supported_value{context, supported_kv_elements * sizeof(float)};
+  DeviceBuffer supported_gate{context,
+                              supported_output_elements * sizeof(float)};
+  DeviceBuffer supported_output{context,
+                                supported_output_elements * sizeof(float)};
+  DeviceBuffer supported_cache{
+      context, brt::kernels::qwen35_attention_cache_bytes(supported_prefill,
+                                                          f32_online)};
+  DeviceBuffer forbidden_workspace{context, sizeof(float)};
+  expect_primitive_error([&] {
+    brt::kernels::qwen35_causal_attention(
+        supported_query.data(), supported_key.data(), supported_value.data(),
+        supported_gate.data(), supported_output.data(), supported_cache.data(),
+        brt::kernels::qwen35_attention_cache_bytes(supported_prefill,
+                                                   f32_online),
+        forbidden_workspace.data(), 0, supported_prefill, BRT_DTYPE_F32,
+        f32_online, context.stream());
+  });
+  expect_primitive_error([&] {
+    brt::kernels::qwen35_causal_attention(
+        supported_query.data(), supported_key.data(), supported_value.data(),
+        supported_gate.data(), supported_output.data(), supported_cache.data(),
+        brt::kernels::qwen35_attention_cache_bytes(supported_prefill,
+                                                   f32_online),
+        nullptr, sizeof(float), supported_prefill, BRT_DTYPE_F32, f32_online,
+        context.stream());
+  });
 }
 
 void apply_qk_norm_rope_reference(std::span<const float> input,
