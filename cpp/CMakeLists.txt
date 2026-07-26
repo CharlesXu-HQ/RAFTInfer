@@ -29,6 +29,7 @@ if(BRT_ENABLE_CUDA)
   find_package(rmm 26.06 CONFIG REQUIRED)
   target_sources(brt_cpp PRIVATE
     execution/cublaslt_matmul.cu
+    execution/cuda_graph_decode.cu
     execution/workspace_arena.cu
     foundation/device_context.cu
     model/cuda_weights.cu
@@ -159,6 +160,15 @@ if(BRT_BUILD_TESTS)
     target_compile_options(brt_qwen35_executor_test PRIVATE
       $<$<COMPILE_LANGUAGE:CUDA>:--expt-extended-lambda --expt-relaxed-constexpr>)
     set_tests_properties(brt_qwen35_executor_test PROPERTIES
+      SKIP_RETURN_CODE 77)
+    brt_add_assert_test(brt_qwen35_cuda_graph_test
+      tests/qwen35_cuda_graph_test.cu)
+    target_link_libraries(brt_qwen35_cuda_graph_test PRIVATE brt_cpp)
+    target_compile_definitions(brt_qwen35_cuda_graph_test PRIVATE
+      BRT_QWEN35_EXECUTOR_TESTING=1)
+    target_compile_options(brt_qwen35_cuda_graph_test PRIVATE
+      $<$<COMPILE_LANGUAGE:CUDA>:--expt-extended-lambda --expt-relaxed-constexpr>)
+    set_tests_properties(brt_qwen35_cuda_graph_test PROPERTIES
       SKIP_RETURN_CODE 77)
   endif()
 endif()

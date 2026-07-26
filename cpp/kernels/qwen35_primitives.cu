@@ -157,7 +157,8 @@ __global__ void
 qk_norm_rope_kernel(const void *input, const void *weight, void *output,
                     std::size_t heads, std::size_t head_dim,
                     std::size_t rotary_dim, std::size_t position_offset,
-                    float rope_base, float epsilon) {
+                    float rope_base, float epsilon,
+                    const std::uint32_t *device_position) {
   extern __shared__ float shared[];
   const std::size_t vector = blockIdx.x;
   const std::size_t token = vector / heads;
@@ -190,7 +191,10 @@ qk_norm_rope_kernel(const void *input, const void *weight, void *output,
       const double exponent =
           static_cast<double>(2 * pair) / static_cast<double>(rotary_dim);
       const float theta =
-          static_cast<float>(static_cast<double>(position_offset + token) /
+          static_cast<float>(static_cast<double>((device_position == nullptr
+                                                      ? position_offset
+                                                      : *device_position) +
+                                                 token) /
                              pow(static_cast<double>(rope_base), exponent));
       float sin_theta = 0.0F;
       float cos_theta = 0.0F;
@@ -479,7 +483,8 @@ void qwen35_residual_add(const void *lhs, const void *rhs, void *output,
 void qwen35_qk_norm_rope(const void *input, const void *weight, void *output,
                          QkNormRopeShape shape, float epsilon,
                          BrtDataType dtype, BrtDataType weight_dtype,
-                         cudaStream_t stream) {
+                         cudaStream_t stream,
+                         const std::uint32_t *device_position) {
   require(input != nullptr, "qk_norm_rope input pointer is null");
   require(weight != nullptr, "qk_norm_rope weight pointer is null");
   require(output != nullptr, "qk_norm_rope output pointer is null");
@@ -511,19 +516,19 @@ void qwen35_qk_norm_rope(const void *input, const void *weight, void *output,
           <<<grid, kBlockSize, kBlockSize * sizeof(float), stream>>>(
               input, weight, output, shape.heads, shape.head_dim,
               shape.rotary_dim, shape.position_offset, shape.rope_base,
-              epsilon);
+              epsilon, device_position);
     } else if (weight_dtype == BRT_DTYPE_F16) {
       qk_norm_rope_kernel<T, __half>
           <<<grid, kBlockSize, kBlockSize * sizeof(float), stream>>>(
               input, weight, output, shape.heads, shape.head_dim,
               shape.rotary_dim, shape.position_offset, shape.rope_base,
-              epsilon);
+              epsilon, device_position);
     } else {
       qk_norm_rope_kernel<T, __nv_bfloat16>
           <<<grid, kBlockSize, kBlockSize * sizeof(float), stream>>>(
               input, weight, output, shape.heads, shape.head_dim,
               shape.rotary_dim, shape.position_offset, shape.rope_base,
-              epsilon);
+              epsilon, device_position);
     }
   });
   check_launch("qwen35_qk_norm_rope");

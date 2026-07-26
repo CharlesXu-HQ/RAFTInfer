@@ -10,6 +10,22 @@
 #include <vector>
 
 namespace brt::test {
+
+struct Qwen35GgufFixtureOptions {
+  std::uint32_t vocabulary_size{16};
+  std::uint32_t hidden_size{8};
+  std::uint32_t intermediate_size{16};
+  std::uint32_t context_length{128};
+  std::uint32_t full_head_count{2};
+  std::uint32_t full_kv_head_count{1};
+  std::uint32_t full_head_dimension{4};
+  std::uint32_t linear_key_head_count{1};
+  std::uint32_t linear_value_head_count{2};
+  std::uint32_t linear_head_dimension{4};
+  std::uint32_t rotary_dimension{2};
+  std::uint32_t block_count{4};
+};
+
 namespace detail {
 
 template <class T> void append(std::vector<std::uint8_t> &bytes, T value) {
@@ -101,22 +117,14 @@ inline std::string block_name(std::uint32_t index, const std::string &suffix) {
 
 inline std::vector<std::uint8_t>
 make_qwen35_gguf_fixture(std::uint32_t tensor_type = 1,
-                         bool f32_auxiliary_tensors = false) {
+                         bool f32_auxiliary_tensors = false,
+                         Qwen35GgufFixtureOptions options = {}) {
   constexpr std::uint32_t f32_tensor_type = 0;
-  constexpr std::uint32_t vocabulary_size = 16;
-  constexpr std::uint32_t hidden_size = 8;
-  constexpr std::uint32_t intermediate_size = 16;
-  constexpr std::uint32_t full_head_count = 2;
-  constexpr std::uint32_t full_kv_head_count = 1;
-  constexpr std::uint32_t full_head_dimension = 4;
-  constexpr std::uint32_t linear_key_head_count = 1;
-  constexpr std::uint32_t linear_value_head_count = 2;
-  constexpr std::uint32_t linear_head_dimension = 4;
-  constexpr std::uint32_t linear_key_width =
-      linear_key_head_count * linear_head_dimension;
-  constexpr std::uint32_t linear_value_width =
-      linear_value_head_count * linear_head_dimension;
-  constexpr std::uint32_t linear_qkv_width =
+  const std::uint32_t linear_key_width =
+      options.linear_key_head_count * options.linear_head_dimension;
+  const std::uint32_t linear_value_width =
+      options.linear_value_head_count * options.linear_head_dimension;
+  const std::uint32_t linear_qkv_width =
       linear_key_width * 2 + linear_value_width;
 
   std::vector<std::uint8_t> metadata;
@@ -141,23 +149,23 @@ make_qwen35_gguf_fixture(std::uint32_t tensor_type = 1,
 
   string("general.architecture", "qwen35");
   u32("general.alignment", 32);
-  u32("qwen35.embedding_length", hidden_size);
-  u32("qwen35.feed_forward_length", intermediate_size);
-  u32("qwen35.context_length", 128);
-  u32("qwen35.block_count", 4);
-  u32("qwen35.attention.head_count", full_head_count);
-  u32("qwen35.attention.head_count_kv", full_kv_head_count);
-  u32("qwen35.attention.key_length", full_head_dimension);
-  u32("qwen35.attention.value_length", full_head_dimension);
+  u32("qwen35.embedding_length", options.hidden_size);
+  u32("qwen35.feed_forward_length", options.intermediate_size);
+  u32("qwen35.context_length", options.context_length);
+  u32("qwen35.block_count", options.block_count);
+  u32("qwen35.attention.head_count", options.full_head_count);
+  u32("qwen35.attention.head_count_kv", options.full_kv_head_count);
+  u32("qwen35.attention.key_length", options.full_head_dimension);
+  u32("qwen35.attention.value_length", options.full_head_dimension);
   f32("qwen35.attention.layer_norm_rms_epsilon", 1.0e-6F);
   f32("qwen35.rope.freq_base", 10'000.0F);
-  u32("qwen35.rope.dimension_count", 2);
+  u32("qwen35.rope.dimension_count", options.rotary_dimension);
   u32("qwen35.ssm.conv_kernel", 4);
-  u32("qwen35.ssm.state_size", linear_head_dimension);
-  u32("qwen35.ssm.group_count", linear_key_head_count);
-  u32("qwen35.ssm.time_step_rank", linear_value_head_count);
-  u32("qwen35.ssm.inner_size", linear_value_head_count * linear_head_dimension);
-  u32("qwen35.full_attention_interval", 4);
+  u32("qwen35.ssm.state_size", options.linear_head_dimension);
+  u32("qwen35.ssm.group_count", options.linear_key_head_count);
+  u32("qwen35.ssm.time_step_rank", options.linear_value_head_count);
+  u32("qwen35.ssm.inner_size", linear_value_width);
+  u32("qwen35.full_attention_interval", options.block_count);
   string("tokenizer.ggml.model", "gpt2");
   string("tokenizer.ggml.pre", "qwen2");
   strings("tokenizer.ggml.tokens", {"<eos>", "a", "b", "c", "d", "e", "f", "g",
@@ -181,52 +189,57 @@ make_qwen35_gguf_fixture(std::uint32_t tensor_type = 1,
                        std::move(dimensions), aux_type);
   };
 
-  add_main("token_embd.weight", {hidden_size, vocabulary_size});
-  add_aux("output_norm.weight", {hidden_size});
-  add_main("output.weight", {hidden_size, vocabulary_size});
+  add_main("token_embd.weight", {options.hidden_size, options.vocabulary_size});
+  add_aux("output_norm.weight", {options.hidden_size});
+  add_main("output.weight", {options.hidden_size, options.vocabulary_size});
 
-  for (std::uint32_t block = 0; block < 4; ++block) {
-    add_aux(detail::block_name(block, "attn_norm.weight"), {hidden_size});
+  for (std::uint32_t block = 0; block < options.block_count; ++block) {
+    add_aux(detail::block_name(block, "attn_norm.weight"), {options.hidden_size});
     add_aux(detail::block_name(block, "post_attention_norm.weight"),
-            {hidden_size});
+            {options.hidden_size});
     add_main(detail::block_name(block, "ffn_gate.weight"),
-             {hidden_size, intermediate_size});
+             {options.hidden_size, options.intermediate_size});
     add_main(detail::block_name(block, "ffn_down.weight"),
-             {intermediate_size, hidden_size});
+             {options.intermediate_size, options.hidden_size});
     add_main(detail::block_name(block, "ffn_up.weight"),
-             {hidden_size, intermediate_size});
+             {options.hidden_size, options.intermediate_size});
 
-    if (block == 3) {
+    if (block + 1 == options.block_count) {
       add_main(detail::block_name(block, "attn_q.weight"),
-               {hidden_size, full_head_count * full_head_dimension * 2});
+               {options.hidden_size,
+                options.full_head_count * options.full_head_dimension * 2});
       add_main(detail::block_name(block, "attn_k.weight"),
-               {hidden_size, full_kv_head_count * full_head_dimension});
+               {options.hidden_size,
+                options.full_kv_head_count * options.full_head_dimension});
       add_main(detail::block_name(block, "attn_v.weight"),
-               {hidden_size, full_kv_head_count * full_head_dimension});
+               {options.hidden_size,
+                options.full_kv_head_count * options.full_head_dimension});
       add_main(detail::block_name(block, "attn_output.weight"),
-               {full_head_count * full_head_dimension, hidden_size});
+               {options.full_head_count * options.full_head_dimension,
+                options.hidden_size});
       add_aux(detail::block_name(block, "attn_q_norm.weight"),
-              {full_head_dimension});
+              {options.full_head_dimension});
       add_aux(detail::block_name(block, "attn_k_norm.weight"),
-              {full_head_dimension});
+              {options.full_head_dimension});
     } else {
       add_main(detail::block_name(block, "attn_qkv.weight"),
-               {hidden_size, linear_qkv_width});
+               {options.hidden_size, linear_qkv_width});
       add_main(detail::block_name(block, "attn_gate.weight"),
-               {hidden_size, linear_value_width});
+               {options.hidden_size, linear_value_width});
       add_aux(detail::block_name(block, "ssm_conv1d.weight"),
               {4, linear_qkv_width});
       add_aux(detail::block_name(block, "ssm_dt.bias"),
-              {linear_value_head_count});
-      add_aux(detail::block_name(block, "ssm_a"), {linear_value_head_count});
+              {options.linear_value_head_count});
+      add_aux(detail::block_name(block, "ssm_a"),
+              {options.linear_value_head_count});
       add_main(detail::block_name(block, "ssm_beta.weight"),
-               {hidden_size, linear_value_head_count});
+               {options.hidden_size, options.linear_value_head_count});
       add_main(detail::block_name(block, "ssm_alpha.weight"),
-               {hidden_size, linear_value_head_count});
+               {options.hidden_size, options.linear_value_head_count});
       add_aux(detail::block_name(block, "ssm_norm.weight"),
-              {linear_head_dimension});
+              {options.linear_head_dimension});
       add_main(detail::block_name(block, "ssm_out.weight"),
-               {linear_value_width, hidden_size});
+               {linear_value_width, options.hidden_size});
     }
   }
 

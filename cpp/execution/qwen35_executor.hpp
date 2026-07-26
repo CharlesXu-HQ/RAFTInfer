@@ -43,6 +43,18 @@ struct Qwen35TraceEntry {
   std::array<float, 3> last{};
 };
 
+#if defined(BRT_QWEN35_EXECUTOR_TESTING)
+namespace test {
+
+struct Qwen35ExecutorStateSnapshot {
+  std::vector<std::byte> full_kv_cache;
+  std::vector<std::byte> linear_convolution;
+  std::vector<std::byte> linear_recurrent;
+};
+
+} // namespace test
+#endif
+
 class Qwen35Executor {
 public:
   static constexpr std::size_t workspace_alignment = 256;
@@ -76,6 +88,10 @@ public:
   std::size_t position() const noexcept;
   bool poisoned() const noexcept;
   Qwen35ExecutionDiagnostics diagnostics() const noexcept;
+
+#if defined(BRT_QWEN35_EXECUTOR_TESTING)
+  test::Qwen35ExecutorStateSnapshot state_snapshot_for_tests() const;
+#endif
 
 private:
   class Impl;

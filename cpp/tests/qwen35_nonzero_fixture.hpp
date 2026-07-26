@@ -14,9 +14,10 @@
 
 namespace brt::test {
 
-inline std::vector<std::uint8_t> make_qwen35_nonzero_bf16_gguf_fixture() {
+inline std::vector<std::uint8_t>
+make_qwen35_nonzero_bf16_gguf_fixture(Qwen35GgufFixtureOptions options = {}) {
   constexpr std::uint32_t kBf16TensorType = 30;
-  auto bytes = make_qwen35_gguf_fixture(kBf16TensorType);
+  auto bytes = make_qwen35_gguf_fixture(kBf16TensorType, false, options);
   const auto catalog = gguf::read_catalog(bytes);
 
   for (std::size_t tensor_index = 0; tensor_index < catalog.tensors.size();
@@ -37,8 +38,8 @@ inline std::vector<std::uint8_t> make_qwen35_nonzero_bf16_gguf_fixture() {
           0.1875F * std::sin(phase * 0.173F) +
           static_cast<float>(static_cast<int>(element % 7) - 3) / 64.0F;
       if (tensor.name == "output.weight") {
-        const std::size_t row = element / 8;
-        const std::size_t col = element % 8;
+        const std::size_t row = element / options.hidden_size;
+        const std::size_t col = element % options.hidden_size;
         value = 0.5F * std::sin(static_cast<float>((row + 1) * (col + 3)) *
                                 0.319F) +
                 static_cast<float>(static_cast<int>(row) - 7) / 128.0F;

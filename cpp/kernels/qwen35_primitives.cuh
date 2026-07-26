@@ -61,7 +61,8 @@ void qwen35_residual_add(const void *lhs, const void *rhs, void *output,
 void qwen35_qk_norm_rope(const void *input, const void *weight, void *output,
                          QkNormRopeShape shape, float epsilon,
                          BrtDataType dtype, BrtDataType weight_dtype,
-                         cudaStream_t stream);
+                         cudaStream_t stream,
+                         const std::uint32_t *device_position = nullptr);
 
 void qwen35_sigmoid_gate(const void *values, const void *gates, void *output,
                          std::size_t elements, BrtDataType dtype,

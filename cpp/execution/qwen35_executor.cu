@@ -1,6 +1,7 @@
 #include "qwen35_executor.hpp"
 
 #include "cublaslt_matmul.hpp"
+#include "cuda_graph_decode.hpp"
 
 #include "../kernels/qwen35_attention.cuh"
 #include "../kernels/qwen35_delta.cuh"
@@ -30,6 +31,10 @@ namespace {
 constexpr std::size_t kMaxPrefillTokens = 512;
 constexpr std::array<std::size_t, 6> kBuckets{1, 2, 4, 17, 128, 512};
 constexpr std::size_t kMatmulWorkspaceBudget = 4U * 1024U * 1024U;
+
+__global__ void increment_decode_position(std::uint32_t *position) {
+  ++*position;
+}
 
 void require(bool condition, const char *message) {
   if (!condition)
@@ -391,6 +396,8 @@ std::size_t workspace_estimate(const model::Qwen35Config &config,
   add(checked_mul(max_context, sizeof(std::int32_t),
                   "token buffer byte size overflow"));
   add(sizeof(std::int32_t));
+  add(sizeof(std::int32_t));
+  add(sizeof(std::uint32_t));
   add(checked_mul(max_tokens, hidden * element,
                   "hidden activation byte size overflow"));
   add(checked_mul(max_tokens, hidden * element,
@@ -544,7 +551,12 @@ public:
     reset();
   }
 
-  ~Impl() noexcept = default;
+  ~Impl() noexcept {
+    if (host_decode_result_ != nullptr)
+      (void)cudaFreeHost(host_decode_result_);
+    if (host_decode_token_ != nullptr)
+      (void)cudaFreeHost(host_decode_token_);
+  }
 
   Qwen35ExecutorResult prefill(std::span<const std::int32_t> tokens) {
     DeviceGuard guard{context_.device_id()};
@@ -568,6 +580,7 @@ public:
         offset += chunk;
       }
       position_ = start_position + tokens.size();
+      sync_device_decode_position();
       return result;
     } catch (...) {
       poisoned_ = true;
@@ -582,8 +595,26 @@ public:
     ensure_healthy();
     const std::size_t start_position = position_;
     try {
+      if (can_replay_decode_graph()) {
+        *host_decode_token_ = token;
+        decode_graph_->replay();
+        check_cuda(cudaStreamSynchronize(context_.stream()),
+                   "Qwen3.5 decode graph synchronization failed");
+        decode_graph_replayed_ = true;
+        position_ = start_position + 1;
+        return Qwen35ExecutorResult{
+            .token = *host_decode_result_,
+            .position = static_cast<std::uint32_t>(start_position),
+        };
+      }
       auto result = run_chunk(one, true, start_position);
       position_ = start_position + 1;
+      if (can_capture_decode_graph()) {
+        capture_decode_graph();
+      } else if (decode_graph_enabled() && decode_graph_ != nullptr &&
+                 decode_graph_->captured()) {
+        sync_device_decode_position();
+      }
       return result;
     } catch (...) {
       poisoned_ = true;
@@ -606,10 +637,15 @@ public:
                                  context_.stream()),
                  "Qwen3.5 linear recurrent reset failed");
     }
+    check_cuda(cudaMemsetAsync(device_decode_position_, 0,
+                               sizeof(*device_decode_position_),
+                               context_.stream()),
+               "Qwen3.5 decode position reset failed");
     check_cuda(cudaStreamSynchronize(context_.stream()),
                "Qwen3.5 executor reset synchronization failed");
     position_ = 0;
     poisoned_ = false;
+    decode_graph_replayed_ = false;
   }
 
   std::size_t position() const noexcept { return position_; }
@@ -619,8 +655,9 @@ public:
         .attention = policy_.attention,
         .kv_cache_dtype = policy_.kv_cache,
         .kv_cache_layout = policy_.kv_cache_layout,
-        .decode_graph_captured = false,
-        .decode_graph_replayed = false,
+        .decode_graph_captured = decode_graph_ != nullptr &&
+                                 decode_graph_->captured(),
+        .decode_graph_replayed = decode_graph_replayed_,
         .attention_workspace_bytes = attention_workspace_bytes_,
     };
   }
@@ -637,6 +674,32 @@ public:
     check_cuda(cudaStreamSynchronize(context_.stream()),
                "Qwen3.5 logits synchronization failed");
   }
+
+#if defined(BRT_QWEN35_EXECUTOR_TESTING)
+  test::Qwen35ExecutorStateSnapshot state_snapshot_for_tests() const {
+    DeviceGuard guard{context_.device_id()};
+    test::Qwen35ExecutorStateSnapshot snapshot;
+    const auto append = [&](std::vector<std::byte> &destination,
+                            const void *source, std::size_t bytes) {
+      const std::size_t offset = destination.size();
+      destination.resize(offset + bytes);
+      check_cuda(cudaMemcpyAsync(destination.data() + offset, source, bytes,
+                                 cudaMemcpyDeviceToHost, context_.stream()),
+                 "Qwen3.5 test state download failed");
+    };
+    for (const auto &state : full_states_)
+      append(snapshot.full_kv_cache, state.kv_cache, state.kv_cache_bytes);
+    for (const auto &state : linear_states_) {
+      append(snapshot.linear_convolution, state.convolution,
+             state.convolution_bytes);
+      append(snapshot.linear_recurrent, state.recurrent,
+             state.recurrent_bytes);
+    }
+    check_cuda(cudaStreamSynchronize(context_.stream()),
+               "Qwen3.5 test state synchronization failed");
+    return snapshot;
+  }
+#endif
 
   void enable_trace(bool enabled) {
     trace_enabled_ = enabled;
@@ -723,6 +786,53 @@ private:
             "Qwen3.5 executor is poisoned; call reset before reuse");
   }
 
+  bool decode_graph_enabled() const noexcept {
+    return policy_.decode_graph &&
+           policy_.attention == Qwen35AttentionImplementation::online_tiled;
+  }
+
+  bool can_replay_decode_graph() const noexcept {
+    return !trace_enabled_ && decode_graph_enabled() &&
+           decode_graph_ != nullptr && decode_graph_->captured();
+  }
+
+  bool can_capture_decode_graph() const noexcept {
+    return !trace_enabled_ && decode_graph_enabled() &&
+           (decode_graph_ == nullptr || !decode_graph_->captured());
+  }
+
+  void sync_device_decode_position() {
+    require(position_ <= std::numeric_limits<std::uint32_t>::max(),
+            "Qwen3.5 decode position exceeds CUDA graph range");
+    const auto position = static_cast<std::uint32_t>(position_);
+    check_cuda(cudaMemcpyAsync(device_decode_position_, &position,
+                               sizeof(position), cudaMemcpyHostToDevice,
+                               context_.stream()),
+               "Qwen3.5 decode position upload failed");
+    check_cuda(cudaStreamSynchronize(context_.stream()),
+               "Qwen3.5 decode position synchronization failed");
+  }
+
+  void capture_decode_graph() {
+    sync_device_decode_position();
+    if (decode_graph_ == nullptr) {
+      decode_graph_ = std::make_unique<CudaGraphDecode>(context_.device_id(),
+                                                         context_.stream());
+    }
+    decode_graph_->capture([this] {
+      check_cuda(cudaMemcpyAsync(device_decode_token_, host_decode_token_,
+                                 sizeof(*host_decode_token_),
+                                 cudaMemcpyHostToDevice, context_.stream()),
+                 "Qwen3.5 decode graph token upload failed");
+      (void)run_chunk(std::span<const std::int32_t>{host_decode_token_, 1},
+                      true, 0, device_decode_token_, device_decode_position_,
+                      host_decode_result_, false);
+      increment_decode_position<<<1, 1, 0, context_.stream()>>>(
+          device_decode_position_);
+      check_cuda(cudaGetLastError(), "Qwen3.5 decode position increment failed");
+    });
+  }
+
   void record_trace(std::string name, const void *device,
                     std::size_t elements) {
     if (!trace_enabled_)
@@ -780,6 +890,23 @@ private:
                  alignof(std::int32_t)));
     device_result_ = static_cast<std::int32_t *>(
         allocate(arena, sizeof(std::int32_t), alignof(std::int32_t)));
+    device_decode_token_ = static_cast<std::int32_t *>(
+        allocate(arena, sizeof(std::int32_t), alignof(std::int32_t)));
+    device_decode_position_ = static_cast<std::uint32_t *>(
+        allocate(arena, sizeof(std::uint32_t), alignof(std::uint32_t)));
+    check_cuda(cudaHostAlloc(&host_decode_token_, sizeof(*host_decode_token_),
+                             cudaHostAllocDefault),
+               "Qwen3.5 decode token pinning failed");
+    try {
+      check_cuda(cudaHostAlloc(&host_decode_result_,
+                               sizeof(*host_decode_result_),
+                               cudaHostAllocDefault),
+                 "Qwen3.5 decode result pinning failed");
+    } catch (...) {
+      (void)cudaFreeHost(host_decode_token_);
+      host_decode_token_ = nullptr;
+      throw;
+    }
     hidden_a_ =
         allocate(arena,
                  activation_bytes(max_tokens, hidden,
@@ -1066,14 +1193,22 @@ private:
 
   Qwen35ExecutorResult run_chunk(std::span<const std::int32_t> tokens,
                                  bool produce_logits,
-                                 std::size_t chunk_position) {
+                                 std::size_t chunk_position,
+                                 const std::int32_t *fixed_device_token = nullptr,
+                                 const std::uint32_t *device_position = nullptr,
+                                 std::int32_t *fixed_host_result = nullptr,
+                                 bool synchronize = true) {
     BucketPlans &bucket = bucket_for(tokens.size());
-    check_cuda(cudaMemcpyAsync(device_tokens_ + chunk_position, tokens.data(),
-                               tokens.size_bytes(), cudaMemcpyHostToDevice,
-                               context_.stream()),
-               "Qwen3.5 token upload failed");
+    std::int32_t *device_tokens =
+        const_cast<std::int32_t *>(fixed_device_token);
+    if (device_tokens == nullptr) {
+      device_tokens = device_tokens_ + chunk_position;
+      check_cuda(cudaMemcpyAsync(device_tokens, tokens.data(), tokens.size_bytes(),
+                                 cudaMemcpyHostToDevice, context_.stream()),
+                 "Qwen3.5 token upload failed");
+    }
     kernels::qwen35_embedding(
-        device_tokens_ + chunk_position, weights_.token_embedding().device_data,
+        device_tokens, weights_.token_embedding().device_data,
         hidden_a_,
         kernels::EmbeddingShape{.tokens = tokens.size(),
                                 .embedding_dim = config_.hidden_size,
@@ -1099,7 +1234,7 @@ private:
                    hidden_elements);
       if (block.kind == model::Qwen35BlockKind::full_attention) {
         run_full_layer(tokens.size(), scratch, mixer_projected_, weights,
-                       *plans.full, chunk_position);
+                       *plans.full, chunk_position, device_position);
       } else {
         run_linear_layer(tokens.size(), scratch, mixer_projected_, weights,
                          *plans.linear, layer);
@@ -1174,14 +1309,18 @@ private:
                                  config_.vocabulary_size, dtype_,
                                  context_.stream());
     std::int32_t host_result = 0;
-    check_cuda(cudaMemcpyAsync(&host_result, device_result_,
-                               sizeof(host_result), cudaMemcpyDeviceToHost,
+    std::int32_t *result =
+        fixed_host_result == nullptr ? &host_result : fixed_host_result;
+    check_cuda(cudaMemcpyAsync(result, device_result_, sizeof(*result),
+                               cudaMemcpyDeviceToHost,
                                context_.stream()),
                "Qwen3.5 result download failed");
-    check_cuda(cudaStreamSynchronize(context_.stream()),
-               "Qwen3.5 executor synchronization failed");
+    if (synchronize) {
+      check_cuda(cudaStreamSynchronize(context_.stream()),
+                 "Qwen3.5 executor synchronization failed");
+    }
     return Qwen35ExecutorResult{
-        .token = host_result,
+        .token = *result,
         .position =
             static_cast<std::uint32_t>(chunk_position + tokens.size() - 1),
     };
@@ -1189,7 +1328,8 @@ private:
 
   void run_full_layer(std::size_t tokens, const void *input, void *output,
                       const model::Qwen35CudaLayerWeights &weights,
-                      const FullPlans &plans, std::size_t chunk_position) {
+                      const FullPlans &plans, std::size_t chunk_position,
+                      const std::uint32_t *device_position = nullptr) {
     const auto &full = *weights.full_attention;
     const std::size_t kv_width = config_.full_attention_kv_head_count *
                                  config_.full_attention_head_dimension;
@@ -1231,7 +1371,8 @@ private:
                                  .position_offset = chunk_position,
                                  .rope_base = config_.rope_frequency_base},
         config_.rms_norm_epsilon, dtype_,
-        dtype_from_weight(full.query_norm.type), context_.stream());
+        dtype_from_weight(full.query_norm.type), context_.stream(),
+        device_position);
     kernels::qwen35_qk_norm_rope(
         full_key_, full.key_norm.device_data, full_key_norm_,
         kernels::QkNormRopeShape{.tokens = tokens,
@@ -1242,7 +1383,7 @@ private:
                                  .position_offset = chunk_position,
                                  .rope_base = config_.rope_frequency_base},
         config_.rms_norm_epsilon, dtype_, dtype_from_weight(full.key_norm.type),
-        context_.stream());
+        context_.stream(), device_position);
     const std::size_t state_index = full_state_by_layer_[weights.index];
     require(state_index < full_states_.size(),
             "missing full-attention executor state");
@@ -1254,12 +1395,21 @@ private:
         .max_context_tokens = max_context_,
         .past_tokens = chunk_position,
     };
-    kernels::qwen35_causal_attention(
-        full_query_norm_, full_key_norm_, full_value_, linear_gate_,
-        attention_out_, full_states_[state_index].kv_cache,
-        full_states_[state_index].kv_cache_bytes, attention_workspace_,
-        attention_workspace_bytes_, attention_shape, dtype_,
-        attention_launch_policy(policy_), context_.stream());
+    if (device_position != nullptr &&
+        policy_.attention == Qwen35AttentionImplementation::online_tiled) {
+      kernels::qwen35_online_attention_decode(
+          full_query_norm_, full_key_norm_, full_value_, linear_gate_,
+          attention_out_, full_states_[state_index].kv_cache,
+          full_states_[state_index].kv_cache_bytes, attention_shape, dtype_,
+          policy_.kv_cache, device_position, context_.stream());
+    } else {
+      kernels::qwen35_causal_attention(
+          full_query_norm_, full_key_norm_, full_value_, linear_gate_,
+          attention_out_, full_states_[state_index].kv_cache,
+          full_states_[state_index].kv_cache_bytes, attention_workspace_,
+          attention_workspace_bytes_, attention_shape, dtype_,
+          attention_launch_policy(policy_), context_.stream());
+    }
     (void)kv_width;
     run_matmul(*plans.output, attention_out_, full.output, output);
     record_trace("attn_out-" + std::to_string(weights.index), output,
@@ -1351,6 +1501,10 @@ private:
 
   std::int32_t *device_tokens_{};
   std::int32_t *device_result_{};
+  std::int32_t *device_decode_token_{};
+  std::uint32_t *device_decode_position_{};
+  std::int32_t *host_decode_token_{};
+  std::int32_t *host_decode_result_{};
   void *hidden_a_{};
   void *hidden_b_{};
   void *intermediate_a_{};
@@ -1381,6 +1535,8 @@ private:
   std::vector<std::size_t> linear_state_by_layer_;
   std::vector<BucketPlans> bucket_plans_;
   std::vector<Qwen35TraceEntry> trace_;
+  std::unique_ptr<CudaGraphDecode> decode_graph_;
+  bool decode_graph_replayed_{};
 };
 
 std::size_t Qwen35Executor::workspace_bytes(const model::Qwen35Config &config,
@@ -1452,5 +1608,12 @@ bool Qwen35Executor::poisoned() const noexcept { return impl_->poisoned(); }
 Qwen35ExecutionDiagnostics Qwen35Executor::diagnostics() const noexcept {
   return impl_->diagnostics();
 }
+
+#if defined(BRT_QWEN35_EXECUTOR_TESTING)
+test::Qwen35ExecutorStateSnapshot
+Qwen35Executor::state_snapshot_for_tests() const {
+  return impl_->state_snapshot_for_tests();
+}
+#endif
 
 } // namespace brt
