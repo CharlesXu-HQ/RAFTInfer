@@ -33,6 +33,7 @@ if(BRT_ENABLE_CUDA)
     foundation/device_context.cu
     model/cuda_weights.cu
     kernels/qwen35_attention.cu
+    kernels/qwen35_online_attention.cu
     kernels/qwen35_delta.cu
     kernels/qwen35_primitives.cu
     execution/qwen35_executor.cu

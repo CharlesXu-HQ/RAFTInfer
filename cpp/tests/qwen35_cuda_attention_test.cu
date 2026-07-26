@@ -1,6 +1,7 @@
 #include "../execution/execution_context.hpp"
 #include "../execution/workspace_arena.hpp"
 #include "../kernels/qwen35_attention.cuh"
+#include "../kernels/qwen35_online_attention.cuh"
 #include "../kernels/qwen35_primitives.cuh"
 #include "../reference/qwen35.hpp"
 
@@ -217,6 +218,39 @@ void run_attention_policy_contract_tests(brt::ExecutionContext &context) {
       .kv_cache_dtype = brt::Qwen35KvCacheDType::bf16,
       .kv_cache_layout = brt::Qwen35KvCacheLayout::token_major,
   };
+  const brt::kernels::Qwen35AttentionLaunchPolicy f32_online{
+      .implementation = brt::Qwen35AttentionImplementation::online_tiled,
+      .kv_cache_dtype = brt::Qwen35KvCacheDType::f32,
+      .kv_cache_layout = brt::Qwen35KvCacheLayout::token_major,
+  };
+  const brt::kernels::Qwen35AttentionShape supported_prefill{
+      .tokens = 4,
+      .query_heads = 4,
+      .kv_heads = 2,
+      .head_dim = 64,
+      .max_context_tokens = 4,
+      .past_tokens = 0,
+  };
+  assert(brt::kernels::qwen35_online_attention_prefill_supported(
+      supported_prefill, BRT_DTYPE_F32, f32_online));
+  assert(brt::kernels::qwen35_online_attention_prefill_supported(
+      supported_prefill, BRT_DTYPE_BF16, bf16_online));
+  assert(!brt::kernels::qwen35_online_attention_prefill_supported(
+      supported_prefill, BRT_DTYPE_F16, f32_online));
+  assert(!brt::kernels::qwen35_online_attention_prefill_supported(
+      supported_prefill, BRT_DTYPE_F32, kReferenceAttentionPolicy));
+  auto head_major_online = f32_online;
+  head_major_online.kv_cache_layout = brt::Qwen35KvCacheLayout::head_major;
+  assert(!brt::kernels::qwen35_online_attention_prefill_supported(
+      supported_prefill, BRT_DTYPE_F32, head_major_online));
+  auto decode_shape = supported_prefill;
+  decode_shape.tokens = 1;
+  assert(!brt::kernels::qwen35_online_attention_prefill_supported(
+      decode_shape, BRT_DTYPE_F32, f32_online));
+  auto oversized_head = supported_prefill;
+  oversized_head.head_dim = 257;
+  assert(!brt::kernels::qwen35_online_attention_prefill_supported(
+      oversized_head, BRT_DTYPE_F32, f32_online));
   assert(brt::kernels::qwen35_attention_cache_bytes(
              shape, kReferenceAttentionPolicy) ==
          2 * shape.max_context_tokens * shape.kv_heads * shape.head_dim *
@@ -252,6 +286,12 @@ void run_attention_policy_contract_tests(brt::ExecutionContext &context) {
         brt::kernels::qwen35_attention_workspace_bytes(
             shape, kReferenceAttentionPolicy),
         shape, BRT_DTYPE_F16, bf16_materialized, context.stream());
+  });
+  expect_primitive_error([&] {
+    brt::kernels::qwen35_causal_attention(
+        const_pointer, const_pointer, const_pointer, const_pointer, pointer,
+        pointer, std::numeric_limits<std::size_t>::max(), nullptr, 0,
+        oversized_head, BRT_DTYPE_F32, f32_online, context.stream());
   });
 }
 
@@ -310,6 +350,236 @@ void expect_matches_reference(std::span<const float> actual,
   for (std::size_t i = 0; i < actual.size(); ++i) {
     assert(close_enough(actual[i], expected[i]));
   }
+}
+
+struct OnlinePrefillCase {
+  std::size_t tokens;
+  std::size_t query_heads;
+  std::size_t kv_heads;
+  std::size_t head_dim;
+  std::size_t past_tokens;
+};
+
+template <typename T>
+constexpr brt::Qwen35KvCacheDType online_cache_dtype() noexcept {
+  if constexpr (std::is_same_v<T, float>) {
+    return brt::Qwen35KvCacheDType::f32;
+  } else {
+    static_assert(std::is_same_v<T, __nv_bfloat16>);
+    return brt::Qwen35KvCacheDType::bf16;
+  }
+}
+
+template <typename CacheT>
+std::vector<CacheT>
+make_online_cache(std::span<const float> past_key,
+                  std::span<const float> past_value,
+                  brt::kernels::Qwen35AttentionShape shape) {
+  const std::size_t kv_size = shape.kv_heads * shape.head_dim;
+  const std::size_t plane = shape.max_context_tokens * kv_size;
+  std::vector<float> cache_f32(2 * plane, 0.0F);
+  std::copy(past_key.begin(), past_key.end(), cache_f32.begin());
+  std::copy(past_value.begin(), past_value.end(),
+            cache_f32.begin() + static_cast<std::ptrdiff_t>(plane));
+  return encode<CacheT>(cache_f32);
+}
+
+template <typename T>
+std::vector<float> run_materialized_prefill(
+    brt::ExecutionContext &context, std::span<const T> query,
+    std::span<const T> key, std::span<const T> value, std::span<const T> gate,
+    std::span<const float> past_key, std::span<const float> past_value,
+    brt::kernels::Qwen35AttentionShape shape) {
+  const std::size_t output_elements =
+      shape.tokens * shape.query_heads * shape.head_dim;
+  const auto cache = make_online_cache<float>(past_key, past_value, shape);
+  auto device_cache = upload(context, std::span{cache});
+  const auto device_query = upload(context, query);
+  const auto device_key = upload(context, key);
+  const auto device_value = upload(context, value);
+  const auto device_gate = upload(context, gate);
+  DeviceBuffer device_output{context, output_elements * sizeof(T)};
+  DeviceBuffer device_workspace{context,
+                                brt::kernels::qwen35_attention_workspace_bytes(
+                                    shape, kReferenceAttentionPolicy)};
+
+  brt::kernels::qwen35_causal_attention(
+      device_query.data(), device_key.data(), device_value.data(),
+      device_gate.data(), device_output.data(), device_cache.data(),
+      cache.size() * sizeof(float), device_workspace.data(),
+      brt::kernels::qwen35_attention_workspace_bytes(shape,
+                                                     kReferenceAttentionPolicy),
+      shape, DTypeTraits<T>::dtype, kReferenceAttentionPolicy,
+      context.stream());
+
+  const auto encoded =
+      download<T>(context, device_output.data(), output_elements);
+  std::vector<float> output(encoded.size());
+  std::transform(encoded.begin(), encoded.end(), output.begin(),
+                 DTypeTraits<T>::to_float);
+  return output;
+}
+
+template <typename T>
+std::vector<float>
+run_online_prefill(brt::ExecutionContext &context, std::span<const T> query,
+                   std::span<const T> key, std::span<const T> value,
+                   std::span<const T> gate, std::span<const float> past_key,
+                   std::span<const float> past_value,
+                   brt::kernels::Qwen35AttentionShape shape) {
+  using CacheT =
+      std::conditional_t<std::is_same_v<T, float>, float, __nv_bfloat16>;
+  const std::size_t output_elements =
+      shape.tokens * shape.query_heads * shape.head_dim;
+  const auto cache = make_online_cache<CacheT>(past_key, past_value, shape);
+  auto device_cache = upload(context, std::span{cache});
+  const auto device_query = upload(context, query);
+  const auto device_key = upload(context, key);
+  const auto device_value = upload(context, value);
+  const auto device_gate = upload(context, gate);
+  DeviceBuffer device_output{context, output_elements * sizeof(T)};
+  const brt::kernels::Qwen35AttentionLaunchPolicy online_policy{
+      .implementation = brt::Qwen35AttentionImplementation::online_tiled,
+      .kv_cache_dtype = online_cache_dtype<T>(),
+      .kv_cache_layout = brt::Qwen35KvCacheLayout::token_major,
+  };
+
+  assert(brt::kernels::qwen35_online_attention_workspace_bytes(shape) == 0);
+  assert(brt::kernels::qwen35_attention_workspace_bytes(shape, online_policy) ==
+         0);
+  brt::kernels::qwen35_causal_attention(
+      device_query.data(), device_key.data(), device_value.data(),
+      device_gate.data(), device_output.data(), device_cache.data(),
+      cache.size() * sizeof(CacheT), nullptr, 0, shape, DTypeTraits<T>::dtype,
+      online_policy, context.stream());
+
+  const auto encoded =
+      download<T>(context, device_output.data(), output_elements);
+  std::vector<float> output(encoded.size());
+  std::transform(encoded.begin(), encoded.end(), output.begin(),
+                 DTypeTraits<T>::to_float);
+  return output;
+}
+
+template <typename T>
+void run_online_materialized_parity_case(brt::ExecutionContext &context,
+                                         OnlinePrefillCase test_case) {
+  const brt::kernels::Qwen35AttentionShape shape{
+      .tokens = test_case.tokens,
+      .query_heads = test_case.query_heads,
+      .kv_heads = test_case.kv_heads,
+      .head_dim = test_case.head_dim,
+      .max_context_tokens = test_case.past_tokens + test_case.tokens,
+      .past_tokens = test_case.past_tokens,
+  };
+  const std::size_t q_elements =
+      shape.tokens * shape.query_heads * shape.head_dim;
+  const std::size_t kv_elements =
+      shape.tokens * shape.kv_heads * shape.head_dim;
+  const std::size_t past_elements =
+      shape.past_tokens * shape.kv_heads * shape.head_dim;
+  const auto query_f32 = sequence(q_elements, 0.013F, 0.07F);
+  const auto key_f32 = sequence(kv_elements, -0.011F, 0.03F);
+  const auto value_f32 = sequence(kv_elements, 0.017F, 0.45F);
+  const auto gate_f32 = sequence(q_elements, -0.019F, 0.2F);
+  const auto past_key = sequence(past_elements, 0.009F, -0.04F);
+  const auto past_value = sequence(past_elements, -0.015F, 0.50F);
+  const auto query = encode<T>(query_f32);
+  const auto key = encode<T>(key_f32);
+  const auto value = encode<T>(value_f32);
+  const auto gate = encode<T>(gate_f32);
+
+  const auto reference = run_materialized_prefill<T>(
+      context, query, key, value, gate, past_key, past_value, shape);
+  const auto online = run_online_prefill<T>(context, query, key, value, gate,
+                                            past_key, past_value, shape);
+  assert(reference.size() == online.size());
+
+  float max_abs = 0.0F;
+  float max_rel = 0.0F;
+  for (std::size_t i = 0; i < online.size(); ++i) {
+    assert(std::isfinite(online[i]));
+    const float abs_error = std::fabs(online[i] - reference[i]);
+    const float rel_error =
+        abs_error / std::max(std::fabs(reference[i]), 1.0e-5F);
+    max_abs = std::max(max_abs, abs_error);
+    max_rel = std::max(max_rel, rel_error);
+  }
+  assert(max_abs <= 2.0e-2F);
+  if constexpr (std::is_same_v<T, __nv_bfloat16>) {
+    assert(max_rel <= 2.0e-2F);
+  }
+
+  auto future_key_f32 = key_f32;
+  auto future_value_f32 = value_f32;
+  const std::size_t last_token_offset =
+      (shape.tokens - 1) * shape.kv_heads * shape.head_dim;
+  for (std::size_t i = last_token_offset; i < future_key_f32.size(); ++i) {
+    future_key_f32[i] += 7.0F;
+    future_value_f32[i] -= 9.0F;
+  }
+  const auto future_key = encode<T>(future_key_f32);
+  const auto future_value = encode<T>(future_value_f32);
+  const auto future_output =
+      run_online_prefill<T>(context, query, future_key, future_value, gate,
+                            past_key, past_value, shape);
+  const std::size_t causal_elements =
+      (shape.tokens - 1) * shape.query_heads * shape.head_dim;
+  for (std::size_t i = 0; i < causal_elements; ++i) {
+    assert(online[i] == future_output[i]);
+  }
+}
+
+template <typename T>
+void run_adversarial_online_rescaling_case(brt::ExecutionContext &context) {
+  constexpr std::size_t tokens = 17;
+  constexpr std::size_t query_heads = 4;
+  constexpr std::size_t kv_heads = 2;
+  constexpr std::size_t head_dim = 64;
+  const brt::kernels::Qwen35AttentionShape shape{
+      tokens, query_heads, kv_heads, head_dim, tokens, 0};
+  std::vector<float> query_f32(tokens * query_heads * head_dim, 0.0F);
+  std::vector<float> key_f32(tokens * kv_heads * head_dim, 0.0F);
+  std::vector<float> value_f32(tokens * kv_heads * head_dim, 0.0F);
+  std::vector<float> gate_f32(tokens * query_heads * head_dim, 0.0F);
+  const float query_component = std::sqrt(static_cast<float>(head_dim));
+  for (std::size_t token = 0; token < tokens; ++token) {
+    for (std::size_t head = 0; head < query_heads; ++head) {
+      query_f32[(token * query_heads + head) * head_dim] = query_component;
+    }
+    const float score = -80.0F + 10.0F * static_cast<float>(token);
+    for (std::size_t head = 0; head < kv_heads; ++head) {
+      const std::size_t base = (token * kv_heads + head) * head_dim;
+      key_f32[base] = score;
+      for (std::size_t dim = 0; dim < head_dim; ++dim) {
+        value_f32[base + dim] = 0.01F * static_cast<float>(token + dim + head);
+      }
+    }
+  }
+  const auto query = encode<T>(query_f32);
+  const auto key = encode<T>(key_f32);
+  const auto value = encode<T>(value_f32);
+  const auto gate = encode<T>(gate_f32);
+  const std::vector<float> no_past;
+  const auto reference = run_materialized_prefill<T>(
+      context, query, key, value, gate, no_past, no_past, shape);
+  const auto online = run_online_prefill<T>(context, query, key, value, gate,
+                                            no_past, no_past, shape);
+
+  assert(reference.size() == online.size());
+  for (std::size_t i = 0; i < online.size(); ++i) {
+    assert(std::isfinite(online[i]));
+    assert(close_enough(online[i], reference[i]));
+  }
+}
+
+template <typename T>
+void run_online_prefill_cases(brt::ExecutionContext &context) {
+  run_online_materialized_parity_case<T>(context, {4, 4, 2, 64, 0});
+  run_online_materialized_parity_case<T>(context, {17, 16, 4, 256, 0});
+  run_online_materialized_parity_case<T>(context, {128, 16, 4, 256, 0});
+  run_online_materialized_parity_case<T>(context, {17, 16, 4, 256, 111});
+  run_adversarial_online_rescaling_case<T>(context);
 }
 
 template <typename T>
@@ -675,6 +945,8 @@ int main() {
   run_prefill_dtype_cases<__half>(context);
   run_prefill_dtype_cases<__nv_bfloat16>(context);
   run_prefill_dtype_cases<float>(context);
+  run_online_prefill_cases<__nv_bfloat16>(context);
+  run_online_prefill_cases<float>(context);
   run_decode_after_prefill_case<__half>(context, 1);
   run_decode_after_prefill_case<__half>(context, 2);
   run_decode_after_prefill_case<__nv_bfloat16>(context, 1);

@@ -1,4 +1,5 @@
 #include "qwen35_attention.cuh"
+#include "qwen35_online_attention.cuh"
 
 #include <cuda_bf16.h>
 #include <cuda_fp16.h>
@@ -453,7 +454,7 @@ qwen35_attention_workspace_bytes(Qwen35AttentionShape shape,
     return qwen35_attention_workspace_bytes(shape);
   case brt::Qwen35AttentionImplementation::online_tiled:
     validate_shape(shape);
-    return 0;
+    return qwen35_online_attention_workspace_bytes(shape);
   }
   require(false, "unsupported Qwen3.5 attention implementation");
   return 0;
@@ -589,7 +590,14 @@ void qwen35_causal_attention(const void *query, const void *key,
         stream);
     return;
   case brt::Qwen35AttentionImplementation::online_tiled:
-    require(false, "online tiled Qwen3.5 attention is not available");
+    require(qwen35_online_attention_prefill_supported(shape, activation_dtype,
+                                                      policy),
+            "unsupported online tiled prefill signature; select the "
+            "materialized implementation before allocation");
+    qwen35_online_attention_prefill(query, key, value, gate, output, kv_cache,
+                                    kv_cache_bytes, shape, activation_dtype,
+                                    policy.kv_cache_dtype, stream);
+    return;
   }
   require(false, "unsupported Qwen3.5 attention implementation");
 }
