@@ -24,6 +24,8 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <iterator>
 #include <limits>
 #include <memory>
 #include <numeric>
@@ -292,6 +294,27 @@ void run_attention_policy_contract_tests(brt::ExecutionContext &context) {
         const_pointer, const_pointer, const_pointer, const_pointer, pointer,
         pointer, std::numeric_limits<std::size_t>::max(), nullptr, 0,
         oversized_head, BRT_DTYPE_F32, f32_online, context.stream());
+  });
+  const brt::kernels::Qwen35AttentionShape decode_model_shape{1,   16, 4,
+                                                              256, 32, 0};
+  expect_primitive_error([&] {
+    brt::kernels::qwen35_online_attention_decode(
+        const_pointer, const_pointer, const_pointer, const_pointer, pointer,
+        pointer, std::numeric_limits<std::size_t>::max(),
+        brt::kernels::Qwen35AttentionShape{1, 16, 4, 255, 32, 0}, BRT_DTYPE_F32,
+        brt::Qwen35KvCacheDType::f32, nullptr, context.stream());
+  });
+  expect_primitive_error([&] {
+    brt::kernels::qwen35_online_attention_decode(
+        const_pointer, const_pointer, const_pointer, const_pointer, pointer,
+        pointer, std::numeric_limits<std::size_t>::max(), decode_model_shape,
+        BRT_DTYPE_F16, brt::Qwen35KvCacheDType::f32, nullptr, context.stream());
+  });
+  expect_primitive_error([&] {
+    brt::kernels::qwen35_online_attention_decode(
+        const_pointer, const_pointer, const_pointer, const_pointer, pointer,
+        pointer, sizeof(float), decode_model_shape, BRT_DTYPE_F32,
+        brt::Qwen35KvCacheDType::f32, nullptr, context.stream());
   });
 
   const std::size_t supported_output_elements = supported_prefill.tokens *
@@ -617,6 +640,167 @@ void run_online_prefill_cases(brt::ExecutionContext &context) {
   run_online_materialized_parity_case<T>(context, {128, 16, 4, 256, 0});
   run_online_materialized_parity_case<T>(context, {17, 16, 4, 256, 111});
   run_adversarial_online_rescaling_case<T>(context);
+}
+
+template <typename T>
+void run_online_decode_case(brt::ExecutionContext &context,
+                            std::size_t context_tokens) {
+  using CacheT =
+      std::conditional_t<std::is_same_v<T, float>, float, __nv_bfloat16>;
+  constexpr std::size_t query_heads = 16;
+  constexpr std::size_t kv_heads = 4;
+  constexpr std::size_t head_dim = 256;
+  constexpr std::size_t hidden_size = query_heads * head_dim;
+  constexpr std::size_t kv_size = kv_heads * head_dim;
+  const std::size_t first_position = context_tokens - 1;
+  const std::size_t max_context_tokens = context_tokens + 1;
+  const brt::kernels::Qwen35AttentionShape decode_shape{
+      .tokens = 1,
+      .query_heads = query_heads,
+      .kv_heads = kv_heads,
+      .head_dim = head_dim,
+      .max_context_tokens = max_context_tokens,
+      .past_tokens = 0,
+  };
+
+  const auto past_key = sequence(first_position * kv_size, 0.003F, -0.11F);
+  const auto past_value = sequence(first_position * kv_size, -0.004F, 0.37F);
+  const auto query_f32 = sequence(2 * hidden_size, 0.007F, 0.09F);
+  const auto key_f32 = sequence(2 * kv_size, -0.005F, 0.06F);
+  const auto value_f32 = sequence(2 * kv_size, 0.006F, -0.13F);
+  const auto gate_f32 = sequence(2 * hidden_size, -0.008F, 0.24F);
+  const auto query = encode<T>(query_f32);
+  const auto key = encode<T>(key_f32);
+  const auto value = encode<T>(value_f32);
+  const auto gate = encode<T>(gate_f32);
+
+  const auto first_reference = run_materialized_prefill<T>(
+      context, std::span{query}.first(hidden_size),
+      std::span{key}.first(kv_size), std::span{value}.first(kv_size),
+      std::span{gate}.first(hidden_size), past_key, past_value,
+      brt::kernels::Qwen35AttentionShape{1, query_heads, kv_heads, head_dim,
+                                         max_context_tokens, first_position});
+
+  auto second_past_key = past_key;
+  second_past_key.reserve(second_past_key.size() + kv_size);
+  std::transform(key.begin(),
+                 key.begin() + static_cast<std::ptrdiff_t>(kv_size),
+                 std::back_inserter(second_past_key), DTypeTraits<T>::to_float);
+  auto second_past_value = past_value;
+  second_past_value.reserve(second_past_value.size() + kv_size);
+  std::transform(
+      value.begin(), value.begin() + static_cast<std::ptrdiff_t>(kv_size),
+      std::back_inserter(second_past_value), DTypeTraits<T>::to_float);
+  const auto second_reference = run_materialized_prefill<T>(
+      context, std::span{query}.subspan(hidden_size, hidden_size),
+      std::span{key}.subspan(kv_size, kv_size),
+      std::span{value}.subspan(kv_size, kv_size),
+      std::span{gate}.subspan(hidden_size, hidden_size), second_past_key,
+      second_past_value,
+      brt::kernels::Qwen35AttentionShape{1, query_heads, kv_heads, head_dim,
+                                         max_context_tokens,
+                                         first_position + 1});
+
+  const auto cache =
+      make_online_cache<CacheT>(past_key, past_value, decode_shape);
+  auto device_cache = upload(context, std::span{cache});
+  const auto device_query = upload(context, std::span{query});
+  const auto device_key = upload(context, std::span{key});
+  const auto device_value = upload(context, std::span{value});
+  const auto device_gate = upload(context, std::span{gate});
+  DeviceBuffer device_output{context, 2 * hidden_size * sizeof(T)};
+  std::uint32_t position = static_cast<std::uint32_t>(first_position);
+  auto device_position = upload(context, std::span{&position, 1});
+
+  brt::kernels::qwen35_online_attention_decode(
+      device_query.data(), device_key.data(), device_value.data(),
+      device_gate.data(), device_output.data(), device_cache.data(),
+      cache.size() * sizeof(CacheT), decode_shape, DTypeTraits<T>::dtype,
+      online_cache_dtype<T>(),
+      static_cast<const std::uint32_t *>(device_position.data()),
+      context.stream());
+  ++position;
+  assert(cudaMemcpyAsync(device_position.data(), &position, sizeof(position),
+                         cudaMemcpyHostToDevice,
+                         context.stream()) == cudaSuccess);
+  brt::kernels::qwen35_online_attention_decode(
+      static_cast<const T *>(device_query.data()) + hidden_size,
+      static_cast<const T *>(device_key.data()) + kv_size,
+      static_cast<const T *>(device_value.data()) + kv_size,
+      static_cast<const T *>(device_gate.data()) + hidden_size,
+      static_cast<T *>(device_output.data()) + hidden_size, device_cache.data(),
+      cache.size() * sizeof(CacheT), decode_shape, DTypeTraits<T>::dtype,
+      online_cache_dtype<T>(),
+      static_cast<const std::uint32_t *>(device_position.data()),
+      context.stream());
+
+  const auto encoded_output =
+      download<T>(context, device_output.data(), 2 * hidden_size);
+  std::vector<float> output(encoded_output.size());
+  std::transform(encoded_output.begin(), encoded_output.end(), output.begin(),
+                 DTypeTraits<T>::to_float);
+  expect_matches_reference(std::span{output}.first(hidden_size),
+                           first_reference);
+  expect_matches_reference(std::span{output}.subspan(hidden_size, hidden_size),
+                           second_reference);
+
+  const auto actual_cache = download<CacheT>(context, device_cache.data(),
+                                             2 * max_context_tokens * kv_size);
+  const std::size_t value_plane = max_context_tokens * kv_size;
+  for (std::size_t element = 0; element < kv_size; ++element) {
+    assert(close_enough(DTypeTraits<CacheT>::to_float(
+                            actual_cache[first_position * kv_size + element]),
+                        key_f32[element]));
+    assert(close_enough(
+        DTypeTraits<CacheT>::to_float(
+            actual_cache[(first_position + 1) * kv_size + element]),
+        key_f32[kv_size + element]));
+    assert(close_enough(
+        DTypeTraits<CacheT>::to_float(
+            actual_cache[value_plane + first_position * kv_size + element]),
+        value_f32[element]));
+    assert(close_enough(
+        DTypeTraits<CacheT>::to_float(
+            actual_cache[value_plane + (first_position + 1) * kv_size +
+                         element]),
+        value_f32[kv_size + element]));
+  }
+
+  if (context_tokens == 32) {
+    auto host_position_shape = decode_shape;
+    host_position_shape.past_tokens = first_position;
+    const auto host_position_cache =
+        make_online_cache<CacheT>(past_key, past_value, host_position_shape);
+    auto device_host_position_cache =
+        upload(context, std::span{host_position_cache});
+    DeviceBuffer device_host_position_output{context, hidden_size * sizeof(T)};
+    const brt::kernels::Qwen35AttentionLaunchPolicy online_policy{
+        .implementation = brt::Qwen35AttentionImplementation::online_tiled,
+        .kv_cache_dtype = online_cache_dtype<T>(),
+        .kv_cache_layout = brt::Qwen35KvCacheLayout::token_major,
+    };
+    brt::kernels::qwen35_causal_attention(
+        device_query.data(), device_key.data(), device_value.data(),
+        device_gate.data(), device_host_position_output.data(),
+        device_host_position_cache.data(),
+        host_position_cache.size() * sizeof(CacheT), nullptr, 0,
+        host_position_shape, DTypeTraits<T>::dtype, online_policy,
+        context.stream());
+    const auto host_position_encoded =
+        download<T>(context, device_host_position_output.data(), hidden_size);
+    std::vector<float> host_position_output(hidden_size);
+    std::transform(host_position_encoded.begin(), host_position_encoded.end(),
+                   host_position_output.begin(), DTypeTraits<T>::to_float);
+    expect_matches_reference(host_position_output, first_reference);
+  }
+}
+
+template <typename T>
+void run_online_decode_cases(brt::ExecutionContext &context) {
+  run_online_decode_case<T>(context, 32);
+  run_online_decode_case<T>(context, 128);
+  run_online_decode_case<T>(context, 512);
+  run_online_decode_case<T>(context, 2048);
 }
 
 template <typename T>
@@ -984,6 +1168,10 @@ int main() {
   run_prefill_dtype_cases<float>(context);
   run_online_prefill_cases<__nv_bfloat16>(context);
   run_online_prefill_cases<float>(context);
+  std::fprintf(stderr, "attention_implementation="
+                       "qwen35_online_attention_decode_sm120_hd256\n");
+  run_online_decode_cases<__nv_bfloat16>(context);
+  run_online_decode_cases<float>(context);
   run_decode_after_prefill_case<__half>(context, 1);
   run_decode_after_prefill_case<__half>(context, 2);
   run_decode_after_prefill_case<__nv_bfloat16>(context, 1);

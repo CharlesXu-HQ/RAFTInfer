@@ -80,6 +80,44 @@ bool online_prefill_signature_supported(
          multiplication_fits(2 * cache_plane, cache_element_bytes);
 }
 
+bool online_decode_signature_supported(
+    Qwen35AttentionShape shape, BrtDataType activation_dtype,
+    Qwen35KvCacheDType cache_dtype) noexcept {
+  if (shape.tokens != 1 || shape.query_heads != kModelQueryHeads ||
+      shape.kv_heads != kModelKvHeads || shape.head_dim != kModelHeadDim ||
+      shape.max_context_tokens == 0 ||
+      shape.past_tokens >= shape.max_context_tokens) {
+    return false;
+  }
+  if (activation_dtype != BRT_DTYPE_F32 && activation_dtype != BRT_DTYPE_BF16) {
+    return false;
+  }
+
+  std::size_t cache_element_bytes = 0;
+  switch (cache_dtype) {
+  case Qwen35KvCacheDType::f32:
+    cache_element_bytes = sizeof(float);
+    break;
+  case Qwen35KvCacheDType::bf16:
+    cache_element_bytes = sizeof(__nv_bfloat16);
+    break;
+  default:
+    return false;
+  }
+
+  if (!multiplication_fits(shape.kv_heads, shape.head_dim) ||
+      !multiplication_fits(shape.query_heads, shape.head_dim)) {
+    return false;
+  }
+  const std::size_t kv_size = shape.kv_heads * shape.head_dim;
+  if (!multiplication_fits(shape.max_context_tokens, kv_size)) {
+    return false;
+  }
+  const std::size_t cache_plane = shape.max_context_tokens * kv_size;
+  return multiplication_fits(2, cache_plane) &&
+         multiplication_fits(2 * cache_plane, cache_element_bytes);
+}
+
 void require(bool condition, const char *message) {
   if (!condition) {
     throw Qwen35PrimitiveError(message);
@@ -148,6 +186,146 @@ __global__ void append_online_cache_kernel(
   store_from_float(kv_cache, cache_index, load_as_float(key, element));
   store_from_float(kv_cache, value_plane + cache_index,
                    load_as_float(value, element));
+}
+
+template <typename ActivationT, typename CacheT>
+__global__ void append_online_decode_cache_kernel(
+    const ActivationT *key, const ActivationT *value, CacheT *kv_cache,
+    std::size_t kv_size, std::size_t max_context_tokens,
+    std::size_t host_position, const std::uint32_t *device_position) {
+  const std::size_t element =
+      static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (element >= kv_size) {
+    return;
+  }
+
+  const std::size_t position =
+      device_position == nullptr ? host_position : *device_position;
+  if (position >= max_context_tokens) {
+    return;
+  }
+
+  const std::size_t cache_index = position * kv_size + element;
+  const std::size_t value_plane = max_context_tokens * kv_size;
+  store_from_float(kv_cache, cache_index, load_as_float(key, element));
+  store_from_float(kv_cache, value_plane + cache_index,
+                   load_as_float(value, element));
+}
+
+template <typename ActivationT, typename CacheT, int Warps>
+__global__ __launch_bounds__(256, 1) void online_decode_model_kernel(
+    const ActivationT *query, const ActivationT *gate, ActivationT *output,
+    const CacheT *kv_cache, std::size_t max_context_tokens,
+    std::size_t host_position, const std::uint32_t *device_position) {
+  static_assert(Warps == 4 || Warps == 8);
+  __shared__ float warp_max[Warps];
+  __shared__ float warp_sum[Warps];
+  __shared__ float warp_output[Warps][kModelHeadDim];
+
+  const int lane = threadIdx.x % kWarpSize;
+  const int warp = threadIdx.x / kWarpSize;
+  const std::size_t position =
+      device_position == nullptr ? host_position : *device_position;
+  if (position >= max_context_tokens) {
+    return;
+  }
+
+  const std::size_t context_tokens = position + 1;
+  const int active_warps = context_tokens <= 128 ? 4 : Warps;
+  const std::size_t query_head = blockIdx.x;
+  const std::size_t kv_head = query_head / (kModelQueryHeads / kModelKvHeads);
+  const std::size_t kv_size = kModelKvHeads * kModelHeadDim;
+  const std::size_t value_plane = max_context_tokens * kv_size;
+  const std::size_t query_base = query_head * kModelHeadDim;
+  const float scale = rsqrtf(static_cast<float>(kModelHeadDim));
+
+  float local_max = -CUDART_INF_F;
+  float local_sum = 0.0F;
+  float local_output[kValuesPerLane] = {};
+  for (std::size_t key_token = static_cast<std::size_t>(warp);
+       warp < active_warps && key_token < context_tokens;
+       key_token += active_warps) {
+    const std::size_t key_base =
+        (key_token * kModelKvHeads + kv_head) * kModelHeadDim;
+    float score = 0.0F;
+#pragma unroll
+    for (int component = 0; component < kValuesPerLane; ++component) {
+      const int dim = lane + component * kWarpSize;
+      score += load_as_float(query, query_base + dim) *
+               load_as_float(kv_cache, key_base + dim);
+    }
+    for (int offset = kWarpSize / 2; offset > 0; offset >>= 1) {
+      score += __shfl_down_sync(0xFFFFFFFFU, score, offset);
+    }
+    score = __shfl_sync(0xFFFFFFFFU, score, 0) * scale;
+
+    const float next_max = fmaxf(local_max, score);
+    const float left_scale =
+        local_max == -CUDART_INF_F ? 0.0F : expf(local_max - next_max);
+    const float right_scale = expf(score - next_max);
+    local_sum = local_sum * left_scale + right_scale;
+    const std::size_t value_base = value_plane + key_base;
+#pragma unroll
+    for (int component = 0; component < kValuesPerLane; ++component) {
+      const int dim = lane + component * kWarpSize;
+      local_output[component] =
+          local_output[component] * left_scale +
+          load_as_float(kv_cache, value_base + dim) * right_scale;
+    }
+    local_max = next_max;
+  }
+
+  if (lane == 0) {
+    warp_max[warp] = local_max;
+    warp_sum[warp] = local_sum;
+  }
+#pragma unroll
+  for (int component = 0; component < kValuesPerLane; ++component) {
+    const int dim = lane + component * kWarpSize;
+    warp_output[warp][dim] = local_output[component];
+  }
+  __syncthreads();
+
+  if (warp != 0) {
+    return;
+  }
+
+  float merged_max = warp_max[0];
+  float merged_sum = warp_sum[0];
+  float merged_output[kValuesPerLane];
+#pragma unroll
+  for (int component = 0; component < kValuesPerLane; ++component) {
+    const int dim = lane + component * kWarpSize;
+    merged_output[component] = warp_output[0][dim];
+  }
+
+#pragma unroll
+  for (int source_warp = 1; source_warp < Warps; ++source_warp) {
+    if (source_warp >= active_warps) {
+      break;
+    }
+    const float next_max = fmaxf(merged_max, warp_max[source_warp]);
+    const float left_scale = expf(merged_max - next_max);
+    const float right_scale = expf(warp_max[source_warp] - next_max);
+    merged_sum = merged_sum * left_scale + warp_sum[source_warp] * right_scale;
+#pragma unroll
+    for (int component = 0; component < kValuesPerLane; ++component) {
+      const int dim = lane + component * kWarpSize;
+      merged_output[component] = merged_output[component] * left_scale +
+                                 warp_output[source_warp][dim] * right_scale;
+    }
+    merged_max = next_max;
+  }
+
+#pragma unroll
+  for (int component = 0; component < kValuesPerLane; ++component) {
+    const int dim = lane + component * kWarpSize;
+    const std::size_t output_index = query_base + dim;
+    const float gate_value = load_as_float(gate, output_index);
+    const float gated =
+        (merged_output[component] / merged_sum) / (1.0F + expf(-gate_value));
+    store_from_float(output, output_index, gated);
+  }
 }
 
 template <typename ActivationT, typename CacheT, int HeadDim, int QueryHeads,
@@ -413,6 +591,45 @@ void launch_online_prefill(const void *query, const void *key,
   check_launch("qwen35_online_attention_prefill_generic");
 }
 
+template <typename ActivationT, typename CacheT>
+void launch_online_decode(const void *query, const void *key, const void *value,
+                          const void *gate, void *output, void *kv_cache,
+                          Qwen35AttentionShape shape,
+                          const std::uint32_t *device_position,
+                          cudaStream_t stream) {
+  constexpr std::size_t kv_size = kModelKvHeads * kModelHeadDim;
+  constexpr int append_grid =
+      static_cast<int>((kv_size + kAppendBlockSize - 1) / kAppendBlockSize);
+  append_online_decode_cache_kernel<ActivationT, CacheT>
+      <<<append_grid, kAppendBlockSize, 0, stream>>>(
+          static_cast<const ActivationT *>(key),
+          static_cast<const ActivationT *>(value),
+          static_cast<CacheT *>(kv_cache), kv_size, shape.max_context_tokens,
+          shape.past_tokens, device_position);
+  check_launch("qwen35_online_attention_decode_append_cache");
+
+  const int query_head_grid = checked_grid_dimension(
+      shape.query_heads, "online decode query-head grid dimension overflow");
+  if (device_position == nullptr && shape.past_tokens + 1 <= 128) {
+    online_decode_model_kernel<ActivationT, CacheT, 4>
+        <<<query_head_grid, 4 * kWarpSize, 0, stream>>>(
+            static_cast<const ActivationT *>(query),
+            static_cast<const ActivationT *>(gate),
+            static_cast<ActivationT *>(output),
+            static_cast<const CacheT *>(kv_cache), shape.max_context_tokens,
+            shape.past_tokens, device_position);
+  } else {
+    online_decode_model_kernel<ActivationT, CacheT, 8>
+        <<<query_head_grid, 8 * kWarpSize, 0, stream>>>(
+            static_cast<const ActivationT *>(query),
+            static_cast<const ActivationT *>(gate),
+            static_cast<ActivationT *>(output),
+            static_cast<const CacheT *>(kv_cache), shape.max_context_tokens,
+            shape.past_tokens, device_position);
+  }
+  check_launch("qwen35_online_attention_decode_sm120_hd256");
+}
+
 template <typename ActivationT>
 void launch_by_cache_dtype(const void *query, const void *key,
                            const void *value, const void *gate, void *output,
@@ -427,6 +644,29 @@ void launch_by_cache_dtype(const void *query, const void *key,
   case Qwen35KvCacheDType::bf16:
     launch_online_prefill<ActivationT, __nv_bfloat16>(
         query, key, value, gate, output, kv_cache, shape, stream);
+    return;
+  }
+  require(false, "unsupported online attention KV cache dtype");
+}
+
+template <typename ActivationT>
+void launch_decode_by_cache_dtype(const void *query, const void *key,
+                                  const void *value, const void *gate,
+                                  void *output, void *kv_cache,
+                                  Qwen35AttentionShape shape,
+                                  Qwen35KvCacheDType cache_dtype,
+                                  const std::uint32_t *device_position,
+                                  cudaStream_t stream) {
+  switch (cache_dtype) {
+  case Qwen35KvCacheDType::f32:
+    launch_online_decode<ActivationT, float>(query, key, value, gate, output,
+                                             kv_cache, shape, device_position,
+                                             stream);
+    return;
+  case Qwen35KvCacheDType::bf16:
+    launch_online_decode<ActivationT, __nv_bfloat16>(query, key, value, gate,
+                                                     output, kv_cache, shape,
+                                                     device_position, stream);
     return;
   }
   require(false, "unsupported online attention KV cache dtype");
@@ -498,6 +738,49 @@ void qwen35_online_attention_prefill(
   }
   launch_by_cache_dtype<__nv_bfloat16>(query, key, value, gate, output,
                                        kv_cache, shape, cache_dtype, stream);
+}
+
+void qwen35_online_attention_decode(
+    const void *query, const void *key, const void *value, const void *gate,
+    void *output, void *kv_cache, std::size_t kv_cache_bytes,
+    Qwen35AttentionShape shape, BrtDataType activation_dtype,
+    Qwen35KvCacheDType cache_dtype, const std::uint32_t *device_position,
+    cudaStream_t stream) {
+  require(query != nullptr, "online decode query pointer is null");
+  require(key != nullptr, "online decode key pointer is null");
+  require(value != nullptr, "online decode value pointer is null");
+  require(gate != nullptr, "online decode gate pointer is null");
+  require(output != nullptr, "online decode output pointer is null");
+  require(kv_cache != nullptr, "online decode KV cache pointer is null");
+  require(stream != nullptr, "online decode CUDA stream is null");
+  require(
+      online_decode_signature_supported(shape, activation_dtype, cache_dtype),
+      "unsupported online attention decode signature; select the "
+      "materialized implementation before allocation");
+
+  const std::size_t cache_element_bytes = cache_dtype == Qwen35KvCacheDType::f32
+                                              ? sizeof(float)
+                                              : sizeof(__nv_bfloat16);
+  const std::size_t required_cache_bytes = checked_mul(
+      checked_mul(2,
+                  checked_mul(shape.max_context_tokens,
+                              checked_mul(shape.kv_heads, shape.head_dim,
+                                          "online decode cache shape overflow"),
+                              "online decode cache shape overflow"),
+                  "online decode cache shape overflow"),
+      cache_element_bytes, "online decode cache byte size overflow");
+  require(kv_cache_bytes >= required_cache_bytes,
+          "online decode KV cache is too small");
+
+  if (activation_dtype == BRT_DTYPE_F32) {
+    launch_decode_by_cache_dtype<float>(query, key, value, gate, output,
+                                        kv_cache, shape, cache_dtype,
+                                        device_position, stream);
+    return;
+  }
+  launch_decode_by_cache_dtype<__nv_bfloat16>(query, key, value, gate, output,
+                                              kv_cache, shape, cache_dtype,
+                                              device_position, stream);
 }
 
 } // namespace brt::kernels
