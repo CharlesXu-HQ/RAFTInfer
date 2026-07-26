@@ -710,7 +710,8 @@ void run_online_decode_case(brt::ExecutionContext &context,
   const auto device_gate = upload(context, std::span{gate});
   DeviceBuffer device_output{context, 2 * hidden_size * sizeof(T)};
   std::uint32_t position = static_cast<std::uint32_t>(first_position);
-  auto device_position = upload(context, std::span{&position, 1});
+  auto device_position = upload(
+      context, std::span<const std::uint32_t>{&position, std::size_t{1}});
 
   brt::kernels::qwen35_online_attention_decode(
       device_query.data(), device_key.data(), device_value.data(),
