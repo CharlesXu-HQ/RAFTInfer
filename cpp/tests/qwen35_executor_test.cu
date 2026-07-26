@@ -58,6 +58,125 @@ brt::model::Qwen35Config tiny_config() {
   };
 }
 
+brt::model::Qwen35Config release_attention_config() {
+  auto config = tiny_config();
+  config.hidden_size = 4096;
+  config.full_attention_head_count = 16;
+  config.full_attention_kv_head_count = 4;
+  config.full_attention_head_dimension = 256;
+  config.linear_key_head_count = 4;
+  config.linear_value_head_count = 16;
+  config.linear_head_dimension = 256;
+  config.rotary_dimension = 64;
+  config.blocks = {{0, brt::model::Qwen35BlockKind::full_attention}};
+  return config;
+}
+
+brt::Qwen35ExecutionPolicy materialized_policy() {
+  auto policy = brt::Qwen35ExecutionPolicy{};
+  policy.attention = brt::Qwen35AttentionImplementation::materialized_reference;
+  policy.decode_graph = false;
+  policy.grouped_input_casts = false;
+  return policy;
+}
+
+std::vector<std::uint8_t> make_release_attention_fixture() {
+  constexpr std::uint32_t tensor_type = 30;
+  constexpr std::uint32_t vocabulary_size = 16;
+  constexpr std::uint32_t hidden_size = 4096;
+  constexpr std::uint32_t intermediate_size = 16;
+  constexpr std::uint32_t query_heads = 16;
+  constexpr std::uint32_t kv_heads = 4;
+  constexpr std::uint32_t head_dim = 256;
+
+  std::vector<std::uint8_t> metadata;
+  std::uint64_t metadata_count = 0;
+  const auto u32 = [&](const std::string &key, std::uint32_t value) {
+    brt::test::detail::append_u32_metadata(metadata, key, value);
+    ++metadata_count;
+  };
+  const auto f32 = [&](const std::string &key, float value) {
+    brt::test::detail::append_float_metadata(metadata, key, value);
+    ++metadata_count;
+  };
+  const auto string = [&](const std::string &key, const std::string &value) {
+    brt::test::detail::append_string_metadata(metadata, key, value);
+    ++metadata_count;
+  };
+  const auto strings = [&](const std::string &key,
+                           const std::vector<std::string> &values) {
+    brt::test::detail::append_string_array_metadata(metadata, key, values);
+    ++metadata_count;
+  };
+
+  string("general.architecture", "qwen35");
+  u32("general.alignment", 32);
+  u32("qwen35.embedding_length", hidden_size);
+  u32("qwen35.feed_forward_length", intermediate_size);
+  u32("qwen35.context_length", 4);
+  u32("qwen35.block_count", 1);
+  u32("qwen35.attention.head_count", query_heads);
+  u32("qwen35.attention.head_count_kv", kv_heads);
+  u32("qwen35.attention.key_length", head_dim);
+  u32("qwen35.attention.value_length", head_dim);
+  f32("qwen35.attention.layer_norm_rms_epsilon", 1.0e-6F);
+  f32("qwen35.rope.freq_base", 10'000.0F);
+  u32("qwen35.rope.dimension_count", 64);
+  u32("qwen35.ssm.conv_kernel", 4);
+  u32("qwen35.ssm.state_size", head_dim);
+  u32("qwen35.ssm.group_count", kv_heads);
+  u32("qwen35.ssm.time_step_rank", query_heads);
+  u32("qwen35.ssm.inner_size", hidden_size);
+  u32("qwen35.full_attention_interval", 1);
+  string("tokenizer.ggml.model", "gpt2");
+  string("tokenizer.ggml.pre", "qwen2");
+  strings("tokenizer.ggml.tokens", {"<eos>", "a", "b", "c", "d", "e", "f", "g",
+                                    "h", "i", "j", "k", "l", "m", "n", "o"});
+  strings("tokenizer.ggml.merges", {"a b", "b c"});
+  u32("tokenizer.ggml.eos_token_id", 0);
+  string("tokenizer.chat_template", "{{ messages }}");
+
+  std::vector<brt::test::detail::Tensor> tensors;
+  std::uint64_t next_offset = 0;
+  const auto add = [&](std::string name,
+                       std::vector<std::uint64_t> dimensions) {
+    brt::test::detail::add_tensor(tensors, next_offset, std::move(name),
+                                  std::move(dimensions), tensor_type);
+  };
+  add("token_embd.weight", {hidden_size, vocabulary_size});
+  add("output_norm.weight", {hidden_size});
+  add("output.weight", {hidden_size, vocabulary_size});
+  add("blk.0.attn_norm.weight", {hidden_size});
+  add("blk.0.post_attention_norm.weight", {hidden_size});
+  add("blk.0.ffn_gate.weight", {hidden_size, intermediate_size});
+  add("blk.0.ffn_down.weight", {intermediate_size, hidden_size});
+  add("blk.0.ffn_up.weight", {hidden_size, intermediate_size});
+  add("blk.0.attn_q.weight", {hidden_size, query_heads * head_dim * 2});
+  add("blk.0.attn_k.weight", {hidden_size, kv_heads * head_dim});
+  add("blk.0.attn_v.weight", {hidden_size, kv_heads * head_dim});
+  add("blk.0.attn_output.weight", {query_heads * head_dim, hidden_size});
+  add("blk.0.attn_q_norm.weight", {head_dim});
+  add("blk.0.attn_k_norm.weight", {head_dim});
+
+  std::vector<std::uint8_t> bytes{'G', 'G', 'U', 'F'};
+  brt::test::detail::append<std::uint32_t>(bytes, 3);
+  brt::test::detail::append<std::uint64_t>(bytes, tensors.size());
+  brt::test::detail::append<std::uint64_t>(bytes, metadata_count);
+  bytes.insert(bytes.end(), metadata.begin(), metadata.end());
+  for (const auto &tensor : tensors) {
+    brt::test::detail::append_string(bytes, tensor.name);
+    brt::test::detail::append<std::uint32_t>(bytes, tensor.dimensions.size());
+    for (const auto dimension : tensor.dimensions)
+      brt::test::detail::append(bytes, dimension);
+    brt::test::detail::append<std::uint32_t>(bytes, tensor.type);
+    brt::test::detail::append(bytes, tensor.offset);
+  }
+  while (bytes.size() % 32 != 0)
+    bytes.push_back(0);
+  bytes.resize(bytes.size() + next_offset);
+  return bytes;
+}
+
 std::filesystem::path write_fixture(std::vector<std::uint8_t> bytes) {
   const auto path =
       std::filesystem::temp_directory_path() / "brt_qwen35_executor.gguf";
@@ -219,6 +338,31 @@ void run_workspace_contract_tests() {
   assert(bytes == brt::Qwen35Executor::workspace_bytes(config, 17));
   assert(bytes >= brt::Qwen35Executor::workspace_bytes(config, 4));
   assert(brt::Qwen35Executor::workspace_bytes(config, 64) > bytes);
+  assert(bytes == brt::Qwen35Executor::workspace_bytes(config, 17,
+                                                       materialized_policy()));
+
+  const auto release = release_attention_config();
+  const auto reference = materialized_policy();
+  const auto online = brt::Qwen35ExecutionPolicy{};
+  const std::size_t reference_bytes =
+      brt::Qwen35Executor::workspace_bytes(release, 17, reference);
+  const std::size_t online_bytes =
+      brt::Qwen35Executor::workspace_bytes(release, 17, online);
+  assert(online_bytes < reference_bytes);
+  assert(reference_bytes - online_bytes ==
+         ((17 * release.full_attention_head_count * 17 * sizeof(float) +
+           brt::Qwen35Executor::workspace_alignment - 1) /
+          brt::Qwen35Executor::workspace_alignment) *
+             brt::Qwen35Executor::workspace_alignment);
+  auto invalid_reference = reference;
+  invalid_reference.kv_cache = brt::Qwen35KvCacheDType::bf16;
+  expect_executor_error([&] {
+    (void)brt::Qwen35Executor::workspace_bytes(release, 17, invalid_reference);
+  });
+  auto unsupported_online = online;
+  unsupported_online.kv_cache_layout = brt::Qwen35KvCacheLayout::head_major;
+  assert(brt::Qwen35Executor::workspace_bytes(release, 1, unsupported_online) ==
+         brt::Qwen35Executor::workspace_bytes(release, 1, reference));
 
   auto invalid = config;
   invalid.hidden_size = 0;
@@ -265,7 +409,7 @@ void run_workspace_contract_tests() {
         (void)brt::Qwen35Executor::workspace_bytes(
             invalid, std::numeric_limits<std::uint32_t>::max());
       },
-      "full attention KV cache byte size overflow");
+      "attention cache shape overflow");
 }
 
 void run_host_validation_tests() {
@@ -395,6 +539,10 @@ void run_executor_fixture_smoke() {
   auto context = owner->execution_context();
   brt::Qwen35Executor executor{context, model.qwen35_config(), *weights,
                                max_context};
+  const auto diagnostics = executor.diagnostics();
+  assert(diagnostics.attention ==
+         brt::Qwen35AttentionImplementation::materialized_reference);
+  assert(diagnostics.attention_workspace_bytes > 0);
 
   const std::vector<std::int32_t> prompt{1, 2, 3, 4, 5};
   const auto prefill = executor.prefill(prompt);
@@ -454,14 +602,112 @@ void run_executor_f32_auxiliary_smoke() {
   assert(!executor.poisoned());
 }
 
+void run_executor_online_materialized_parity_tests() {
+  assert(cudaSetDevice(0) == cudaSuccess);
+  const auto path = write_fixture(make_release_attention_fixture());
+  brt::model::Model model{path.string()};
+  constexpr std::size_t max_context = 4;
+  const auto reference_policy = materialized_policy();
+  const auto online_policy = brt::Qwen35ExecutionPolicy{};
+  const std::size_t reference_workspace_bytes =
+      brt::Qwen35Executor::workspace_bytes(model.qwen35_config(), max_context,
+                                           reference_policy);
+  const std::size_t online_workspace_bytes =
+      brt::Qwen35Executor::workspace_bytes(model.qwen35_config(), max_context,
+                                           online_policy);
+
+  brt::DeviceContext device{0, 256U * 1024U * 1024U};
+  auto weights = device.upload_qwen35_weights(model);
+
+  raft::device_resources resources;
+  const cudaStream_t stream =
+      raft::resource::get_cuda_stream(resources).value();
+  rmm::mr::cuda_memory_resource cuda_resource;
+  rmm::mr::statistics_resource_adaptor statistics{cuda_resource};
+  brt::WorkspaceArena reference_workspace{
+      rmm::device_async_resource_ref{statistics}, cuda::stream_ref{stream},
+      stream, reference_workspace_bytes};
+  brt::WorkspaceArena online_workspace{
+      rmm::device_async_resource_ref{statistics}, cuda::stream_ref{stream},
+      stream, online_workspace_bytes};
+  cudaDeviceProp properties{};
+  assert(cudaGetDeviceProperties(&properties, 0) == cudaSuccess);
+  assert(properties.sharedMemPerBlock <=
+         static_cast<std::size_t>(std::numeric_limits<int>::max()));
+  const auto context_for = [&](brt::WorkspaceArena &workspace) {
+    return brt::ExecutionContext{
+        resources,
+        rmm::device_async_resource_ref{statistics},
+        stream,
+        workspace,
+        0,
+        properties.major,
+        properties.minor,
+        static_cast<int>(properties.sharedMemPerBlock),
+    };
+  };
+  auto reference_context = context_for(reference_workspace);
+  auto online_context = context_for(online_workspace);
+  brt::Qwen35Executor reference{reference_context, model.qwen35_config(),
+                                *weights, max_context, reference_policy};
+  brt::Qwen35Executor online{online_context, model.qwen35_config(), *weights,
+                             max_context, online_policy};
+
+  const auto reference_diagnostics = reference.diagnostics();
+  const auto online_diagnostics = online.diagnostics();
+  assert(reference_diagnostics.attention ==
+         brt::Qwen35AttentionImplementation::materialized_reference);
+  assert(reference_diagnostics.attention_workspace_bytes > 0);
+  assert(online_diagnostics.attention ==
+         brt::Qwen35AttentionImplementation::online_tiled);
+  assert(online_diagnostics.attention_workspace_bytes == 0);
+
+  const std::vector<std::int32_t> prompt{1, 2};
+  const auto reference_prefill = reference.prefill(prompt);
+  const auto online_prefill = online.prefill(prompt);
+  assert(online_prefill.token == reference_prefill.token);
+  assert(online_prefill.position == reference_prefill.position);
+  std::vector<float> reference_logits(model.qwen35_config().vocabulary_size);
+  std::vector<float> online_logits(model.qwen35_config().vocabulary_size);
+  reference.copy_last_logits(reference_logits);
+  online.copy_last_logits(online_logits);
+  assert_reference_close("online-prefill", online_logits, reference_logits);
+
+  const auto reference_decode = reference.decode(3);
+  const auto online_decode = online.decode(3);
+  assert(online_decode.token == reference_decode.token);
+  assert(online_decode.position == reference_decode.position);
+  reference.copy_last_logits(reference_logits);
+  online.copy_last_logits(online_logits);
+  assert_reference_close("online-decode", online_logits, reference_logits);
+
+  (void)statistics.push_counters();
+  for (std::size_t index = 0; index < 2; ++index) {
+    reference.reset();
+    online.reset();
+    (void)reference.prefill(prompt);
+    (void)online.prefill(prompt);
+    (void)reference.decode(3);
+    (void)online.decode(3);
+  }
+  const auto [bytes, allocations] = statistics.pop_counters();
+  assert(bytes.value == 0);
+  assert(bytes.peak == 0);
+  assert(bytes.total == 0);
+  assert(allocations.value == 0);
+  assert(allocations.peak == 0);
+  assert(allocations.total == 0);
+}
+
 void run_executor_reference_and_allocation_tests() {
   assert(cudaSetDevice(0) == cudaSuccess);
   const auto path =
       write_fixture(brt::test::make_qwen35_nonzero_bf16_gguf_fixture());
   brt::model::Model model{path.string()};
   constexpr std::size_t max_context = 64;
-  const std::size_t workspace_bytes =
-      brt::Qwen35Executor::workspace_bytes(model.qwen35_config(), max_context);
+  const auto policy = materialized_policy();
+  const std::size_t workspace_bytes = brt::Qwen35Executor::workspace_bytes(
+      model.qwen35_config(), max_context, policy);
 
   brt::DeviceContext device{0, 256U * 1024U * 1024U};
   auto weights = device.upload_qwen35_weights(model);
@@ -487,7 +733,15 @@ void run_executor_reference_and_allocation_tests() {
                                 properties.minor,
                                 static_cast<int>(properties.sharedMemPerBlock)};
   brt::Qwen35Executor executor{context, model.qwen35_config(), *weights,
-                               max_context};
+                               max_context, policy};
+  const auto diagnostics = executor.diagnostics();
+  assert(diagnostics.attention ==
+         brt::Qwen35AttentionImplementation::materialized_reference);
+  assert(diagnostics.kv_cache_dtype == brt::Qwen35KvCacheDType::f32);
+  assert(diagnostics.kv_cache_layout == brt::Qwen35KvCacheLayout::token_major);
+  assert(!diagnostics.decode_graph_captured);
+  assert(!diagnostics.decode_graph_replayed);
+  assert(diagnostics.attention_workspace_bytes > 0);
 
   const std::vector<std::int32_t> prompt{1, 2, 3, 4};
   const auto expected_prefill =
@@ -517,10 +771,12 @@ void run_executor_reference_and_allocation_tests() {
   assert_reference_close("batched-five", actual_logits, expected_decode.logits);
 
   (void)statistics.push_counters();
-  for (std::size_t index = 0; index < 32; ++index) {
-    const auto result =
-        executor.decode(static_cast<std::int32_t>((index + 6) % 16));
-    assert(result.position == prompt_and_decode.size() + index);
+  for (std::size_t index = 0; index < 8; ++index) {
+    executor.reset();
+    const auto repeated_prefill = executor.prefill(prompt);
+    assert(repeated_prefill.position == prompt.size() - 1);
+    const auto repeated_decode = executor.decode(5);
+    assert(repeated_decode.position == prompt.size());
   }
   const auto [bytes, allocations] = statistics.pop_counters();
   assert(bytes.value == 0);
@@ -543,5 +799,6 @@ int main() {
   run_support_kernel_tests();
   run_executor_fixture_smoke();
   run_executor_f32_auxiliary_smoke();
+  run_executor_online_materialized_parity_tests();
   run_executor_reference_and_allocation_tests();
 }

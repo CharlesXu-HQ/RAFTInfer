@@ -4,6 +4,7 @@
 
 #include "../kernels/qwen35_attention.cuh"
 #include "../kernels/qwen35_delta.cuh"
+#include "../kernels/qwen35_online_attention.cuh"
 #include "../kernels/qwen35_primitives.cuh"
 
 #include <brt/tensor.h>
@@ -156,19 +157,40 @@ CublasLtMatmulConfig matmul_config(std::size_t m, std::size_t n, std::size_t k,
   };
 }
 
-std::size_t max_attention_workspace(const model::Qwen35Config &config,
-                                    std::size_t tokens,
-                                    std::size_t max_context) {
+std::size_t attention_cache_bytes(kernels::Qwen35AttentionShape shape,
+                                  kernels::Qwen35AttentionLaunchPolicy policy) {
+  try {
+    return kernels::qwen35_attention_cache_bytes(shape, policy);
+  } catch (const kernels::Qwen35PrimitiveError &error) {
+    throw Qwen35ExecutorError(error.what());
+  }
+}
+
+std::size_t
+attention_workspace_bytes(kernels::Qwen35AttentionShape shape,
+                          kernels::Qwen35AttentionLaunchPolicy policy) {
+  try {
+    return kernels::qwen35_attention_workspace_bytes(shape, policy);
+  } catch (const kernels::Qwen35PrimitiveError &error) {
+    throw Qwen35ExecutorError(error.what());
+  }
+}
+
+std::size_t
+max_attention_workspace(const model::Qwen35Config &config, std::size_t tokens,
+                        std::size_t max_context,
+                        kernels::Qwen35AttentionLaunchPolicy policy) {
   if (config.full_attention_head_count == 0)
     return 0;
-  return kernels::qwen35_attention_workspace_bytes(
+  return attention_workspace_bytes(
       kernels::Qwen35AttentionShape{
           .tokens = tokens,
           .query_heads = config.full_attention_head_count,
           .kv_heads = config.full_attention_kv_head_count,
           .head_dim = config.full_attention_head_dimension,
           .max_context_tokens = max_context,
-          .past_tokens = max_context - tokens});
+          .past_tokens = max_context - tokens},
+      policy);
 }
 
 std::size_t linear_qkv_width(const model::Qwen35Config &config) {
@@ -240,9 +262,92 @@ void validate_config(const model::Qwen35Config &config,
   }
 }
 
-std::size_t workspace_estimate(const model::Qwen35Config &config,
-                               std::size_t max_context) {
+void validate_execution_policy(Qwen35ExecutionPolicy policy) {
+  switch (policy.attention) {
+  case Qwen35AttentionImplementation::materialized_reference:
+  case Qwen35AttentionImplementation::online_tiled:
+    break;
+  default:
+    require(false, "unsupported Qwen3.5 attention implementation");
+  }
+  switch (policy.kv_cache) {
+  case Qwen35KvCacheDType::f32:
+  case Qwen35KvCacheDType::bf16:
+    break;
+  default:
+    require(false, "unsupported Qwen3.5 KV cache dtype");
+  }
+  switch (policy.kv_cache_layout) {
+  case Qwen35KvCacheLayout::token_major:
+  case Qwen35KvCacheLayout::head_major:
+    break;
+  default:
+    require(false, "unsupported Qwen3.5 KV cache layout");
+  }
+}
+
+kernels::Qwen35AttentionLaunchPolicy
+attention_launch_policy(Qwen35ExecutionPolicy policy) noexcept {
+  return kernels::Qwen35AttentionLaunchPolicy{
+      .implementation = policy.attention,
+      .kv_cache_dtype = policy.kv_cache,
+      .kv_cache_layout = policy.kv_cache_layout,
+  };
+}
+
+bool online_decode_supported(const model::Qwen35Config &config,
+                             Qwen35ExecutionPolicy policy) noexcept {
+  return config.full_attention_head_count == 16 &&
+         config.full_attention_kv_head_count == 4 &&
+         config.full_attention_head_dimension == 256 &&
+         policy.kv_cache_layout == Qwen35KvCacheLayout::token_major;
+}
+
+Qwen35ExecutionPolicy
+resolve_execution_policy(const model::Qwen35Config &config,
+                         std::size_t max_context,
+                         Qwen35ExecutionPolicy requested) {
   validate_config(config, max_context);
+  validate_execution_policy(requested);
+  if (requested.attention ==
+      Qwen35AttentionImplementation::materialized_reference) {
+    require(requested.kv_cache == Qwen35KvCacheDType::f32,
+            "materialized attention requires an F32 KV cache");
+    require(requested.kv_cache_layout == Qwen35KvCacheLayout::token_major,
+            "materialized attention requires a token-major KV cache");
+    return requested;
+  }
+
+  bool supported = online_decode_supported(config, requested);
+  if (supported && max_context > 1) {
+    const std::size_t tokens =
+        std::min<std::size_t>(kMaxPrefillTokens, max_context);
+    supported = kernels::qwen35_online_attention_prefill_supported(
+        kernels::Qwen35AttentionShape{
+            .tokens = tokens,
+            .query_heads = config.full_attention_head_count,
+            .kv_heads = config.full_attention_kv_head_count,
+            .head_dim = config.full_attention_head_dimension,
+            .max_context_tokens = max_context,
+            .past_tokens = max_context - tokens,
+        },
+        BRT_DTYPE_F32, attention_launch_policy(requested));
+  }
+  if (supported)
+    return requested;
+
+  requested.attention = Qwen35AttentionImplementation::materialized_reference;
+  requested.kv_cache = Qwen35KvCacheDType::f32;
+  requested.kv_cache_layout = Qwen35KvCacheLayout::token_major;
+  return requested;
+}
+
+std::size_t workspace_estimate(const model::Qwen35Config &config,
+                               std::size_t max_context,
+                               Qwen35ExecutionPolicy requested_policy) {
+  const auto policy =
+      resolve_execution_policy(config, max_context, requested_policy);
+  const auto attention_policy = attention_launch_policy(policy);
   const std::size_t element = sizeof(float);
   const std::size_t max_tokens =
       std::min<std::size_t>(kMaxPrefillTokens, max_context);
@@ -265,12 +370,16 @@ std::size_t workspace_estimate(const model::Qwen35Config &config,
   const std::size_t full_kv_width = checked_mul(
       config.full_attention_kv_head_count, config.full_attention_head_dimension,
       "full KV width overflow");
-  const std::size_t full_kv_cache_bytes =
-      checked_mul(checked_mul(max_context, std::size_t{2},
-                              "full attention KV cache element count overflow"),
-                  checked_mul(full_kv_width, sizeof(float),
-                              "full attention KV cache byte size overflow"),
-                  "full attention KV cache byte size overflow");
+  const std::size_t full_kv_cache_bytes = attention_cache_bytes(
+      kernels::Qwen35AttentionShape{
+          .tokens = 1,
+          .query_heads = config.full_attention_head_count,
+          .kv_heads = config.full_attention_kv_head_count,
+          .head_dim = config.full_attention_head_dimension,
+          .max_context_tokens = max_context,
+          .past_tokens = 0,
+      },
+      attention_policy);
 
   std::size_t bytes = 0;
   auto add = [&](std::size_t value) {
@@ -323,7 +432,8 @@ std::size_t workspace_estimate(const model::Qwen35Config &config,
                   std::size_t{2},
                   "matmul input conversion byte size overflow"));
   add(kMatmulWorkspaceBudget);
-  add(max_attention_workspace(config, max_tokens, max_context));
+  add(max_attention_workspace(config, max_tokens, max_context,
+                              attention_policy));
   const kernels::GatedDeltaShape delta_shape{
       .tokens = max_tokens,
       .hidden_size = hidden,
@@ -361,13 +471,15 @@ std::size_t workspace_estimate(const model::Qwen35Config &config,
 class Qwen35Executor::Impl {
 public:
   Impl(ExecutionContext &context, const model::Qwen35Config &config,
-       const model::CudaWeightPlan &weights, std::size_t max_context)
+       const model::CudaWeightPlan &weights, std::size_t max_context,
+       Qwen35ExecutionPolicy policy)
       : context_(context), config_(config), weights_(weights),
-        max_context_(max_context), dtype_(BRT_DTYPE_F32),
+        max_context_(max_context),
+        policy_(resolve_execution_policy(config, max_context, policy)),
+        dtype_(BRT_DTYPE_F32),
         weight_dtype_(dtype_from_weight(weights.token_embedding().type)),
         element_bytes_(dtype_size(dtype_)) {
     DeviceGuard guard{context_.device_id()};
-    validate_config(config_, max_context_);
     require(weights_.layer_count() == config_.blocks.size(),
             "CUDA weight layer count does not match Qwen3.5 config");
     validate_weight_dtypes(weights_);
@@ -446,6 +558,16 @@ public:
 
   std::size_t position() const noexcept { return position_; }
   bool poisoned() const noexcept { return poisoned_; }
+  Qwen35ExecutionDiagnostics diagnostics() const noexcept {
+    return Qwen35ExecutionDiagnostics{
+        .attention = policy_.attention,
+        .kv_cache_dtype = policy_.kv_cache,
+        .kv_cache_layout = policy_.kv_cache_layout,
+        .decode_graph_captured = false,
+        .decode_graph_replayed = false,
+        .attention_workspace_bytes = attention_workspace_bytes_,
+    };
+  }
 
   void copy_last_logits(std::span<float> output) const {
     DeviceGuard guard{context_.device_id()};
@@ -471,7 +593,7 @@ private:
   friend class Qwen35Executor;
 
   struct FullState {
-    float *kv_cache{};
+    void *kv_cache{};
     std::size_t kv_cache_bytes{};
   };
   struct LinearState {
@@ -567,6 +689,7 @@ private:
 
   void allocate_buffers() {
     auto &arena = context_.workspace();
+    const auto attention_policy = attention_launch_policy(policy_);
     const std::size_t max_tokens =
         std::min<std::size_t>(kMaxPrefillTokens, max_context_);
     const std::size_t hidden = config_.hidden_size;
@@ -695,9 +818,12 @@ private:
         16);
     matmul_workspace_ = allocate(arena, kMatmulWorkspaceBudget,
                                  Qwen35Executor::workspace_alignment);
-    attention_workspace_ = allocate(
-        arena, max_attention_workspace(config_, max_tokens, max_context_),
-        alignof(float));
+    attention_workspace_bytes_ = max_attention_workspace(
+        config_, max_tokens, max_context_, attention_policy);
+    if (attention_workspace_bytes_ != 0) {
+      attention_workspace_ =
+          allocate(arena, attention_workspace_bytes_, alignof(float));
+    }
     const kernels::GatedDeltaShape delta_shape{
         .tokens = max_tokens,
         .hidden_size = hidden,
@@ -721,15 +847,19 @@ private:
     for (std::size_t i = 0; i < config_.blocks.size(); ++i) {
       if (config_.blocks[i].kind == model::Qwen35BlockKind::full_attention) {
         full_state_by_layer_[i] = full_states_.size();
-        const std::size_t kv_cache_bytes = checked_mul(
-            checked_mul(max_context_, 2, "KV cache element count overflow"),
-            checked_mul(full_kv_width, sizeof(float),
-                        "KV cache byte size overflow"),
-            "KV cache byte size overflow");
-        full_states_.push_back(
-            FullState{.kv_cache = static_cast<float *>(
-                          allocate(arena, kv_cache_bytes, alignof(float))),
-                      .kv_cache_bytes = kv_cache_bytes});
+        const std::size_t kv_cache_bytes = attention_cache_bytes(
+            kernels::Qwen35AttentionShape{
+                .tokens = 1,
+                .query_heads = config_.full_attention_head_count,
+                .kv_heads = config_.full_attention_kv_head_count,
+                .head_dim = config_.full_attention_head_dimension,
+                .max_context_tokens = max_context_,
+                .past_tokens = 0,
+            },
+            attention_policy);
+        full_states_.push_back(FullState{
+            .kv_cache = allocate(arena, kv_cache_bytes, alignof(float)),
+            .kv_cache_bytes = kv_cache_bytes});
       } else {
         linear_state_by_layer_[i] = linear_states_.size();
         const std::size_t recurrent = checked_mul(
@@ -999,9 +1129,9 @@ private:
     kernels::qwen35_causal_attention(
         full_query_norm_, full_key_norm_, full_value_, linear_gate_,
         attention_out_, full_states_[state_index].kv_cache,
-        static_cast<float *>(attention_workspace_),
-        kernels::qwen35_attention_workspace_floats(attention_shape),
-        attention_shape, dtype_, context_.stream());
+        full_states_[state_index].kv_cache_bytes, attention_workspace_,
+        attention_workspace_bytes_, attention_shape, dtype_,
+        attention_launch_policy(policy_), context_.stream());
     (void)kv_width;
     run_matmul(*plans.output, attention_out_, full.output, output);
     record_trace("attn_out-" + std::to_string(weights.index), output,
@@ -1059,6 +1189,7 @@ private:
   const model::Qwen35Config &config_;
   const model::CudaWeightPlan &weights_;
   std::size_t max_context_{};
+  Qwen35ExecutionPolicy policy_{};
   BrtDataType dtype_{};
   BrtDataType weight_dtype_{};
   std::size_t element_bytes_{};
@@ -1089,6 +1220,7 @@ private:
   void *matmul_input_{};
   void *matmul_workspace_{};
   void *attention_workspace_{};
+  std::size_t attention_workspace_bytes_{};
   void *delta_workspace_{};
 
   std::vector<FullState> full_states_;
@@ -1100,8 +1232,9 @@ private:
 };
 
 std::size_t Qwen35Executor::workspace_bytes(const model::Qwen35Config &config,
-                                            std::size_t max_context) {
-  return workspace_estimate(config, max_context);
+                                            std::size_t max_context,
+                                            Qwen35ExecutionPolicy policy) {
+  return workspace_estimate(config, max_context, policy);
 }
 
 void Qwen35Executor::validate_request(const model::Qwen35Config &config,
@@ -1129,8 +1262,9 @@ void Qwen35Executor::validate_weight_dtypes_for_tests(
 Qwen35Executor::Qwen35Executor(ExecutionContext &context,
                                const model::Qwen35Config &config,
                                const model::CudaWeightPlan &weights,
-                               std::size_t max_context)
-    : impl_(new Impl(context, config, weights, max_context)) {}
+                               std::size_t max_context,
+                               Qwen35ExecutionPolicy policy)
+    : impl_(new Impl(context, config, weights, max_context, policy)) {}
 
 Qwen35Executor::~Qwen35Executor() noexcept { delete impl_; }
 
@@ -1162,5 +1296,9 @@ std::size_t Qwen35Executor::position() const noexcept {
 }
 
 bool Qwen35Executor::poisoned() const noexcept { return impl_->poisoned(); }
+
+Qwen35ExecutionDiagnostics Qwen35Executor::diagnostics() const noexcept {
+  return impl_->diagnostics();
+}
 
 } // namespace brt
