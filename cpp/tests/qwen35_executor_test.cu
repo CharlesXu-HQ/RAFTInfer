@@ -386,7 +386,7 @@ void run_executor_fixture_smoke() {
   assert(cudaSetDevice(0) == cudaSuccess);
   const auto path = write_fixture(brt::test::make_qwen35_gguf_fixture());
   brt::model::Model model{path.string()};
-  const std::size_t max_context = 64;
+  const std::size_t max_context = 128;
   const std::size_t workspace =
       brt::Qwen35Executor::workspace_bytes(model.qwen35_config(), max_context);
   brt::DeviceContext device{0, 256U * 1024U * 1024U};
@@ -417,6 +417,40 @@ void run_executor_fixture_smoke() {
     assert(result.token == 0);
   }
   assert(executor.position() == 32);
+  assert(!executor.poisoned());
+
+  executor.reset();
+  executor.enable_trace(true);
+  std::vector<std::int32_t> long_prompt(max_context);
+  for (std::size_t index = 0; index < long_prompt.size(); ++index)
+    long_prompt[index] = static_cast<std::int32_t>(index % 16);
+  const auto long_prefill = executor.prefill(long_prompt);
+  assert(long_prefill.position == long_prompt.size() - 1);
+  assert(std::count_if(executor.trace().begin(), executor.trace().end(),
+                       [](const brt::Qwen35TraceEntry &entry) {
+                         return entry.name == "model.input_embed";
+                       }) == 1);
+  executor.enable_trace(false);
+}
+
+void run_executor_f32_auxiliary_smoke() {
+  assert(cudaSetDevice(0) == cudaSuccess);
+  const auto path =
+      write_fixture(brt::test::make_qwen35_gguf_fixture(30, true));
+  brt::model::Model model{path.string()};
+  constexpr std::size_t max_context = 64;
+  const std::size_t workspace =
+      brt::Qwen35Executor::workspace_bytes(model.qwen35_config(), max_context);
+  brt::DeviceContext device{0, 256U * 1024U * 1024U};
+  auto weights = device.upload_qwen35_weights(model);
+  assert(weights->output_norm().type == brt::model::CudaWeightType::f32);
+  auto owner = device.create_execution_owner(workspace);
+  auto context = owner->execution_context();
+  brt::Qwen35Executor executor{context, model.qwen35_config(), *weights,
+                               max_context};
+  const std::vector<std::int32_t> prompt{1, 2, 3, 4};
+  const auto result = executor.prefill(prompt);
+  assert(result.position == prompt.size() - 1);
   assert(!executor.poisoned());
 }
 
@@ -508,5 +542,6 @@ int main() {
   run_host_validation_tests();
   run_support_kernel_tests();
   run_executor_fixture_smoke();
+  run_executor_f32_auxiliary_smoke();
   run_executor_reference_and_allocation_tests();
 }

@@ -19,6 +19,8 @@ measured_iterations=20
 generated_tokens=128
 llama_port="${LLAMA_SERVER_PORT:-18081}"
 llama_url="http://127.0.0.1:${llama_port}"
+preflight_retries="${BRT_PREFLIGHT_RETRIES:-30}"
+preflight_retry_seconds="${BRT_PREFLIGHT_RETRY_SECONDS:-1}"
 
 fail_usage() {
   printf 'qwen35-benchmark: %s\n' "$1" >&2
@@ -41,6 +43,28 @@ command -v "${jq_bin}" >/dev/null ||
   fail_usage "jq command not found: ${jq_bin}"
 command -v "${nvidia_smi}" >/dev/null ||
   fail_usage "nvidia-smi command not found: ${nvidia_smi}"
+[[ "${preflight_retries}" =~ ^[1-9][0-9]*$ ]] ||
+  fail_usage "BRT_PREFLIGHT_RETRIES must be a positive integer"
+[[ "${preflight_retry_seconds}" =~ ^[0-9]+$ ]] ||
+  fail_usage "BRT_PREFLIGHT_RETRY_SECONDS must be a non-negative integer"
+
+wait_for_gpu_preflight() {
+  local attempt=1
+  local preflight_output
+  local preflight_status
+  while :; do
+    if preflight_output="$("${gpu_preflight}" 2>&1)"; then
+      return 0
+    fi
+    preflight_status=$?
+    if [[ "${attempt}" -ge "${preflight_retries}" ]]; then
+      printf '%s\n' "${preflight_output}" >&2
+      return "${preflight_status}"
+    fi
+    sleep "${preflight_retry_seconds}"
+    attempt=$((attempt + 1))
+  done
+}
 
 if ! "${jq_bin}" -e -s '
   length > 0 and all(.[]; .parity_passed == true) and
@@ -85,7 +109,7 @@ make_prompt_tokens() {
 for prompt_count in 128 512; do
   prompt_tokens="$(make_prompt_tokens "${prompt_count}")"
   prompt_csv="$("${jq_bin}" -jr 'join(",")' <<<"${prompt_tokens}")"
-  "${gpu_preflight}" >/dev/null
+  wait_for_gpu_preflight
   brt_result="$("${brt_cli}" benchmark \
     --model "${brt_model}" \
     --prompt-token-ids "${prompt_csv}" \
@@ -137,7 +161,7 @@ driver_version="$(trim "${driver_version}")"
 sm_clock_mhz="$(trim "${sm_clock_mhz}")"
 memory_clock_mhz="$(trim "${memory_clock_mhz}")"
 
-"${gpu_preflight}" >/dev/null
+wait_for_gpu_preflight
 "${llama_server}" \
   --model "${llama_model}" \
   --host 127.0.0.1 \

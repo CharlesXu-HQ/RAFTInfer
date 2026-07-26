@@ -5,11 +5,13 @@
 #include "../model/cuda_weights.hpp"
 #include "../model/qwen35_config.hpp"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace brt {
 
@@ -22,6 +24,13 @@ public:
 struct Qwen35ExecutorResult {
   std::int32_t token{};
   std::uint32_t position{};
+};
+
+struct Qwen35TraceEntry {
+  std::string name;
+  double sum{};
+  std::array<float, 3> first{};
+  std::array<float, 3> last{};
 };
 
 class Qwen35Executor {
@@ -48,6 +57,8 @@ public:
   Qwen35ExecutorResult prefill(std::span<const std::int32_t> tokens);
   Qwen35ExecutorResult decode(std::int32_t token);
   void copy_last_logits(std::span<float> output) const;
+  void enable_trace(bool enabled);
+  const std::vector<Qwen35TraceEntry> &trace() const noexcept;
   void reset();
 
   std::size_t position() const noexcept;

@@ -20,6 +20,7 @@
 namespace brt::reference {
 namespace {
 
+constexpr std::uint32_t kF32TensorType = 0;
 constexpr std::uint32_t kF16TensorType = 1;
 constexpr std::uint32_t kBf16TensorType = 30;
 
@@ -60,9 +61,17 @@ float f16_to_float(std::uint16_t value) {
 
 std::vector<float> tensor_f32(const model::Model &model,
                               const gguf::TensorInfo &tensor) {
-  require(tensor.type == kF16TensorType || tensor.type == kBf16TensorType,
-          "CPU Qwen3.5 reference requires F16 or BF16 tensors");
+  require(tensor.type == kF32TensorType || tensor.type == kF16TensorType ||
+              tensor.type == kBf16TensorType,
+          "CPU Qwen3.5 reference requires F32, F16, or BF16 tensors");
   const auto payload = model.tensor_payload(tensor);
+  if (tensor.type == kF32TensorType) {
+    require(payload.size() % sizeof(float) == 0,
+            "CPU Qwen3.5 F32 tensor payload is not float-aligned");
+    std::vector<float> result(payload.size() / sizeof(float));
+    std::memcpy(result.data(), payload.data(), payload.size());
+    return result;
+  }
   require(payload.size() % sizeof(std::uint16_t) == 0,
           "CPU Qwen3.5 tensor payload is not 16-bit aligned");
   std::vector<float> result(payload.size() / sizeof(std::uint16_t));
@@ -170,7 +179,7 @@ run_linear_mixer(const model::Model &model,
       packed, delta_output,
       GatedDeltaReferenceWeights{
           .conv_weight = tensor_f32(model, *tensors.convolution),
-          .a_log = tensor_f32(model, *tensors.recurrent_a),
+          .recurrent_a = tensor_f32(model, *tensors.recurrent_a),
           .dt_bias = tensor_f32(model, *tensors.time_step_bias),
           .output_norm_weight = tensor_f32(model, *tensors.output_norm),
       },

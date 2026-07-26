@@ -44,7 +44,9 @@ template <class Fn> void expect_invalid_argument(Fn &&fn) {
 int main() {
   {
     const std::array<float, 6> input{3.0F, 4.0F, 0.0F, 1.0F, -2.0F, 2.0F};
-    const std::array<float, 3> weight{0.0F, 1.0F, -0.5F};
+    // llama.cpp's Qwen3.5 GGUF conversion stores ordinary RMSNorm weights as
+    // final multiplicative scales (the HF +1 offset is applied at conversion).
+    const std::array<float, 3> weight{1.0F, 2.0F, 0.5F};
     std::array<float, 6> output{};
 
     brt::reference::qwen35_rms_norm(input, weight, output, 2, 3, 0.0F);
@@ -68,8 +70,8 @@ int main() {
         1.0F,  2.0F,  3.0F,  4.0F,   2.0F,   -1.0F, 0.5F,  -0.5F,
         -2.0F, 0.25F, 0.5F,  -0.25F, 1.5F,   -0.5F, -1.0F, 0.75F,
         0.25F, -0.5F, 1.25F, -1.5F,  -0.75F, 0.5F,  1.0F,  -0.25F};
-    const std::array<float, 2> query_norm_weight{0.25F, -0.5F};
-    const std::array<float, 2> key_norm_weight{-0.25F, 0.75F};
+    const std::array<float, 2> query_norm_weight{1.25F, 0.5F};
+    const std::array<float, 2> key_norm_weight{0.75F, 1.75F};
     const std::array<float, 16> output_weight{
         1.0F, -0.5F, 0.25F,  0.75F, -1.0F, 0.5F,  1.5F, -0.25F,
         0.5F, 1.0F,  -0.75F, 0.25F, 1.25F, -1.5F, 0.5F, 1.0F};
@@ -110,7 +112,8 @@ int main() {
         0.4F, -0.2F,  0.3F,  0.25F, -0.15F, 0.35F, -0.05F, 0.2F,
         0.1F, 0.25F,  -0.3F, 0.15F, -0.2F,  0.05F, 0.45F,  -0.1F,
         0.3F, -0.25F, 0.2F,  0.05F, -0.35F, 0.1F,  -0.15F, 0.4F};
-    const std::array<float, 2> a_log{0.1F, -0.2F};
+    // GGUF stores the already transformed coefficient -exp(A_log).
+    const std::array<float, 2> recurrent_a{-1.1051702F, -0.8187308F};
     const std::array<float, 2> dt_bias{0.2F, -0.4F};
     const std::array<float, 2> output_norm_weight{1.25F, 0.75F};
     std::array<float, 12> prefill_output{};
@@ -119,7 +122,7 @@ int main() {
     brt::reference::qwen35_gated_delta_prefill(
         input, prefill_output,
         brt::reference::GatedDeltaReferenceWeights{.conv_weight = conv_weight,
-                                                   .a_log = a_log,
+                                                   .recurrent_a = recurrent_a,
                                                    .dt_bias = dt_bias,
                                                    .output_norm_weight =
                                                        output_norm_weight},
@@ -140,7 +143,7 @@ int main() {
           std::span<float>(stepped_output)
               .subspan(token * args.hidden_size, args.hidden_size),
           brt::reference::GatedDeltaReferenceWeights{.conv_weight = conv_weight,
-                                                     .a_log = a_log,
+                                                     .recurrent_a = recurrent_a,
                                                      .dt_bias = dt_bias,
                                                      .output_norm_weight =
                                                          output_norm_weight},

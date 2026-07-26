@@ -20,7 +20,8 @@ void require(bool condition, const char *message) {
 }
 
 void require_dtype(BrtDataType dtype) {
-  require(dtype == BRT_DTYPE_F16 || dtype == BRT_DTYPE_BF16,
+  require(dtype == BRT_DTYPE_F32 || dtype == BRT_DTYPE_F16 ||
+              dtype == BRT_DTYPE_BF16,
           "unsupported Qwen3.5 attention dtype");
 }
 
@@ -79,6 +80,10 @@ __device__ void store_from_float<__nv_bfloat16>(void *data, std::size_t index,
 
 template <typename KernelLauncher>
 void launch_by_dtype(BrtDataType dtype, KernelLauncher launcher) {
+  if (dtype == BRT_DTYPE_F32) {
+    launcher.template operator()<float>();
+    return;
+  }
   if (dtype == BRT_DTYPE_F16) {
     launcher.template operator()<__half>();
     return;
@@ -160,6 +165,10 @@ logits_kernel(const void *query, const float *kv_cache, float *logits,
   const std::size_t current_context = past_tokens + tokens;
   const std::size_t visible_keys = past_tokens + token + 1;
   const float scale = rsqrtf(static_cast<float>(head_dim));
+  constexpr int kWarpSize = 32;
+  const int lane = threadIdx.x % kWarpSize;
+  const int warp = threadIdx.x / kWarpSize;
+  const int warp_count = blockDim.x / kWarpSize;
 
   for (std::size_t key_token = 0; key_token < visible_keys; ++key_token) {
     float thread_sum = 0.0F;
@@ -170,17 +179,22 @@ logits_kernel(const void *query, const float *kv_cache, float *logits,
           (key_token * kv_heads + kv_head) * head_dim + dim;
       thread_sum += load_as_float<T>(query, q_index) * kv_cache[k_index];
     }
-    shared[threadIdx.x] = thread_sum;
-    __syncthreads();
-    for (int stride = blockDim.x / 2; stride > 0; stride >>= 1) {
-      if (threadIdx.x < stride) {
-        shared[threadIdx.x] += shared[threadIdx.x + stride];
-      }
-      __syncthreads();
+    for (int offset = kWarpSize / 2; offset > 0; offset >>= 1) {
+      thread_sum += __shfl_down_sync(0xFFFFFFFFU, thread_sum, offset);
     }
-    if (threadIdx.x == 0) {
-      logits[(token * query_heads + query_head) * current_context + key_token] =
-          shared[0] * scale;
+    if (lane == 0) {
+      shared[warp] = thread_sum;
+    }
+    __syncthreads();
+    if (warp == 0) {
+      float block_sum = lane < warp_count ? shared[lane] : 0.0F;
+      for (int offset = kWarpSize / 2; offset > 0; offset >>= 1) {
+        block_sum += __shfl_down_sync(0xFFFFFFFFU, block_sum, offset);
+      }
+      if (lane == 0) {
+        logits[(token * query_heads + query_head) * current_context +
+               key_token] = block_sum * scale;
+      }
     }
     __syncthreads();
   }
@@ -189,7 +203,7 @@ logits_kernel(const void *query, const float *kv_cache, float *logits,
 template <typename T>
 __global__ void
 output_kernel(const float *kv_cache, const void *gate, void *output,
-              const float *logits, std::size_t tokens, std::size_t query_heads,
+              float *logits, std::size_t tokens, std::size_t query_heads,
               std::size_t kv_heads, std::size_t head_dim,
               std::size_t max_context_tokens, std::size_t past_tokens) {
   extern __shared__ float shared[];
@@ -221,14 +235,19 @@ output_kernel(const float *kv_cache, const void *gate, void *output,
   const float max_logit = shared[0];
   const float denom = shared[1];
 
+  for (std::size_t key_token = threadIdx.x; key_token < visible_keys;
+       key_token += blockDim.x) {
+    logits[logits_base + key_token] =
+        expf(logits[logits_base + key_token] - max_logit) / denom;
+  }
+  __syncthreads();
+
   for (std::size_t dim = threadIdx.x; dim < head_dim; dim += blockDim.x) {
     double sum = 0.0;
     for (std::size_t key_token = 0; key_token < visible_keys; ++key_token) {
-      const float probability =
-          expf(logits[logits_base + key_token] - max_logit) / denom;
       const std::size_t value_index =
           value_plane + (key_token * kv_heads + kv_head) * head_dim + dim;
-      sum += static_cast<double>(probability) *
+      sum += static_cast<double>(logits[logits_base + key_token]) *
              static_cast<double>(kv_cache[value_index]);
     }
     const std::size_t output_index =
@@ -237,6 +256,108 @@ output_kernel(const float *kv_cache, const void *gate, void *output,
     const float gated = static_cast<float>(sum) / (1.0F + expf(-gate_value));
     store_from_float<T>(output, output_index, gated);
   }
+}
+
+template <typename T>
+__global__ void decode_logits_kernel(const void *query, const float *kv_cache,
+                                     float *logits, std::size_t query_heads,
+                                     std::size_t kv_heads, std::size_t head_dim,
+                                     std::size_t current_context) {
+  extern __shared__ float shared[];
+  constexpr int kWarpSize = 32;
+  const std::size_t flat_block = blockIdx.x;
+  const std::size_t query_head = flat_block / current_context;
+  const std::size_t key_token = flat_block - query_head * current_context;
+  if (query_head >= query_heads)
+    return;
+  const std::size_t kv_head = query_head / (query_heads / kv_heads);
+
+  float sum = 0.0F;
+  for (std::size_t dim = threadIdx.x; dim < head_dim; dim += blockDim.x) {
+    sum += load_as_float<T>(query, query_head * head_dim + dim) *
+           kv_cache[(key_token * kv_heads + kv_head) * head_dim + dim];
+  }
+  for (int offset = kWarpSize / 2; offset > 0; offset >>= 1) {
+    sum += __shfl_down_sync(0xFFFFFFFFU, sum, offset);
+  }
+  const int lane = threadIdx.x % kWarpSize;
+  const int warp = threadIdx.x / kWarpSize;
+  const int warp_count = blockDim.x / kWarpSize;
+  if (lane == 0) {
+    shared[warp] = sum;
+  }
+  __syncthreads();
+  if (warp == 0) {
+    float block_sum = lane < warp_count ? shared[lane] : 0.0F;
+    for (int offset = kWarpSize / 2; offset > 0; offset >>= 1) {
+      block_sum += __shfl_down_sync(0xFFFFFFFFU, block_sum, offset);
+    }
+    if (lane == 0) {
+      logits[query_head * current_context + key_token] =
+          block_sum * rsqrtf(static_cast<float>(head_dim));
+    }
+  }
+}
+
+__global__ void decode_softmax_kernel(float *logits, std::size_t query_heads,
+                                      std::size_t current_context) {
+  extern __shared__ float shared[];
+  const std::size_t query_head = blockIdx.x;
+  if (query_head >= query_heads)
+    return;
+  const std::size_t logits_base = query_head * current_context;
+
+  if (threadIdx.x == 0) {
+    float max_logit = -CUDART_INF_F;
+    for (std::size_t key_token = 0; key_token < current_context; ++key_token) {
+      max_logit = fmaxf(max_logit, logits[logits_base + key_token]);
+    }
+    double denom = 0.0;
+    for (std::size_t key_token = 0; key_token < current_context; ++key_token) {
+      denom += exp(static_cast<double>(logits[logits_base + key_token]) -
+                   static_cast<double>(max_logit));
+    }
+    shared[0] = max_logit;
+    shared[1] = static_cast<float>(denom);
+  }
+  __syncthreads();
+  for (std::size_t key_token = threadIdx.x; key_token < current_context;
+       key_token += blockDim.x) {
+    logits[logits_base + key_token] =
+        expf(logits[logits_base + key_token] - shared[0]) / shared[1];
+  }
+}
+
+template <typename T>
+__global__ void
+decode_output_kernel(const float *kv_cache, const void *gate, void *output,
+                     const float *probabilities, std::size_t query_heads,
+                     std::size_t kv_heads, std::size_t head_dim,
+                     std::size_t max_context_tokens,
+                     std::size_t current_context, std::size_t dimension_tiles) {
+  const std::size_t flat_block = blockIdx.x;
+  const std::size_t query_head = flat_block / dimension_tiles;
+  const std::size_t tile = flat_block - query_head * dimension_tiles;
+  const std::size_t dim =
+      tile * static_cast<std::size_t>(blockDim.x) + threadIdx.x;
+  if (query_head >= query_heads || dim >= head_dim)
+    return;
+  const std::size_t kv_head = query_head / (query_heads / kv_heads);
+  const std::size_t kv_size = kv_heads * head_dim;
+  const std::size_t value_plane = max_context_tokens * kv_size;
+  const std::size_t logits_base = query_head * current_context;
+
+  double sum = 0.0;
+  for (std::size_t key_token = 0; key_token < current_context; ++key_token) {
+    const std::size_t value_index =
+        value_plane + (key_token * kv_heads + kv_head) * head_dim + dim;
+    sum += static_cast<double>(probabilities[logits_base + key_token]) *
+           static_cast<double>(kv_cache[value_index]);
+  }
+  const std::size_t output_index = query_head * head_dim + dim;
+  const float gate_value = load_as_float<T>(gate, output_index);
+  const float gated = static_cast<float>(sum) / (1.0F + expf(-gate_value));
+  store_from_float<T>(output, output_index, gated);
 }
 
 } // namespace
@@ -293,6 +414,44 @@ void qwen35_causal_attention(const void *query, const void *key,
         shape.max_context_tokens, shape.past_tokens);
   });
   check_launch("qwen35_attention_append_cache");
+
+  if (shape.tokens == 1) {
+    const std::size_t current_context = current_context_tokens(shape);
+    const int decode_logits_grid =
+        checked_grid_for(checked_mul(shape.query_heads, current_context,
+                                     "decode attention logits grid overflow"),
+                         "decode attention logits grid overflow");
+    launch_by_dtype(dtype, [&]<typename T>() {
+      decode_logits_kernel<T>
+          <<<decode_logits_grid, kBlockSize, kBlockSize * sizeof(float),
+             stream>>>(query, kv_cache, logits_workspace, shape.query_heads,
+                       shape.kv_heads, shape.head_dim, current_context);
+    });
+    check_launch("qwen35_decode_attention_logits");
+
+    decode_softmax_kernel<<<static_cast<int>(shape.query_heads), kBlockSize,
+                            2 * sizeof(float), stream>>>(
+        logits_workspace, shape.query_heads, current_context);
+    check_launch("qwen35_decode_attention_softmax");
+
+    constexpr std::size_t kOutputTile = 64;
+    const std::size_t dimension_tiles =
+        shape.head_dim / kOutputTile +
+        (shape.head_dim % kOutputTile == 0 ? 0 : 1);
+    const int decode_output_grid =
+        checked_grid_for(checked_mul(shape.query_heads, dimension_tiles,
+                                     "decode attention output grid overflow"),
+                         "decode attention output grid overflow");
+    launch_by_dtype(dtype, [&]<typename T>() {
+      decode_output_kernel<T>
+          <<<decode_output_grid, static_cast<int>(kOutputTile), 0, stream>>>(
+              kv_cache, gate, output, logits_workspace, shape.query_heads,
+              shape.kv_heads, shape.head_dim, shape.max_context_tokens,
+              current_context, dimension_tiles);
+    });
+    check_launch("qwen35_decode_attention_output");
+    return;
+  }
 
   launch_by_dtype(dtype, [&]<typename T>() {
     logits_kernel<T>

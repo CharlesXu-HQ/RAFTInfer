@@ -13,7 +13,7 @@ Pinned source:
   `0e2cd8dc50885b2701d26b116c585eedcdc62a24080ec34345af55b963126ded`
 - Generator seed: `20260725`
 - Fixture SHA-256:
-  `7d2f7cf8487bdfe0fc641be011c822c941066427d106013f56dc90aec59c59ab`
+  `0baecdddc5cdf000e9bbcfeaea1820738a7d4b59212f6310860f40a7826517c8`
 
 Generate with GPU access disabled:
 
@@ -40,7 +40,7 @@ Vector order:
 5. official full-attention output
 6. canonical DeltaNet `[q,k,v,b,a,z]` input
 7. depthwise convolution weight in `[channel,kernel]` order
-8. `A_log`
+8. GGUF-native recurrent coefficient `-exp(A_log)`
 9. `dt_bias`
 10. direct output RMSNorm weight
 11. initial convolution state `[channel,history]`

@@ -26,7 +26,8 @@
 namespace brt {
 namespace {
 
-constexpr std::array<std::size_t, 4> kBuckets{1, 2, 4, 17};
+constexpr std::size_t kMaxPrefillTokens = 512;
+constexpr std::array<std::size_t, 6> kBuckets{1, 2, 4, 17, 128, 512};
 constexpr std::size_t kMatmulWorkspaceBudget = 4U * 1024U * 1024U;
 
 void require(bool condition, const char *message) {
@@ -54,12 +55,16 @@ std::size_t checked_mul(std::size_t lhs, std::size_t rhs, const char *message) {
 }
 
 std::size_t dtype_size(BrtDataType dtype) {
+  if (dtype == BRT_DTYPE_F32)
+    return 4;
   if (dtype == BRT_DTYPE_F16 || dtype == BRT_DTYPE_BF16)
     return 2;
   throw Qwen35ExecutorError("Qwen3.5 executor weights must be F16 or BF16");
 }
 
 BrtDataType dtype_from_weight(model::CudaWeightType type) {
+  if (type == model::CudaWeightType::f32)
+    return BRT_DTYPE_F32;
   if (type == model::CudaWeightType::f16)
     return BRT_DTYPE_F16;
   if (type == model::CudaWeightType::bf16)
@@ -133,16 +138,17 @@ struct BucketPlans {
 };
 
 CublasLtMatmulConfig matmul_config(std::size_t m, std::size_t n, std::size_t k,
-                                   BrtDataType dtype) {
+                                   BrtDataType activation_dtype,
+                                   BrtDataType weight_dtype) {
   return CublasLtMatmulConfig{
       .shape = CublasLtMatmulShape{.m = m,
                                    .n = n,
                                    .k = k,
                                    .transpose_input = false,
                                    .transpose_weight = true},
-      .input_dtype = dtype,
-      .weight_dtype = dtype,
-      .output_dtype = dtype,
+      .input_dtype = weight_dtype,
+      .weight_dtype = weight_dtype,
+      .output_dtype = activation_dtype,
       .input_order = CublasLtMatrixOrder::RowMajor,
       .weight_order = CublasLtMatrixOrder::RowMajor,
       .output_order = CublasLtMatrixOrder::RowMajor,
@@ -237,8 +243,9 @@ void validate_config(const model::Qwen35Config &config,
 std::size_t workspace_estimate(const model::Qwen35Config &config,
                                std::size_t max_context) {
   validate_config(config, max_context);
-  const std::size_t element = 2;
-  const std::size_t max_tokens = std::min<std::size_t>(17, max_context);
+  const std::size_t element = sizeof(float);
+  const std::size_t max_tokens =
+      std::min<std::size_t>(kMaxPrefillTokens, max_context);
   const std::size_t hidden = config.hidden_size;
   const std::size_t intermediate = config.intermediate_size;
   const std::size_t qkv_width = linear_qkv_width(config);
@@ -267,10 +274,9 @@ std::size_t workspace_estimate(const model::Qwen35Config &config,
 
   std::size_t bytes = 0;
   auto add = [&](std::size_t value) {
-    bytes = checked_add(
-        align_up(bytes, Qwen35Executor::workspace_alignment),
-        align_up(value, Qwen35Executor::workspace_alignment),
-        "Qwen3.5 executor workspace overflow");
+    bytes = checked_add(align_up(bytes, Qwen35Executor::workspace_alignment),
+                        align_up(value, Qwen35Executor::workspace_alignment),
+                        "Qwen3.5 executor workspace overflow");
   };
 
   add(checked_mul(max_context, sizeof(std::int32_t),
@@ -312,6 +318,10 @@ std::size_t workspace_estimate(const model::Qwen35Config &config,
                   "mixer projection byte size overflow"));
   add(checked_mul(config.vocabulary_size * element, std::size_t{1},
                   "logits byte size overflow"));
+  add(checked_mul(checked_mul(max_tokens, std::max(hidden, intermediate),
+                              "matmul input conversion element count overflow"),
+                  std::size_t{2},
+                  "matmul input conversion byte size overflow"));
   add(kMatmulWorkspaceBudget);
   add(max_attention_workspace(config, max_tokens, max_context));
   const kernels::GatedDeltaShape delta_shape{
@@ -353,8 +363,8 @@ public:
   Impl(ExecutionContext &context, const model::Qwen35Config &config,
        const model::CudaWeightPlan &weights, std::size_t max_context)
       : context_(context), config_(config), weights_(weights),
-        max_context_(max_context),
-        dtype_(dtype_from_weight(weights.token_embedding().type)),
+        max_context_(max_context), dtype_(BRT_DTYPE_F32),
+        weight_dtype_(dtype_from_weight(weights.token_embedding().type)),
         element_bytes_(dtype_size(dtype_)) {
     DeviceGuard guard{context_.device_id()};
     validate_config(config_, max_context_);
@@ -378,10 +388,12 @@ public:
     try {
       while (offset < tokens.size()) {
         const std::size_t remaining = tokens.size() - offset;
-        const std::size_t chunk = remaining >= 17  ? 17
-                                  : remaining >= 4 ? 4
-                                  : remaining >= 2 ? 2
-                                                   : 1;
+        const std::size_t chunk = remaining >= 512   ? 512
+                                  : remaining >= 128 ? 128
+                                  : remaining >= 17  ? 17
+                                  : remaining >= 4   ? 4
+                                  : remaining >= 2   ? 2
+                                                     : 1;
         result =
             run_chunk(tokens.subspan(offset, chunk),
                       offset + chunk == tokens.size(), start_position + offset);
@@ -441,25 +453,19 @@ public:
             "Qwen3.5 logits output size does not match vocabulary");
     require(position_ > 0, "Qwen3.5 logits are unavailable before execution");
     ensure_healthy();
-    std::vector<std::uint16_t> encoded(output.size());
-    check_cuda(cudaMemcpyAsync(encoded.data(), logits_,
-                               encoded.size() * sizeof(std::uint16_t),
+    check_cuda(cudaMemcpyAsync(output.data(), logits_, output.size_bytes(),
                                cudaMemcpyDeviceToHost, context_.stream()),
                "Qwen3.5 logits download failed");
     check_cuda(cudaStreamSynchronize(context_.stream()),
                "Qwen3.5 logits synchronization failed");
-    for (std::size_t index = 0; index < encoded.size(); ++index) {
-      if (dtype_ == BRT_DTYPE_F16) {
-        __half value{};
-        std::memcpy(&value, &encoded[index], sizeof(value));
-        output[index] = __half2float(value);
-      } else {
-        __nv_bfloat16 value{};
-        std::memcpy(&value, &encoded[index], sizeof(value));
-        output[index] = __bfloat162float(value);
-      }
-    }
   }
+
+  void enable_trace(bool enabled) {
+    trace_enabled_ = enabled;
+    trace_.clear();
+  }
+
+  const std::vector<Qwen35TraceEntry> &trace() const noexcept { return trace_; }
 
 private:
   friend class Qwen35Executor;
@@ -475,43 +481,55 @@ private:
     std::size_t recurrent_bytes{};
   };
 
-  static void require_same_dtype(model::CudaWeightType actual,
-                                 model::CudaWeightType expected) {
+  static void require_primary_dtype(model::CudaWeightType actual,
+                                    model::CudaWeightType expected) {
     require(actual == expected,
-            "Qwen3.5 CUDA executor requires homogeneous F16/BF16 weights");
+            "Qwen3.5 CUDA executor primary weights must share the activation "
+            "dtype");
+  }
+
+  static void require_auxiliary_dtype(model::CudaWeightType actual,
+                                      model::CudaWeightType expected) {
+    require(actual == expected || actual == model::CudaWeightType::f32,
+            "Qwen3.5 CUDA executor auxiliary weights must match activations "
+            "or be F32");
   }
 
   static void validate_weight_dtypes(const model::CudaWeightPlan &weights) {
     const auto expected = weights.token_embedding().type;
-    require_same_dtype(weights.output_norm().type, expected);
-    require_same_dtype(weights.output().type, expected);
+    require(expected == model::CudaWeightType::f16 ||
+                expected == model::CudaWeightType::bf16,
+            "Qwen3.5 CUDA executor activation dtype must be F16 or BF16");
+    require_auxiliary_dtype(weights.output_norm().type, expected);
+    require_primary_dtype(weights.output().type, expected);
     for (std::size_t layer = 0; layer < weights.layer_count(); ++layer) {
       const auto &w = weights.layer(layer);
-      require_same_dtype(w.common.input_norm.type, expected);
-      require_same_dtype(w.common.post_attention_norm.type, expected);
-      require_same_dtype(w.common.ffn_gate.type, expected);
-      require_same_dtype(w.common.ffn_down.type, expected);
-      require_same_dtype(w.common.ffn_up.type, expected);
+      require_auxiliary_dtype(w.common.input_norm.type, expected);
+      require_auxiliary_dtype(w.common.post_attention_norm.type, expected);
+      require_primary_dtype(w.common.ffn_gate.type, expected);
+      require_primary_dtype(w.common.ffn_down.type, expected);
+      require_primary_dtype(w.common.ffn_up.type, expected);
       if (w.full_attention.has_value()) {
         const auto &full = *w.full_attention;
-        require_same_dtype(full.query.type, expected);
-        require_same_dtype(full.key.type, expected);
-        require_same_dtype(full.value.type, expected);
-        require_same_dtype(full.output.type, expected);
-        require_same_dtype(full.query_norm.type, expected);
-        require_same_dtype(full.key_norm.type, expected);
+        require_primary_dtype(full.query.type, expected);
+        require_primary_dtype(full.key.type, expected);
+        require_primary_dtype(full.value.type, expected);
+        require_primary_dtype(full.output.type, expected);
+        require_auxiliary_dtype(full.query_norm.type, expected);
+        require_auxiliary_dtype(full.key_norm.type, expected);
       }
       if (w.linear_attention.has_value()) {
         const auto &linear = *w.linear_attention;
-        require_same_dtype(linear.qkv.type, expected);
-        require_same_dtype(linear.gate.type, expected);
-        require_same_dtype(linear.convolution.type, expected);
-        require_same_dtype(linear.time_step_bias.type, expected);
-        require_same_dtype(linear.recurrent_a.type, expected);
-        require_same_dtype(linear.beta.type, expected);
-        require_same_dtype(linear.alpha.type, expected);
-        require_same_dtype(linear.output_norm.type, expected);
-        require_same_dtype(linear.output.type, expected);
+        require_primary_dtype(linear.qkv.type, expected);
+        require_primary_dtype(linear.gate.type, expected);
+        require_auxiliary_dtype(linear.convolution.type, expected);
+        require(linear.time_step_bias.type == linear.convolution.type &&
+                    linear.recurrent_a.type == linear.convolution.type &&
+                    linear.output_norm.type == linear.convolution.type,
+                "Qwen3.5 gated-delta auxiliary weights must share one dtype");
+        require_primary_dtype(linear.beta.type, expected);
+        require_primary_dtype(linear.alpha.type, expected);
+        require_primary_dtype(linear.output.type, expected);
       }
     }
   }
@@ -527,9 +545,30 @@ private:
             "Qwen3.5 executor is poisoned; call reset before reuse");
   }
 
+  void record_trace(std::string name, const void *device,
+                    std::size_t elements) {
+    if (!trace_enabled_)
+      return;
+    std::vector<float> host(elements);
+    check_cuda(cudaMemcpyAsync(host.data(), device, host.size() * sizeof(float),
+                               cudaMemcpyDeviceToHost, context_.stream()),
+               "Qwen3.5 trace download failed");
+    check_cuda(cudaStreamSynchronize(context_.stream()),
+               "Qwen3.5 trace synchronization failed");
+    Qwen35TraceEntry entry{.name = std::move(name)};
+    for (const float value : host)
+      entry.sum += static_cast<double>(value);
+    for (std::size_t index = 0; index < 3 && index < host.size(); ++index) {
+      entry.first[index] = host[index];
+      entry.last[2 - index] = host[host.size() - 1 - index];
+    }
+    trace_.push_back(std::move(entry));
+  }
+
   void allocate_buffers() {
     auto &arena = context_.workspace();
-    const std::size_t max_tokens = std::min<std::size_t>(17, max_context_);
+    const std::size_t max_tokens =
+        std::min<std::size_t>(kMaxPrefillTokens, max_context_);
     const std::size_t hidden = config_.hidden_size;
     const std::size_t intermediate = config_.intermediate_size;
     const std::size_t qkv_width = linear_qkv_width(config_);
@@ -646,9 +685,16 @@ private:
                        checked_mul(config_.vocabulary_size, element_bytes_,
                                    "logits byte size overflow"),
                        16);
-    matmul_workspace_ =
-        allocate(arena, kMatmulWorkspaceBudget,
-                 Qwen35Executor::workspace_alignment);
+    matmul_input_ = allocate(
+        arena,
+        checked_mul(
+            checked_mul(max_tokens, std::max(hidden, intermediate),
+                        "matmul input conversion element count overflow"),
+            dtype_size(weight_dtype_),
+            "matmul input conversion byte size overflow"),
+        16);
+    matmul_workspace_ = allocate(arena, kMatmulWorkspaceBudget,
+                                 Qwen35Executor::workspace_alignment);
     attention_workspace_ = allocate(
         arena, max_attention_workspace(config_, max_tokens, max_context_),
         alignof(float));
@@ -723,12 +769,15 @@ private:
         require(weights.index == block.index,
                 "Qwen3.5 CUDA layer index does not match config");
         auto &plans = entry.layers.emplace_back();
-        plans.ffn_gate = CublasLtMatmulPlan::create(matmul_config(
-            bucket, config_.intermediate_size, config_.hidden_size, dtype_));
-        plans.ffn_up = CublasLtMatmulPlan::create(matmul_config(
-            bucket, config_.intermediate_size, config_.hidden_size, dtype_));
-        plans.ffn_down = CublasLtMatmulPlan::create(matmul_config(
-            bucket, config_.hidden_size, config_.intermediate_size, dtype_));
+        plans.ffn_gate = CublasLtMatmulPlan::create(
+            matmul_config(bucket, config_.intermediate_size,
+                          config_.hidden_size, dtype_, weight_dtype_));
+        plans.ffn_up = CublasLtMatmulPlan::create(
+            matmul_config(bucket, config_.intermediate_size,
+                          config_.hidden_size, dtype_, weight_dtype_));
+        plans.ffn_down = CublasLtMatmulPlan::create(
+            matmul_config(bucket, config_.hidden_size,
+                          config_.intermediate_size, dtype_, weight_dtype_));
         if (block.kind == model::Qwen35BlockKind::full_attention) {
           require(weights.full_attention.has_value(),
                   "full-attention block is missing CUDA weights");
@@ -737,14 +786,14 @@ private:
           const std::size_t kv_width = config_.full_attention_kv_head_count *
                                        config_.full_attention_head_dimension;
           plans.full = std::make_unique<FullPlans>();
-          plans.full->query_gate = CublasLtMatmulPlan::create(
-              matmul_config(bucket, q_width * 2, config_.hidden_size, dtype_));
-          plans.full->key = CublasLtMatmulPlan::create(
-              matmul_config(bucket, kv_width, config_.hidden_size, dtype_));
-          plans.full->value = CublasLtMatmulPlan::create(
-              matmul_config(bucket, kv_width, config_.hidden_size, dtype_));
-          plans.full->output = CublasLtMatmulPlan::create(
-              matmul_config(bucket, config_.hidden_size, q_width, dtype_));
+          plans.full->query_gate = CublasLtMatmulPlan::create(matmul_config(
+              bucket, q_width * 2, config_.hidden_size, dtype_, weight_dtype_));
+          plans.full->key = CublasLtMatmulPlan::create(matmul_config(
+              bucket, kv_width, config_.hidden_size, dtype_, weight_dtype_));
+          plans.full->value = CublasLtMatmulPlan::create(matmul_config(
+              bucket, kv_width, config_.hidden_size, dtype_, weight_dtype_));
+          plans.full->output = CublasLtMatmulPlan::create(matmul_config(
+              bucket, config_.hidden_size, q_width, dtype_, weight_dtype_));
         } else {
           require(weights.linear_attention.has_value(),
                   "linear-attention block is missing CUDA weights");
@@ -752,22 +801,25 @@ private:
           const std::size_t linear_gate_width =
               config_.linear_value_head_count * config_.linear_head_dimension;
           plans.linear = std::make_unique<LinearPlans>();
-          plans.linear->qkv = CublasLtMatmulPlan::create(
-              matmul_config(bucket, qkv_width, config_.hidden_size, dtype_));
+          plans.linear->qkv = CublasLtMatmulPlan::create(matmul_config(
+              bucket, qkv_width, config_.hidden_size, dtype_, weight_dtype_));
           plans.linear->beta = CublasLtMatmulPlan::create(
               matmul_config(bucket, config_.linear_value_head_count,
-                            config_.hidden_size, dtype_));
+                            config_.hidden_size, dtype_, weight_dtype_));
           plans.linear->alpha = CublasLtMatmulPlan::create(
               matmul_config(bucket, config_.linear_value_head_count,
-                            config_.hidden_size, dtype_));
-          plans.linear->gate = CublasLtMatmulPlan::create(matmul_config(
-              bucket, linear_gate_width, config_.hidden_size, dtype_));
-          plans.linear->output = CublasLtMatmulPlan::create(matmul_config(
-              bucket, config_.hidden_size, linear_gate_width, dtype_));
+                            config_.hidden_size, dtype_, weight_dtype_));
+          plans.linear->gate = CublasLtMatmulPlan::create(
+              matmul_config(bucket, linear_gate_width, config_.hidden_size,
+                            dtype_, weight_dtype_));
+          plans.linear->output = CublasLtMatmulPlan::create(
+              matmul_config(bucket, config_.hidden_size, linear_gate_width,
+                            dtype_, weight_dtype_));
         }
       }
-      entry.lm_head = CublasLtMatmulPlan::create(matmul_config(
-          1, config_.vocabulary_size, config_.hidden_size, dtype_));
+      entry.lm_head = CublasLtMatmulPlan::create(
+          matmul_config(1, config_.vocabulary_size, config_.hidden_size, dtype_,
+                        weight_dtype_));
     }
   }
 
@@ -781,9 +833,15 @@ private:
 
   void run_matmul(const CublasLtMatmulPlan &plan, const void *input,
                   const model::CudaTensorView &weight, void *output) {
-    plan.run(context_.stream(), input, plan.input_bytes(), weight.device_data,
-             weight.bytes, output, plan.output_bytes(), matmul_workspace_,
-             kMatmulWorkspaceBudget);
+    const std::size_t weight_element_bytes = dtype_size(weight_dtype_);
+    require(plan.input_bytes() % weight_element_bytes == 0,
+            "Qwen3.5 matmul input byte size is not dtype-aligned");
+    kernels::qwen35_cast_f32(static_cast<const float *>(input), matmul_input_,
+                             plan.input_bytes() / weight_element_bytes,
+                             weight_dtype_, context_.stream());
+    plan.run(context_.stream(), matmul_input_, plan.input_bytes(),
+             weight.device_data, weight.bytes, output, plan.output_bytes(),
+             matmul_workspace_, kMatmulWorkspaceBudget);
   }
 
   Qwen35ExecutorResult run_chunk(std::span<const std::int32_t> tokens,
@@ -800,7 +858,9 @@ private:
         kernels::EmbeddingShape{.tokens = tokens.size(),
                                 .embedding_dim = config_.hidden_size,
                                 .vocab_size = config_.vocabulary_size},
-        dtype_, context_.stream());
+        dtype_, weight_dtype_, context_.stream());
+    record_trace("model.input_embed", hidden_a_,
+                 tokens.size() * config_.hidden_size);
     void *hidden = hidden_a_;
     void *scratch = hidden_b_;
     const std::size_t hidden_elements = tokens.size() * config_.hidden_size;
@@ -813,7 +873,10 @@ private:
           hidden, weights.common.input_norm.device_data, scratch,
           kernels::RmsNormShape{.rows = tokens.size(),
                                 .cols = config_.hidden_size},
-          config_.rms_norm_epsilon, dtype_, context_.stream());
+          config_.rms_norm_epsilon, dtype_,
+          dtype_from_weight(weights.common.input_norm.type), context_.stream());
+      record_trace("attn_norm-" + std::to_string(layer), scratch,
+                   hidden_elements);
       if (block.kind == model::Qwen35BlockKind::full_attention) {
         run_full_layer(tokens.size(), scratch, mixer_projected_, weights,
                        *plans.full, chunk_position);
@@ -824,12 +887,18 @@ private:
       kernels::qwen35_residual_add(hidden, mixer_projected_, scratch,
                                    hidden_elements, dtype_, context_.stream());
       std::swap(hidden, scratch);
+      record_trace("attn_residual-" + std::to_string(layer), hidden,
+                   hidden_elements);
 
       kernels::qwen35_rms_norm(
           hidden, weights.common.post_attention_norm.device_data, scratch,
           kernels::RmsNormShape{.rows = tokens.size(),
                                 .cols = config_.hidden_size},
-          config_.rms_norm_epsilon, dtype_, context_.stream());
+          config_.rms_norm_epsilon, dtype_,
+          dtype_from_weight(weights.common.post_attention_norm.type),
+          context_.stream());
+      record_trace("attn_post_norm-" + std::to_string(layer), scratch,
+                   hidden_elements);
       run_matmul(*plans.ffn_gate, scratch, weights.common.ffn_gate,
                  intermediate_a_);
       run_matmul(*plans.ffn_up, scratch, weights.common.ffn_up,
@@ -837,11 +906,14 @@ private:
       kernels::qwen35_swiglu(intermediate_a_, intermediate_b_, intermediate_a_,
                              tokens.size() * config_.intermediate_size, dtype_,
                              context_.stream());
+      record_trace("ffn_swiglu-" + std::to_string(layer), intermediate_a_,
+                   tokens.size() * config_.intermediate_size);
       run_matmul(*plans.ffn_down, intermediate_a_, weights.common.ffn_down,
                  mixer_projected_);
       kernels::qwen35_residual_add(hidden, mixer_projected_, scratch,
                                    hidden_elements, dtype_, context_.stream());
       std::swap(hidden, scratch);
+      record_trace("l_out-" + std::to_string(layer), hidden, hidden_elements);
     }
 
     if (!produce_logits) {
@@ -858,7 +930,8 @@ private:
         static_cast<const std::byte *>(hidden) + last_offset,
         weights_.output_norm().device_data, scratch,
         kernels::RmsNormShape{.rows = 1, .cols = config_.hidden_size},
-        config_.rms_norm_epsilon, dtype_, context_.stream());
+        config_.rms_norm_epsilon, dtype_,
+        dtype_from_weight(weights_.output_norm().type), context_.stream());
     run_matmul(*bucket.lm_head, scratch, weights_.output(), logits_);
     kernels::qwen35_argmax_typed(logits_, device_result_,
                                  config_.vocabulary_size, dtype_,
@@ -899,7 +972,8 @@ private:
                                  .rotary_dim = config_.rotary_dimension,
                                  .position_offset = chunk_position,
                                  .rope_base = config_.rope_frequency_base},
-        config_.rms_norm_epsilon, dtype_, context_.stream());
+        config_.rms_norm_epsilon, dtype_,
+        dtype_from_weight(full.query_norm.type), context_.stream());
     kernels::qwen35_qk_norm_rope(
         full_key_, full.key_norm.device_data, full_key_norm_,
         kernels::QkNormRopeShape{.tokens = tokens,
@@ -909,7 +983,8 @@ private:
                                  .rotary_dim = config_.rotary_dimension,
                                  .position_offset = chunk_position,
                                  .rope_base = config_.rope_frequency_base},
-        config_.rms_norm_epsilon, dtype_, context_.stream());
+        config_.rms_norm_epsilon, dtype_, dtype_from_weight(full.key_norm.type),
+        context_.stream());
     const std::size_t state_index = full_state_by_layer_[weights.index];
     require(state_index < full_states_.size(),
             "missing full-attention executor state");
@@ -929,6 +1004,8 @@ private:
         attention_shape, dtype_, context_.stream());
     (void)kv_width;
     run_matmul(*plans.output, attention_out_, full.output, output);
+    record_trace("attn_out-" + std::to_string(weights.index), output,
+                 tokens * config_.hidden_size);
   }
 
   void run_linear_layer(std::size_t tokens, const void *input, void *output,
@@ -941,6 +1018,8 @@ private:
     const std::size_t gate_width =
         config_.linear_value_head_count * config_.linear_head_dimension;
     run_matmul(*plans.qkv, input, linear.qkv, linear_qkv_);
+    record_trace("linear_attn_qkv_mixed-" + std::to_string(layer), linear_qkv_,
+                 tokens * qkv_width);
     run_matmul(*plans.beta, input, linear.beta, linear_beta_);
     run_matmul(*plans.alpha, input, linear.alpha, linear_alpha_);
     run_matmul(*plans.gate, input, linear.gate, linear_gate_);
@@ -968,8 +1047,12 @@ private:
         linear_states_[state_index].convolution,
         linear_states_[state_index].recurrent, delta_workspace_,
         kernels::qwen35_gated_delta_workspace_bytes(delta_shape), delta_shape,
-        dtype_, context_.stream());
+        dtype_, dtype_from_weight(linear.convolution.type), context_.stream());
+    record_trace("final_output-" + std::to_string(layer), attention_out_,
+                 tokens * config_.hidden_size);
     run_matmul(*plans.output, attention_out_, linear.output, output);
+    record_trace("linear_attn_out-" + std::to_string(layer), output,
+                 tokens * config_.hidden_size);
   }
 
   ExecutionContext context_;
@@ -977,9 +1060,11 @@ private:
   const model::CudaWeightPlan &weights_;
   std::size_t max_context_{};
   BrtDataType dtype_{};
+  BrtDataType weight_dtype_{};
   std::size_t element_bytes_{};
   std::size_t position_{};
   bool poisoned_{};
+  bool trace_enabled_{};
 
   std::int32_t *device_tokens_{};
   std::int32_t *device_result_{};
@@ -1001,6 +1086,7 @@ private:
   void *attention_out_{};
   void *mixer_projected_{};
   void *logits_{};
+  void *matmul_input_{};
   void *matmul_workspace_{};
   void *attention_workspace_{};
   void *delta_workspace_{};
@@ -1010,6 +1096,7 @@ private:
   std::vector<std::size_t> full_state_by_layer_;
   std::vector<std::size_t> linear_state_by_layer_;
   std::vector<BucketPlans> bucket_plans_;
+  std::vector<Qwen35TraceEntry> trace_;
 };
 
 std::size_t Qwen35Executor::workspace_bytes(const model::Qwen35Config &config,
@@ -1058,6 +1145,14 @@ Qwen35ExecutorResult Qwen35Executor::decode(std::int32_t token) {
 
 void Qwen35Executor::copy_last_logits(std::span<float> output) const {
   impl_->copy_last_logits(output);
+}
+
+void Qwen35Executor::enable_trace(bool enabled) {
+  impl_->enable_trace(enabled);
+}
+
+const std::vector<Qwen35TraceEntry> &Qwen35Executor::trace() const noexcept {
+  return impl_->trace();
 }
 
 void Qwen35Executor::reset() { impl_->reset(); }

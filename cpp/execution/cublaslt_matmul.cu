@@ -37,24 +37,28 @@ std::size_t checked_mul(std::size_t lhs, std::size_t rhs, const char *message) {
 
 std::size_t dtype_size(BrtDataType dtype) {
   switch (dtype) {
+  case BRT_DTYPE_F32:
+    return 4;
   case BRT_DTYPE_F16:
   case BRT_DTYPE_BF16:
     return 2;
   default:
     throw CublasLtMatmulError(
-        "cuBLASLt matmul supports only F16 and BF16 tensors");
+        "cuBLASLt matmul supports only F32, F16, and BF16 tensors");
   }
 }
 
 cudaDataType_t cuda_dtype(BrtDataType dtype) {
   switch (dtype) {
+  case BRT_DTYPE_F32:
+    return CUDA_R_32F;
   case BRT_DTYPE_F16:
     return CUDA_R_16F;
   case BRT_DTYPE_BF16:
     return CUDA_R_16BF;
   default:
     throw CublasLtMatmulError(
-        "cuBLASLt matmul supports only F16 and BF16 tensors");
+        "cuBLASLt matmul supports only F32, F16, and BF16 tensors");
   }
 }
 
@@ -237,9 +241,11 @@ CublasLtMatmulPlan::create(const CublasLtMatmulConfig &config) {
   validate_order(config.input_order);
   validate_order(config.weight_order);
   validate_order(config.output_order);
-  require(config.weight_dtype == config.input_dtype &&
-              config.output_dtype == config.input_dtype,
-          "cuBLASLt matmul input, weight, and output dtypes must match");
+  require(config.weight_dtype == config.input_dtype,
+          "cuBLASLt matmul input and weight dtypes must match");
+  require(config.output_dtype == config.input_dtype ||
+              config.output_dtype == BRT_DTYPE_F32,
+          "cuBLASLt matmul output must match inputs or be F32");
   const std::size_t input_element_bytes = dtype_size(config.input_dtype);
   const std::size_t weight_element_bytes = dtype_size(config.weight_dtype);
   (void)cuda_dtype(config.output_dtype);
@@ -254,10 +260,10 @@ CublasLtMatmulPlan::create(const CublasLtMatmulConfig &config) {
       checked_mul(checked_mul(config.shape.k, config.shape.n,
                               "cuBLASLt weight element count overflow"),
                   weight_element_bytes, "cuBLASLt weight byte size overflow");
-  impl->output_bytes =
-      checked_mul(checked_mul(config.shape.m, config.shape.n,
-                              "cuBLASLt output element count overflow"),
-                  input_element_bytes, "cuBLASLt output byte size overflow");
+  impl->output_bytes = checked_mul(
+      checked_mul(config.shape.m, config.shape.n,
+                  "cuBLASLt output element count overflow"),
+      dtype_size(config.output_dtype), "cuBLASLt output byte size overflow");
 
   const cudaError_t device_error = cudaGetDevice(&impl->device_id);
   require(device_error == cudaSuccess,

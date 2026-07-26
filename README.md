@@ -5,11 +5,11 @@ RTX 50-series GPUs. RAFT and RMM provide the device-resource, stream, and memory
 foundation; performance-critical model operators are implemented in project
 C++/CUDA code and selected through stable execution plans.
 
-Current status: the M2 Qwen3.5-9B text-path implementation and host-side
-verification are present. M2 is **not accepted yet**: the current source still
-needs to be synchronized to the RTX 50 target and pass the CUDA build,
-operator/executor correctness tests, exact llama.cpp greedy-token parity,
-performance floor, and real peak-memory measurement described in
+Current status: M2 is **accepted** for the Qwen3.5-9B text path on RTX 50. The
+CUDA build and all 23 target CTest tests pass, four real-model prompts match a
+pinned llama.cpp reference exactly under greedy decoding, and both PP128/TG128
+and PP512/TG128 exceed the required 0.8 throughput ratio. Exact evidence and
+reproduction paths are recorded in
 [docs/m2-verification.md](docs/m2-verification.md).
 
 ## Scope
@@ -33,8 +33,9 @@ performance floor, and real peak-memory measurement described in
 - Bounds-checked GGUF v3 catalog, Qwen3.5 hybrid block-plan validation, named
   immutable CUDA weights, and fixed cuBLASLt projection plans.
 - Independent CPU FP32 reference semantics for the full hybrid executor.
-- BF16/F16 CUDA primitives for RMSNorm, RoPE/full attention, Gated DeltaNet,
-  gated MLP, residual flow, prefill, decode, and persistent session state.
+- FP32-activation CUDA primitives with BF16/F16 projection boundaries for
+  RMSNorm, RoPE/full attention, Gated DeltaNet, gated MLP, residual flow,
+  prefill, decode, and persistent session state.
 - RMM-backed fixed workspace/state allocation; execution loops are tested to
   perform no additional RMM allocation.
 - Rust Qwen3.5 tokenizer/chat-template handling and greedy generation.

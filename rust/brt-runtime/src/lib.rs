@@ -108,6 +108,7 @@ pub struct ChatGeneration {
 pub struct BenchmarkConfig {
     pub warmup_iterations: usize,
     pub measured_iterations: usize,
+    /// Number of timed decode calls after each prompt prefill.
     pub generated_tokens: usize,
 }
 
@@ -283,7 +284,7 @@ where
         let prefill_microseconds = elapsed_microseconds(prefill_start);
 
         let generation_start = Instant::now();
-        for _ in 1..config.generated_tokens {
+        for _ in 0..config.generated_tokens {
             result = session
                 .decode(result.token_id)
                 .map_err(GenerationError::Backend)?;

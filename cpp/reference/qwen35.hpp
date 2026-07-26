@@ -46,7 +46,8 @@ struct GatedDeltaReferenceArgs {
 
 struct GatedDeltaReferenceWeights {
   std::span<const float> conv_weight;
-  std::span<const float> a_log;
+  // GGUF stores the already transformed negative coefficient -exp(A_log).
+  std::span<const float> recurrent_a;
   std::span<const float> dt_bias;
   std::span<const float> output_norm_weight;
 };

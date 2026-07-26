@@ -36,7 +36,7 @@ struct Fixture {
   std::vector<float> full_expected_output;
   std::vector<float> delta_input;
   std::vector<float> delta_conv_weight;
-  std::vector<float> delta_a_log;
+  std::vector<float> delta_recurrent_a;
   std::vector<float> delta_dt_bias;
   std::vector<float> delta_output_norm_weight;
   std::vector<float> delta_initial_convolution;
@@ -145,7 +145,7 @@ Fixture parse_fixture(std::span<const std::uint8_t> bytes) {
   fixture.full_expected_output = reader.floats();
   fixture.delta_input = reader.floats();
   fixture.delta_conv_weight = reader.floats();
-  fixture.delta_a_log = reader.floats();
+  fixture.delta_recurrent_a = reader.floats();
   fixture.delta_dt_bias = reader.floats();
   fixture.delta_output_norm_weight = reader.floats();
   fixture.delta_initial_convolution = reader.floats();
@@ -281,7 +281,7 @@ int main() {
       fixture.delta_input, delta_output,
       brt::reference::GatedDeltaReferenceWeights{
           .conv_weight = fixture.delta_conv_weight,
-          .a_log = fixture.delta_a_log,
+          .recurrent_a = fixture.delta_recurrent_a,
           .dt_bias = fixture.delta_dt_bias,
           .output_norm_weight = fixture.delta_output_norm_weight},
       fixture.delta, delta_state);

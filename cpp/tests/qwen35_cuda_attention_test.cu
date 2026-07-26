@@ -124,6 +124,12 @@ template <> struct DTypeTraits<__nv_bfloat16> {
   static float to_float(__nv_bfloat16 value) { return __bfloat162float(value); }
 };
 
+template <> struct DTypeTraits<float> {
+  static constexpr BrtDataType dtype = BRT_DTYPE_F32;
+  static float from_float(float value) { return value; }
+  static float to_float(float value) { return value; }
+};
+
 template <typename T> std::vector<T> encode(std::span<const float> values) {
   std::vector<T> encoded(values.size());
   std::transform(values.begin(), values.end(), encoded.begin(),
@@ -195,7 +201,7 @@ void apply_qk_norm_rope_reference(std::span<const float> input,
                                        static_cast<double>(shape.head_dim)) +
                     epsilon);
       for (std::size_t dim = 0; dim < shape.head_dim; ++dim) {
-        output[base + dim] = input[base + dim] * scale * (1.0F + weight[dim]);
+        output[base + dim] = input[base + dim] * scale * weight[dim];
       }
       const std::size_t pair_count = shape.rotary_dim / 2;
       for (std::size_t pair = 0; pair < pair_count; ++pair) {
@@ -246,8 +252,8 @@ void run_prefill_case(brt::ExecutionContext &context, std::size_t tokens,
   const auto k_raw = sequence(tokens * kv_size, -0.027F, 0.4F);
   const auto v_f32 = sequence(tokens * kv_size, 0.019F, -0.1F);
   auto gate_f32 = sequence(tokens * hidden_size, -0.023F, -0.7F);
-  const std::vector<float> q_weight(head_dim, 0.0F);
-  const std::vector<float> k_weight(head_dim, 0.0F);
+  const std::vector<float> q_weight(head_dim, 1.0F);
+  const std::vector<float> k_weight(head_dim, 1.0F);
 
   std::vector<float> q_norm(q_raw.size());
   std::vector<float> k_norm(k_raw.size());
@@ -327,12 +333,12 @@ void run_prefill_case(brt::ExecutionContext &context, std::size_t tokens,
       device_q_raw.data(), device_q_weight.data(), device_q.data(),
       brt::kernels::QkNormRopeShape{tokens, query_heads, head_dim, rotary_dim,
                                     3, 10000.0F},
-      1.0e-5F, DTypeTraits<T>::dtype, context.stream());
+      1.0e-5F, DTypeTraits<T>::dtype, DTypeTraits<T>::dtype, context.stream());
   brt::kernels::qwen35_qk_norm_rope(
       device_k_raw.data(), device_k_weight.data(), device_k.data(),
       brt::kernels::QkNormRopeShape{tokens, kv_heads, head_dim, rotary_dim, 3,
                                     10000.0F},
-      1.0e-5F, DTypeTraits<T>::dtype, context.stream());
+      1.0e-5F, DTypeTraits<T>::dtype, DTypeTraits<T>::dtype, context.stream());
   brt::kernels::qwen35_causal_attention(
       device_q.data(), device_k.data(), device_v.data(), device_gate.data(),
       device_output.data(), static_cast<float *>(device_cache.data()),
@@ -386,16 +392,16 @@ void run_decode_after_prefill_case(brt::ExecutionContext &context,
   const auto k_raw = sequence(total_tokens * kv_size, -0.021F, 0.2F);
   const auto v_f32 = sequence(total_tokens * kv_size, 0.029F, -0.3F);
   const auto gate_f32 = sequence(total_tokens * hidden_size, -0.025F, -1.1F);
-  const std::vector<float> zero_weight(head_dim, 0.0F);
+  const std::vector<float> unit_weight(head_dim, 1.0F);
   std::vector<float> q_norm(q_raw.size());
   std::vector<float> k_norm(k_raw.size());
   apply_qk_norm_rope_reference(
-      q_raw, zero_weight, q_norm,
+      q_raw, unit_weight, q_norm,
       brt::kernels::QkNormRopeShape{total_tokens, query_heads, head_dim,
                                     rotary_dim, 0, 10000.0F},
       1.0e-5F);
   apply_qk_norm_rope_reference(
-      k_raw, zero_weight, k_norm,
+      k_raw, unit_weight, k_norm,
       brt::kernels::QkNormRopeShape{total_tokens, kv_heads, head_dim,
                                     rotary_dim, 0, 10000.0F},
       1.0e-5F);
@@ -423,8 +429,8 @@ void run_decode_after_prefill_case(brt::ExecutionContext &context,
   brt::reference::qwen35_gated_full_attention(
       reference_input, expected_all,
       brt::reference::FullAttentionReferenceWeights{
-          .query_norm_weight = zero_weight,
-          .key_norm_weight = zero_weight,
+          .query_norm_weight = unit_weight,
+          .key_norm_weight = unit_weight,
           .output_weight = identity_matrix(hidden_size)},
       brt::reference::FullAttentionReferenceArgs{.tokens = total_tokens,
                                                  .hidden_size = hidden_size,
@@ -456,12 +462,12 @@ void run_decode_after_prefill_case(brt::ExecutionContext &context,
   const auto k = encode<T>(k_norm);
   const auto q_raw_encoded = encode<T>(q_raw);
   const auto k_raw_encoded = encode<T>(k_raw);
-  const auto zero_weight_encoded = encode<T>(zero_weight);
+  const auto unit_weight_encoded = encode<T>(unit_weight);
   const auto v = encode<T>(v_f32);
   const auto gate = encode<T>(gate_f32);
   const auto device_q_raw = upload(context, std::span{q_raw_encoded});
   const auto device_k_raw = upload(context, std::span{k_raw_encoded});
-  const auto device_weight = upload(context, std::span{zero_weight_encoded});
+  const auto device_weight = upload(context, std::span{unit_weight_encoded});
   const auto device_v = upload(context, std::span{v});
   const auto device_gate = upload(context, std::span{gate});
   DeviceBuffer device_q{context, q.size() * sizeof(T)};
@@ -471,12 +477,12 @@ void run_decode_after_prefill_case(brt::ExecutionContext &context,
       device_q_raw.data(), device_weight.data(), device_q.data(),
       brt::kernels::QkNormRopeShape{total_tokens, query_heads, head_dim,
                                     rotary_dim, 0, 10000.0F},
-      1.0e-5F, DTypeTraits<T>::dtype, context.stream());
+      1.0e-5F, DTypeTraits<T>::dtype, DTypeTraits<T>::dtype, context.stream());
   brt::kernels::qwen35_qk_norm_rope(
       device_k_raw.data(), device_weight.data(), device_k.data(),
       brt::kernels::QkNormRopeShape{total_tokens, kv_heads, head_dim,
                                     rotary_dim, 0, 10000.0F},
-      1.0e-5F, DTypeTraits<T>::dtype, context.stream());
+      1.0e-5F, DTypeTraits<T>::dtype, DTypeTraits<T>::dtype, context.stream());
 
   brt::kernels::qwen35_causal_attention(
       device_q.data(), device_k.data(), device_v.data(), device_gate.data(),
@@ -564,7 +570,7 @@ void run_invalid_shape_tests(brt::ExecutionContext &context) {
     brt::kernels::qwen35_causal_attention(
         const_pointer, const_pointer, const_pointer, const_pointer, pointer,
         floats, floats, brt::kernels::qwen35_attention_workspace_floats(valid),
-        valid, BRT_DTYPE_F32, context.stream());
+        valid, BRT_DTYPE_Q4_K, context.stream());
   });
   expect_primitive_error([&] {
     brt::kernels::qwen35_causal_attention(
@@ -589,9 +595,12 @@ int main() {
 
   run_prefill_dtype_cases<__half>(context);
   run_prefill_dtype_cases<__nv_bfloat16>(context);
+  run_prefill_dtype_cases<float>(context);
   run_decode_after_prefill_case<__half>(context, 1);
   run_decode_after_prefill_case<__half>(context, 2);
   run_decode_after_prefill_case<__nv_bfloat16>(context, 1);
   run_decode_after_prefill_case<__nv_bfloat16>(context, 2);
+  run_decode_after_prefill_case<float>(context, 1);
+  run_decode_after_prefill_case<float>(context, 2);
   run_invalid_shape_tests(context);
 }

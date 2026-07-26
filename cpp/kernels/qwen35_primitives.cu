@@ -11,79 +11,84 @@ namespace {
 
 constexpr int kBlockSize = 256;
 
-void require(bool condition, const char* message) {
+void require(bool condition, const char *message) {
   if (!condition) {
     throw Qwen35PrimitiveError(message);
   }
 }
 
 void require_dtype(BrtDataType dtype) {
-  require(dtype == BRT_DTYPE_F16 || dtype == BRT_DTYPE_BF16,
+  require(dtype == BRT_DTYPE_F32 || dtype == BRT_DTYPE_F16 ||
+              dtype == BRT_DTYPE_BF16,
           "unsupported Qwen3.5 primitive dtype");
 }
 
-std::size_t checked_mul(std::size_t lhs, std::size_t rhs,
-                        const char* message) {
+void require_weight_dtype(BrtDataType dtype, BrtDataType weight_dtype) {
+  require(weight_dtype == dtype || weight_dtype == BRT_DTYPE_F32 ||
+              (dtype == BRT_DTYPE_F32 && (weight_dtype == BRT_DTYPE_F16 ||
+                                          weight_dtype == BRT_DTYPE_BF16)),
+          "Qwen3.5 primitive weight dtype is incompatible with activations");
+}
+
+std::size_t checked_mul(std::size_t lhs, std::size_t rhs, const char *message) {
   require(lhs == 0 || rhs <= std::numeric_limits<std::size_t>::max() / lhs,
           message);
   return lhs * rhs;
 }
 
-std::size_t checked_add(std::size_t lhs, std::size_t rhs,
-                        const char* message) {
+std::size_t checked_add(std::size_t lhs, std::size_t rhs, const char *message) {
   require(rhs <= std::numeric_limits<std::size_t>::max() - lhs, message);
   return lhs + rhs;
 }
 
-void check_launch(const char* name) {
+void check_launch(const char *name) {
   const cudaError_t error = cudaGetLastError();
   if (error != cudaSuccess) {
-    throw Qwen35PrimitiveError(std::string{name} + " launch failed: " +
-                              cudaGetErrorString(error));
+    throw Qwen35PrimitiveError(std::string{name} +
+                               " launch failed: " + cudaGetErrorString(error));
   }
 }
 
 template <typename T>
-__device__ float load_as_float(const void* data, std::size_t index) {
-  return static_cast<float>(static_cast<const T*>(data)[index]);
+__device__ float load_as_float(const void *data, std::size_t index) {
+  return static_cast<float>(static_cast<const T *>(data)[index]);
 }
 
 template <>
-__device__ float load_as_float<__nv_bfloat16>(const void* data,
+__device__ float load_as_float<__nv_bfloat16>(const void *data,
                                               std::size_t index) {
-  return __bfloat162float(static_cast<const __nv_bfloat16*>(data)[index]);
+  return __bfloat162float(static_cast<const __nv_bfloat16 *>(data)[index]);
 }
 
 template <typename T>
-__device__ void store_from_float(void* data, std::size_t index, float value) {
-  static_cast<T*>(data)[index] = static_cast<T>(value);
+__device__ void store_from_float(void *data, std::size_t index, float value) {
+  static_cast<T *>(data)[index] = static_cast<T>(value);
 }
 
 template <>
-__device__ void store_from_float<__half>(void* data, std::size_t index,
+__device__ void store_from_float<__half>(void *data, std::size_t index,
                                          float value) {
-  static_cast<__half*>(data)[index] = __float2half_rn(value);
+  static_cast<__half *>(data)[index] = __float2half_rn(value);
 }
 
 template <>
-__device__ void store_from_float<__nv_bfloat16>(void* data, std::size_t index,
+__device__ void store_from_float<__nv_bfloat16>(void *data, std::size_t index,
                                                 float value) {
-  static_cast<__nv_bfloat16*>(data)[index] = __float2bfloat16_rn(value);
+  static_cast<__nv_bfloat16 *>(data)[index] = __float2bfloat16_rn(value);
 }
 
-__device__ float silu(float value) {
-  return value / (1.0F + expf(-value));
-}
+__device__ float silu(float value) { return value / (1.0F + expf(-value)); }
 
-template <typename T>
-__global__ void embedding_kernel(const std::int32_t* tokens, const void* table,
-                                 void* output, std::size_t token_count,
+template <typename T, typename Table>
+__global__ void embedding_kernel(const std::int32_t *tokens, const void *table,
+                                 void *output, std::size_t token_count,
                                  std::size_t embedding_dim,
                                  std::size_t vocab_size) {
   const std::size_t element =
       static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   const std::size_t total = token_count * embedding_dim;
-  if (element >= total) return;
+  if (element >= total)
+    return;
   const std::size_t token_index = element / embedding_dim;
   const std::size_t col = element - token_index * embedding_dim;
   const std::int32_t token = tokens[token_index];
@@ -93,13 +98,23 @@ __global__ void embedding_kernel(const std::int32_t* tokens, const void* table,
   }
   const std::size_t table_index =
       static_cast<std::size_t>(token) * embedding_dim + col;
-  store_from_float<T>(output, element, load_as_float<T>(table, table_index));
+  store_from_float<T>(output, element,
+                      load_as_float<Table>(table, table_index));
 }
 
 template <typename T>
-__global__ void rms_norm_kernel(const void* input, const void* weight,
-                                void* output, std::size_t cols,
-                                float epsilon) {
+__global__ void cast_f32_kernel(const float *input, void *output,
+                                std::size_t elements) {
+  const std::size_t index =
+      static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (index >= elements)
+    return;
+  store_from_float<T>(output, index, input[index]);
+}
+
+template <typename T, typename Weight>
+__global__ void rms_norm_kernel(const void *input, const void *weight,
+                                void *output, std::size_t cols, float epsilon) {
   extern __shared__ float shared[];
   const std::size_t row = blockIdx.x;
   double thread_sum = 0.0;
@@ -117,33 +132,32 @@ __global__ void rms_norm_kernel(const void* input, const void* weight,
     __syncthreads();
   }
 
-  const float scale =
-      rsqrtf(shared[0] / static_cast<float>(cols) + epsilon);
+  const float scale = rsqrtf(shared[0] / static_cast<float>(cols) + epsilon);
   for (std::size_t col = threadIdx.x; col < cols; col += blockDim.x) {
     const std::size_t index = row * cols + col;
     const float value = load_as_float<T>(input, index);
-    const float weight_value = load_as_float<T>(weight, col);
-    store_from_float<T>(output, index, value * scale * (1.0F + weight_value));
+    const float weight_value = load_as_float<Weight>(weight, col);
+    store_from_float<T>(output, index, value * scale * weight_value);
   }
 }
 
 template <typename T>
-__global__ void add_kernel(const void* lhs, const void* rhs, void* output,
+__global__ void add_kernel(const void *lhs, const void *rhs, void *output,
                            std::size_t elements) {
   const std::size_t index =
       static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-  if (index >= elements) return;
+  if (index >= elements)
+    return;
   const float sum = load_as_float<T>(lhs, index) + load_as_float<T>(rhs, index);
   store_from_float<T>(output, index, sum);
 }
 
-template <typename T>
-__global__ void qk_norm_rope_kernel(const void* input, const void* weight,
-                                    void* output, std::size_t heads,
-                                    std::size_t head_dim,
-                                    std::size_t rotary_dim,
-                                    std::size_t position_offset,
-                                    float rope_base, float epsilon) {
+template <typename T, typename Weight>
+__global__ void
+qk_norm_rope_kernel(const void *input, const void *weight, void *output,
+                    std::size_t heads, std::size_t head_dim,
+                    std::size_t rotary_dim, std::size_t position_offset,
+                    float rope_base, float epsilon) {
   extern __shared__ float shared[];
   const std::size_t vector = blockIdx.x;
   const std::size_t token = vector / heads;
@@ -166,19 +180,18 @@ __global__ void qk_norm_rope_kernel(const void* input, const void* weight,
   const std::size_t pair_count = rotary_dim / 2;
   for (std::size_t dim = threadIdx.x; dim < head_dim; dim += blockDim.x) {
     float value = load_as_float<T>(input, base + dim) * scale *
-                  (1.0F + load_as_float<T>(weight, dim));
+                  load_as_float<Weight>(weight, dim);
     if (dim < rotary_dim) {
       const bool first_half = dim < pair_count;
       const std::size_t pair = first_half ? dim : dim - pair_count;
       const std::size_t partner_dim = first_half ? dim + pair_count : pair;
       const float partner = load_as_float<T>(input, base + partner_dim) *
-                            scale *
-                            (1.0F + load_as_float<T>(weight, partner_dim));
+                            scale * load_as_float<Weight>(weight, partner_dim);
       const double exponent =
           static_cast<double>(2 * pair) / static_cast<double>(rotary_dim);
-      const float theta = static_cast<float>(
-          static_cast<double>(position_offset + token) /
-          pow(static_cast<double>(rope_base), exponent));
+      const float theta =
+          static_cast<float>(static_cast<double>(position_offset + token) /
+                             pow(static_cast<double>(rope_base), exponent));
       float sin_theta = 0.0F;
       float cos_theta = 0.0F;
       sincosf(theta, &sin_theta, &cos_theta);
@@ -190,43 +203,43 @@ __global__ void qk_norm_rope_kernel(const void* input, const void* weight,
 }
 
 template <typename T>
-__global__ void sigmoid_gate_kernel(const void* values, const void* gates,
-                                    void* output, std::size_t elements) {
+__global__ void sigmoid_gate_kernel(const void *values, const void *gates,
+                                    void *output, std::size_t elements) {
   const std::size_t index =
       static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-  if (index >= elements) return;
+  if (index >= elements)
+    return;
   const float value = load_as_float<T>(values, index);
   const float gate = load_as_float<T>(gates, index);
   store_from_float<T>(output, index, value / (1.0F + expf(-gate)));
 }
 
 template <typename T>
-__global__ void swiglu_kernel(const void* gate, const void* up, void* output,
+__global__ void swiglu_kernel(const void *gate, const void *up, void *output,
                               std::size_t elements) {
   const std::size_t index =
       static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-  if (index >= elements) return;
+  if (index >= elements)
+    return;
   const float gated = load_as_float<T>(gate, index);
   const float up_value = load_as_float<T>(up, index);
   store_from_float<T>(output, index, silu(gated) * up_value);
 }
 
 template <typename T>
-__global__ void argmax_typed_kernel(const void* logits,
-                                    std::int32_t* output_index,
+__global__ void argmax_typed_kernel(const void *logits,
+                                    std::int32_t *output_index,
                                     std::size_t elements) {
   extern __shared__ unsigned char raw_shared[];
-  auto* shared_values = reinterpret_cast<float*>(raw_shared);
-  auto* shared_indices =
-      reinterpret_cast<std::size_t*>(shared_values + blockDim.x);
+  auto *shared_values = reinterpret_cast<float *>(raw_shared);
+  auto *shared_indices =
+      reinterpret_cast<std::size_t *>(shared_values + blockDim.x);
 
   float best_value = -std::numeric_limits<float>::infinity();
   std::size_t best_index = 0;
-  for (std::size_t index = threadIdx.x; index < elements;
-       index += blockDim.x) {
+  for (std::size_t index = threadIdx.x; index < elements; index += blockDim.x) {
     const float value = load_as_float<T>(logits, index);
-    if (value > best_value ||
-        (value == best_value && index < best_index)) {
+    if (value > best_value || (value == best_value && index < best_index)) {
       best_value = value;
       best_index = index;
     }
@@ -255,42 +268,41 @@ __global__ void argmax_typed_kernel(const void* logits,
 }
 
 template <typename T>
-__global__ void split_full_query_gate_kernel(const void* query_gate,
-                                             void* query, void* gate,
-                                             std::size_t tokens,
-                                             std::size_t heads,
-                                             std::size_t head_dim) {
+__global__ void
+split_full_query_gate_kernel(const void *query_gate, void *query, void *gate,
+                             std::size_t tokens, std::size_t heads,
+                             std::size_t head_dim) {
   const std::size_t index =
       static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   const std::size_t hidden_size = heads * head_dim;
   const std::size_t total = tokens * hidden_size;
-  if (index >= total) return;
+  if (index >= total)
+    return;
   const std::size_t token = index / hidden_size;
   const std::size_t col = index - token * hidden_size;
   const std::size_t head = col / head_dim;
   const std::size_t dim = col - head * head_dim;
-  const std::size_t source_base =
-      token * 2 * hidden_size + head * 2 * head_dim;
+  const std::size_t source_base = token * 2 * hidden_size + head * 2 * head_dim;
   store_from_float<T>(query, index,
                       load_as_float<T>(query_gate, source_base + dim));
-  store_from_float<T>(gate, index,
-                      load_as_float<T>(query_gate,
-                                       source_base + head_dim + dim));
+  store_from_float<T>(
+      gate, index, load_as_float<T>(query_gate, source_base + head_dim + dim));
 }
 
 template <typename T>
 __global__ void pack_linear_delta_input_kernel(
-    const void* qkv, const void* beta, const void* alpha, const void* gate,
-    void* packed, std::size_t tokens, std::size_t qkv_width,
+    const void *qkv, const void *beta, const void *alpha, const void *gate,
+    void *packed, std::size_t tokens, std::size_t qkv_width,
     std::size_t beta_width, std::size_t alpha_width, std::size_t gate_width,
     std::size_t packed_width) {
   const std::size_t index =
       static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   const std::size_t total = tokens * packed_width;
-  if (index >= total) return;
+  if (index >= total)
+    return;
   const std::size_t token = index / packed_width;
   const std::size_t col = index - token * packed_width;
-  const void* source = nullptr;
+  const void *source = nullptr;
   std::size_t source_col = col;
   std::size_t source_width = qkv_width;
   if (col < qkv_width) {
@@ -308,11 +320,12 @@ __global__ void pack_linear_delta_input_kernel(
     source_col = col - qkv_width - beta_width - alpha_width;
     source_width = gate_width;
   }
-  store_from_float<T>(packed, index,
-                      load_as_float<T>(source, token * source_width + source_col));
+  store_from_float<T>(
+      packed, index,
+      load_as_float<T>(source, token * source_width + source_col));
 }
 
-int checked_grid_for(std::size_t elements, const char* message) {
+int checked_grid_for(std::size_t elements, const char *message) {
   const auto block_size = static_cast<std::size_t>(kBlockSize);
   const std::size_t blocks =
       elements / block_size + (elements % block_size == 0 ? 0 : 1);
@@ -321,7 +334,7 @@ int checked_grid_for(std::size_t elements, const char* message) {
   return static_cast<int>(blocks);
 }
 
-int checked_block_count(std::size_t blocks, const char* message) {
+int checked_block_count(std::size_t blocks, const char *message) {
   require(blocks <= static_cast<std::size_t>(std::numeric_limits<int>::max()),
           message);
   return static_cast<int>(blocks);
@@ -329,6 +342,10 @@ int checked_block_count(std::size_t blocks, const char* message) {
 
 template <typename KernelLauncher>
 void launch_by_dtype(BrtDataType dtype, KernelLauncher launcher) {
+  if (dtype == BRT_DTYPE_F32) {
+    launcher.template operator()<float>();
+    return;
+  }
   if (dtype == BRT_DTYPE_F16) {
     launcher.template operator()<__half>();
     return;
@@ -340,11 +357,11 @@ void launch_by_dtype(BrtDataType dtype, KernelLauncher launcher) {
   require_dtype(dtype);
 }
 
-}  // namespace
+} // namespace
 
-void qwen35_embedding(const std::int32_t* tokens, const void* table,
-                      void* output, EmbeddingShape shape,
-                      BrtDataType dtype, cudaStream_t stream) {
+void qwen35_embedding(const std::int32_t *tokens, const void *table,
+                      void *output, EmbeddingShape shape, BrtDataType dtype,
+                      BrtDataType table_dtype, cudaStream_t stream) {
   require(tokens != nullptr, "embedding tokens pointer is null");
   require(table != nullptr, "embedding table pointer is null");
   require(output != nullptr, "embedding output pointer is null");
@@ -353,15 +370,26 @@ void qwen35_embedding(const std::int32_t* tokens, const void* table,
   require(shape.vocab_size > 0, "embedding vocab_size must be positive");
   require(stream != nullptr, "CUDA stream is null");
   require_dtype(dtype);
+  require_weight_dtype(dtype, table_dtype);
   (void)checked_mul(shape.vocab_size, shape.embedding_dim,
                     "embedding table shape overflow");
-  const std::size_t total =
-      checked_mul(shape.tokens, shape.embedding_dim, "embedding shape overflow");
+  const std::size_t total = checked_mul(shape.tokens, shape.embedding_dim,
+                                        "embedding shape overflow");
   const int grid = checked_grid_for(total, "embedding grid dimension overflow");
   launch_by_dtype(dtype, [&]<typename T>() {
-    embedding_kernel<T><<<grid, kBlockSize, 0, stream>>>(
-        tokens, table, output, shape.tokens, shape.embedding_dim,
-        shape.vocab_size);
+    if (table_dtype == BRT_DTYPE_F32) {
+      embedding_kernel<T, float><<<grid, kBlockSize, 0, stream>>>(
+          tokens, table, output, shape.tokens, shape.embedding_dim,
+          shape.vocab_size);
+    } else if (table_dtype == BRT_DTYPE_F16) {
+      embedding_kernel<T, __half><<<grid, kBlockSize, 0, stream>>>(
+          tokens, table, output, shape.tokens, shape.embedding_dim,
+          shape.vocab_size);
+    } else {
+      embedding_kernel<T, __nv_bfloat16><<<grid, kBlockSize, 0, stream>>>(
+          tokens, table, output, shape.tokens, shape.embedding_dim,
+          shape.vocab_size);
+    }
   });
   check_launch("qwen35_embedding");
 }
@@ -377,9 +405,29 @@ void qwen35_validate_token_ids(std::span<const std::int32_t> tokens,
   }
 }
 
-void qwen35_rms_norm(const void* input, const void* weight, void* output,
-                     RmsNormShape shape, float epsilon,
-                     BrtDataType dtype, cudaStream_t stream) {
+void qwen35_cast_f32(const float *input, void *output, std::size_t elements,
+                     BrtDataType output_dtype, cudaStream_t stream) {
+  require(input != nullptr, "cast_f32 input pointer is null");
+  require(output != nullptr, "cast_f32 output pointer is null");
+  require(elements > 0, "cast_f32 elements must be positive");
+  require(output_dtype == BRT_DTYPE_F16 || output_dtype == BRT_DTYPE_BF16,
+          "cast_f32 output dtype must be F16 or BF16");
+  require(stream != nullptr, "CUDA stream is null");
+  const int grid =
+      checked_grid_for(elements, "cast_f32 grid dimension overflow");
+  if (output_dtype == BRT_DTYPE_F16) {
+    cast_f32_kernel<__half>
+        <<<grid, kBlockSize, 0, stream>>>(input, output, elements);
+  } else {
+    cast_f32_kernel<__nv_bfloat16>
+        <<<grid, kBlockSize, 0, stream>>>(input, output, elements);
+  }
+  check_launch("qwen35_cast_f32");
+}
+
+void qwen35_rms_norm(const void *input, const void *weight, void *output,
+                     RmsNormShape shape, float epsilon, BrtDataType dtype,
+                     BrtDataType weight_dtype, cudaStream_t stream) {
   require(input != nullptr, "rms_norm input pointer is null");
   require(weight != nullptr, "rms_norm weight pointer is null");
   require(output != nullptr, "rms_norm output pointer is null");
@@ -389,18 +437,29 @@ void qwen35_rms_norm(const void* input, const void* weight, void* output,
           "rms_norm epsilon must be finite and non-negative");
   require(stream != nullptr, "CUDA stream is null");
   require_dtype(dtype);
+  require_weight_dtype(dtype, weight_dtype);
   (void)checked_mul(shape.rows, shape.cols, "rms_norm shape overflow");
   const int grid =
       checked_block_count(shape.rows, "rms_norm grid dimension overflow");
   launch_by_dtype(dtype, [&]<typename T>() {
-    rms_norm_kernel<T><<<grid, kBlockSize, kBlockSize * sizeof(float),
-                         stream>>>(
-        input, weight, output, shape.cols, epsilon);
+    if (weight_dtype == BRT_DTYPE_F32) {
+      rms_norm_kernel<T, float>
+          <<<grid, kBlockSize, kBlockSize * sizeof(float), stream>>>(
+              input, weight, output, shape.cols, epsilon);
+    } else if (weight_dtype == BRT_DTYPE_F16) {
+      rms_norm_kernel<T, __half>
+          <<<grid, kBlockSize, kBlockSize * sizeof(float), stream>>>(
+              input, weight, output, shape.cols, epsilon);
+    } else {
+      rms_norm_kernel<T, __nv_bfloat16>
+          <<<grid, kBlockSize, kBlockSize * sizeof(float), stream>>>(
+              input, weight, output, shape.cols, epsilon);
+    }
   });
   check_launch("qwen35_rms_norm");
 }
 
-void qwen35_residual_add(const void* lhs, const void* rhs, void* output,
+void qwen35_residual_add(const void *lhs, const void *rhs, void *output,
                          std::size_t elements, BrtDataType dtype,
                          cudaStream_t stream) {
   require(lhs != nullptr, "residual_add lhs pointer is null");
@@ -417,9 +476,10 @@ void qwen35_residual_add(const void* lhs, const void* rhs, void* output,
   check_launch("qwen35_residual_add");
 }
 
-void qwen35_qk_norm_rope(const void* input, const void* weight, void* output,
+void qwen35_qk_norm_rope(const void *input, const void *weight, void *output,
                          QkNormRopeShape shape, float epsilon,
-                         BrtDataType dtype, cudaStream_t stream) {
+                         BrtDataType dtype, BrtDataType weight_dtype,
+                         cudaStream_t stream) {
   require(input != nullptr, "qk_norm_rope input pointer is null");
   require(weight != nullptr, "qk_norm_rope weight pointer is null");
   require(output != nullptr, "qk_norm_rope output pointer is null");
@@ -429,8 +489,7 @@ void qwen35_qk_norm_rope(const void* input, const void* weight, void* output,
   require(shape.rotary_dim > 0, "qk_norm_rope rotary_dim must be positive");
   require(shape.rotary_dim <= shape.head_dim,
           "qk_norm_rope rotary_dim exceeds head_dim");
-  require(shape.rotary_dim % 2 == 0,
-          "qk_norm_rope rotary_dim must be even");
+  require(shape.rotary_dim % 2 == 0, "qk_norm_rope rotary_dim must be even");
   require(std::isfinite(shape.rope_base) && shape.rope_base > 0.0F,
           "qk_norm_rope rope_base must be finite and positive");
   require(std::isfinite(epsilon) && epsilon >= 0.0F,
@@ -440,21 +499,37 @@ void qwen35_qk_norm_rope(const void* input, const void* weight, void* output,
           "qk_norm_rope position range overflow");
   require(stream != nullptr, "CUDA stream is null");
   require_dtype(dtype);
+  require_weight_dtype(dtype, weight_dtype);
   const std::size_t vectors =
       checked_mul(shape.tokens, shape.heads, "qk_norm_rope vector overflow");
   (void)checked_mul(vectors, shape.head_dim, "qk_norm_rope shape overflow");
   const int grid =
       checked_block_count(vectors, "qk_norm_rope grid dimension overflow");
   launch_by_dtype(dtype, [&]<typename T>() {
-    qk_norm_rope_kernel<T><<<grid, kBlockSize, kBlockSize * sizeof(float),
-                            stream>>>(
-        input, weight, output, shape.heads, shape.head_dim, shape.rotary_dim,
-        shape.position_offset, shape.rope_base, epsilon);
+    if (weight_dtype == BRT_DTYPE_F32) {
+      qk_norm_rope_kernel<T, float>
+          <<<grid, kBlockSize, kBlockSize * sizeof(float), stream>>>(
+              input, weight, output, shape.heads, shape.head_dim,
+              shape.rotary_dim, shape.position_offset, shape.rope_base,
+              epsilon);
+    } else if (weight_dtype == BRT_DTYPE_F16) {
+      qk_norm_rope_kernel<T, __half>
+          <<<grid, kBlockSize, kBlockSize * sizeof(float), stream>>>(
+              input, weight, output, shape.heads, shape.head_dim,
+              shape.rotary_dim, shape.position_offset, shape.rope_base,
+              epsilon);
+    } else {
+      qk_norm_rope_kernel<T, __nv_bfloat16>
+          <<<grid, kBlockSize, kBlockSize * sizeof(float), stream>>>(
+              input, weight, output, shape.heads, shape.head_dim,
+              shape.rotary_dim, shape.position_offset, shape.rope_base,
+              epsilon);
+    }
   });
   check_launch("qwen35_qk_norm_rope");
 }
 
-void qwen35_sigmoid_gate(const void* values, const void* gates, void* output,
+void qwen35_sigmoid_gate(const void *values, const void *gates, void *output,
                          std::size_t elements, BrtDataType dtype,
                          cudaStream_t stream) {
   require(values != nullptr, "sigmoid_gate values pointer is null");
@@ -466,13 +541,13 @@ void qwen35_sigmoid_gate(const void* values, const void* gates, void* output,
   const int grid =
       checked_grid_for(elements, "sigmoid_gate grid dimension overflow");
   launch_by_dtype(dtype, [&]<typename T>() {
-    sigmoid_gate_kernel<T><<<grid, kBlockSize, 0, stream>>>(
-        values, gates, output, elements);
+    sigmoid_gate_kernel<T>
+        <<<grid, kBlockSize, 0, stream>>>(values, gates, output, elements);
   });
   check_launch("qwen35_sigmoid_gate");
 }
 
-void qwen35_swiglu(const void* gate, const void* up, void* output,
+void qwen35_swiglu(const void *gate, const void *up, void *output,
                    std::size_t elements, BrtDataType dtype,
                    cudaStream_t stream) {
   require(gate != nullptr, "swiglu gate pointer is null");
@@ -483,13 +558,13 @@ void qwen35_swiglu(const void* gate, const void* up, void* output,
   require_dtype(dtype);
   const int grid = checked_grid_for(elements, "swiglu grid dimension overflow");
   launch_by_dtype(dtype, [&]<typename T>() {
-    swiglu_kernel<T><<<grid, kBlockSize, 0, stream>>>(gate, up, output,
-                                                      elements);
+    swiglu_kernel<T>
+        <<<grid, kBlockSize, 0, stream>>>(gate, up, output, elements);
   });
   check_launch("qwen35_swiglu");
 }
 
-void qwen35_argmax(const float* logits, std::int32_t* output_index,
+void qwen35_argmax(const float *logits, std::int32_t *output_index,
                    std::size_t elements, cudaStream_t stream) {
   require(logits != nullptr, "argmax logits pointer is null");
   require(output_index != nullptr, "argmax output pointer is null");
@@ -500,12 +575,12 @@ void qwen35_argmax(const float* logits, std::int32_t* output_index,
   require(stream != nullptr, "CUDA stream is null");
   const std::size_t shared_bytes =
       kBlockSize * sizeof(float) + kBlockSize * sizeof(std::size_t);
-  argmax_typed_kernel<float><<<1, kBlockSize, shared_bytes, stream>>>(
-      logits, output_index, elements);
+  argmax_typed_kernel<float>
+      <<<1, kBlockSize, shared_bytes, stream>>>(logits, output_index, elements);
   check_launch("qwen35_argmax");
 }
 
-void qwen35_argmax_typed(const void* logits, std::int32_t* output_index,
+void qwen35_argmax_typed(const void *logits, std::int32_t *output_index,
                          std::size_t elements, BrtDataType dtype,
                          cudaStream_t stream) {
   require(logits != nullptr, "argmax logits pointer is null");
@@ -525,8 +600,8 @@ void qwen35_argmax_typed(const void* logits, std::int32_t* output_index,
   check_launch("qwen35_argmax_typed");
 }
 
-void qwen35_split_full_query_gate(const void* query_gate, void* query,
-                                  void* gate, std::size_t tokens,
+void qwen35_split_full_query_gate(const void *query_gate, void *query,
+                                  void *gate, std::size_t tokens,
                                   std::size_t heads, std::size_t head_dim,
                                   BrtDataType dtype, cudaStream_t stream) {
   require(query_gate != nullptr, "split_full_query_gate input pointer is null");
@@ -539,8 +614,8 @@ void qwen35_split_full_query_gate(const void* query_gate, void* query,
   require_dtype(dtype);
   const std::size_t hidden_size =
       checked_mul(heads, head_dim, "split_full_query_gate hidden overflow");
-  const std::size_t total = checked_mul(tokens, hidden_size,
-                                        "split_full_query_gate shape overflow");
+  const std::size_t total =
+      checked_mul(tokens, hidden_size, "split_full_query_gate shape overflow");
   const int grid =
       checked_grid_for(total, "split_full_query_gate grid dimension overflow");
   launch_by_dtype(dtype, [&]<typename T>() {
@@ -551,8 +626,8 @@ void qwen35_split_full_query_gate(const void* query_gate, void* query,
 }
 
 void qwen35_pack_linear_delta_input(
-    const void* qkv, const void* beta, const void* alpha, const void* gate,
-    void* packed, std::size_t tokens, std::size_t qkv_width,
+    const void *qkv, const void *beta, const void *alpha, const void *gate,
+    void *packed, std::size_t tokens, std::size_t qkv_width,
     std::size_t beta_width, std::size_t alpha_width, std::size_t gate_width,
     BrtDataType dtype, cudaStream_t stream) {
   require(qkv != nullptr, "pack_linear_delta_input qkv pointer is null");
@@ -562,24 +637,24 @@ void qwen35_pack_linear_delta_input(
   require(packed != nullptr, "pack_linear_delta_input output pointer is null");
   require(tokens > 0, "pack_linear_delta_input tokens must be positive");
   require(qkv_width > 0, "pack_linear_delta_input qkv_width must be positive");
-  require(beta_width > 0, "pack_linear_delta_input beta_width must be positive");
-  require(alpha_width > 0, "pack_linear_delta_input alpha_width must be positive");
-  require(gate_width > 0, "pack_linear_delta_input gate_width must be positive");
+  require(beta_width > 0,
+          "pack_linear_delta_input beta_width must be positive");
+  require(alpha_width > 0,
+          "pack_linear_delta_input alpha_width must be positive");
+  require(gate_width > 0,
+          "pack_linear_delta_input gate_width must be positive");
   require(stream != nullptr, "CUDA stream is null");
   require_dtype(dtype);
-  const std::size_t beta_end =
-      checked_add(qkv_width, beta_width,
-                  "pack_linear_delta_input width overflow");
-  const std::size_t alpha_end =
-      checked_add(beta_end, alpha_width,
-                  "pack_linear_delta_input width overflow");
-  const std::size_t packed_width =
-      checked_add(alpha_end, gate_width,
-                  "pack_linear_delta_input width overflow");
-  const std::size_t total =
-      checked_mul(tokens, packed_width, "pack_linear_delta_input shape overflow");
-  const int grid =
-      checked_grid_for(total, "pack_linear_delta_input grid dimension overflow");
+  const std::size_t beta_end = checked_add(
+      qkv_width, beta_width, "pack_linear_delta_input width overflow");
+  const std::size_t alpha_end = checked_add(
+      beta_end, alpha_width, "pack_linear_delta_input width overflow");
+  const std::size_t packed_width = checked_add(
+      alpha_end, gate_width, "pack_linear_delta_input width overflow");
+  const std::size_t total = checked_mul(
+      tokens, packed_width, "pack_linear_delta_input shape overflow");
+  const int grid = checked_grid_for(
+      total, "pack_linear_delta_input grid dimension overflow");
   launch_by_dtype(dtype, [&]<typename T>() {
     pack_linear_delta_input_kernel<T><<<grid, kBlockSize, 0, stream>>>(
         qkv, beta, alpha, gate, packed, tokens, qkv_width, beta_width,
@@ -588,4 +663,4 @@ void qwen35_pack_linear_delta_input(
   check_launch("qwen35_pack_linear_delta_input");
 }
 
-}  // namespace brt::kernels
+} // namespace brt::kernels

@@ -248,7 +248,7 @@ GatedDeltaReferenceState::GatedDeltaReferenceState(
 void qwen35_rms_norm(std::span<const float> input,
                      std::span<const float> weight, std::span<float> output,
                      std::size_t rows, std::size_t cols, float epsilon) {
-  rms_norm_with_multiplier(input, weight, output, rows, cols, epsilon, 1.0F);
+  rms_norm_with_multiplier(input, weight, output, rows, cols, epsilon, 0.0F);
 }
 
 void qwen35_gated_full_attention(std::span<const float> input,
@@ -299,7 +299,7 @@ void qwen35_gated_full_attention(std::span<const float> input,
       auto q = std::span<float>(queries).subspan(
           token * q_size + head * args.head_dim, args.head_dim);
       rms_norm_with_multiplier(q, weights.query_norm_weight, q, 1,
-                               args.head_dim, args.epsilon, 1.0F);
+                               args.head_dim, args.epsilon, 0.0F);
       apply_partial_rope(q, args.rotary_dim, args.position_offset + token,
                          args.rope_base);
     }
@@ -307,7 +307,7 @@ void qwen35_gated_full_attention(std::span<const float> input,
       auto k = std::span<float>(keys).subspan(
           token * kv_size + head * args.head_dim, args.head_dim);
       rms_norm_with_multiplier(k, weights.key_norm_weight, k, 1, args.head_dim,
-                               args.epsilon, 1.0F);
+                               args.epsilon, 0.0F);
       apply_partial_rope(k, args.rotary_dim, args.position_offset + token,
                          args.rope_base);
     }
@@ -399,8 +399,8 @@ void qwen35_gated_delta_step(std::span<const float> input,
                checked_mul(conv_dim, args.conv_width,
                            "gated delta conv_weight overflow"),
                "gated delta conv_weight span does not match shape");
-  require_span(weights.a_log.size(), args.value_heads,
-               "gated delta a_log span does not match shape");
+  require_span(weights.recurrent_a.size(), args.value_heads,
+               "gated delta recurrent_a span does not match shape");
   require_span(weights.dt_bias.size(), args.value_heads,
                "gated delta dt_bias span does not match shape");
   require_span(weights.output_norm_weight.size(), args.value_dim,
@@ -457,16 +457,15 @@ void qwen35_gated_delta_step(std::span<const float> input,
   }
 
   std::vector<float> raw(value_size, 0.0F);
-  const std::size_t repeat = args.value_heads / args.key_heads;
   for (std::size_t value_head = 0; value_head < args.value_heads;
        ++value_head) {
-    const std::size_t key_head = value_head / repeat;
+    const std::size_t key_head = value_head % args.key_heads;
     const auto q_head = q.subspan(key_head * args.key_dim, args.key_dim);
     const auto k_head = k.subspan(key_head * args.key_dim, args.key_dim);
     auto v_head = v.subspan(value_head * args.value_dim, args.value_dim);
     const float beta = sigmoid(b[value_head]);
     const float decay =
-        std::exp(-std::exp(weights.a_log[value_head]) *
+        std::exp(weights.recurrent_a[value_head] *
                  softplus(a[value_head] + weights.dt_bias[value_head]));
 
     for (std::size_t key_index = 0; key_index < args.key_dim; ++key_index) {

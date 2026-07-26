@@ -13,6 +13,10 @@ cat >"${fake_bin}/gpu-preflight" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 printf 'preflight\n' >>"${BRT_TEST_PREFLIGHT_LOG}"
+call_count="$(wc -l <"${BRT_TEST_PREFLIGHT_LOG}" | tr -d ' ')"
+if [[ "${call_count}" -eq "${BRT_TEST_PREFLIGHT_FAIL_CALL:-0}" ]]; then
+  exit 22
+fi
 EOF
 
 cat >"${fake_bin}/flock" <<'EOF'
@@ -81,6 +85,7 @@ run_parity() {
     GPU_PREFLIGHT="${fake_bin}/gpu-preflight" \
     BRT_GPU_LOCK="${fixture_root}/gpu.lock" \
     BRT_TEST_PREFLIGHT_LOG="${fixture_root}/preflight.log" \
+    BRT_TEST_PREFLIGHT_FAIL_CALL="${BRT_TEST_PREFLIGHT_FAIL_CALL:-0}" \
     BRT_TEST_MISMATCH="${BRT_TEST_MISMATCH:-0}" \
     PARITY_OUTPUT="${fixture_root}/parity.jsonl" \
     "${repo_root}/scripts/qwen35-parity.sh"
@@ -93,6 +98,18 @@ run_parity
 jq -e -s 'length == 4 and all(.[]; .parity_passed == true)' \
   "${fixture_root}/parity.jsonl" >/dev/null
 [[ "$(wc -l <"${fixture_root}/preflight.log" | tr -d ' ')" -eq 5 ]]
+
+: >"${fixture_root}/preflight.log"
+BRT_TEST_PREFLIGHT_FAIL_CALL=1 \
+  BRT_PREFLIGHT_RETRY_SECONDS=0 \
+  run_parity
+[[ "$(wc -l <"${fixture_root}/preflight.log" | tr -d ' ')" -eq 6 ]]
+
+: >"${fixture_root}/preflight.log"
+BRT_TEST_PREFLIGHT_FAIL_CALL=2 \
+  BRT_PREFLIGHT_RETRY_SECONDS=0 \
+  run_parity
+[[ "$(wc -l <"${fixture_root}/preflight.log" | tr -d ' ')" -eq 6 ]]
 
 : >"${fixture_root}/preflight.log"
 set +e

@@ -238,10 +238,13 @@ fn benchmark_warms_up_then_measures_prefill_and_generated_tokens_in_one_session(
         [
             Ok(token_result(21)),
             Ok(token_result(22)),
+            Ok(token_result(23)),
             Ok(token_result(31)),
             Ok(token_result(32)),
+            Ok(token_result(33)),
             Ok(token_result(41)),
             Ok(token_result(42)),
+            Ok(token_result(43)),
         ],
     );
 
@@ -263,7 +266,10 @@ fn benchmark_warms_up_then_measures_prefill_and_generated_tokens_in_one_session(
         session.prefill_inputs,
         vec![vec![10, 11], vec![10, 11], vec![10, 11]]
     );
-    assert_eq!(session.decode_inputs, vec![20, 21, 30, 31, 40, 41]);
+    assert_eq!(
+        session.decode_inputs,
+        vec![20, 21, 22, 30, 31, 32, 40, 41, 42]
+    );
 }
 
 #[allow(dead_code)]

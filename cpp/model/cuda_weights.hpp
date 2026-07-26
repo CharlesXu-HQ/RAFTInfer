@@ -26,6 +26,7 @@ public:
 };
 
 enum class CudaWeightType : std::uint32_t {
+  f32 = 0,
   f16 = 1,
   bf16 = 30,
 };

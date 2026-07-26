@@ -155,8 +155,10 @@ def make_full_attention(
     }
     vectors = [
         flatten(canonical_input),
-        flatten(attention.q_norm.weight),
-        flatten(attention.k_norm.weight),
+        # llama.cpp converts Qwen3.5's offset-form HF RMSNorm parameters to
+        # GGUF-native multiplicative scales before execution.
+        flatten(1.0 + attention.q_norm.weight),
+        flatten(1.0 + attention.k_norm.weight),
         flatten(attention.o_proj.weight.transpose(0, 1)),
         flatten(expected),
     ]
@@ -216,8 +218,9 @@ def make_gated_delta(
         query = query.reshape(1, tokens, key_heads, key_dim)
         key = key.reshape(1, tokens, key_heads, key_dim)
         value = value.reshape(1, tokens, value_heads, value_dim)
-        query = query.repeat_interleave(value_heads // key_heads, dim=2)
-        key = key.repeat_interleave(value_heads // key_heads, dim=2)
+        head_index = torch.arange(value_heads, device=query.device) % key_heads
+        query = query[:, :, head_index, :]
+        key = key[:, :, head_index, :]
         beta = beta_logits.sigmoid()
         decay = -a_log.float().exp() * F.softplus(decay_logits.float() + dt_bias)
         core, final_recurrent = torch_recurrent_gated_delta_rule(
@@ -262,7 +265,8 @@ def make_gated_delta(
     vectors = [
         flatten(canonical_input),
         flatten(conv_weight),
-        flatten(a_log),
+        # llama.cpp stores -exp(A_log) in blk.N.ssm_a.
+        flatten(-a_log.exp()),
         flatten(dt_bias),
         flatten(output_norm.weight),
         flatten(initial_convolution),

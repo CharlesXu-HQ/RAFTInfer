@@ -17,6 +17,10 @@ cat >"${fake_bin}/gpu-preflight" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 printf 'preflight\n' >>"${BRT_TEST_PREFLIGHT_LOG}"
+call_count="$(wc -l <"${BRT_TEST_PREFLIGHT_LOG}" | tr -d ' ')"
+if [[ "${call_count}" -eq "${BRT_TEST_PREFLIGHT_FAIL_CALL:-0}" ]]; then
+  exit 22
+fi
 EOF
 
 cat >"${fake_bin}/flock" <<'EOF'
@@ -107,6 +111,7 @@ run_benchmark() {
     GPU_PREFLIGHT="${fake_bin}/gpu-preflight" \
     BRT_GPU_LOCK="${fixture_root}/gpu.lock" \
     BRT_TEST_PREFLIGHT_LOG="${fixture_root}/preflight.log" \
+    BRT_TEST_PREFLIGHT_FAIL_CALL="${BRT_TEST_PREFLIGHT_FAIL_CALL:-0}" \
     BRT_TEST_COMPLETION_LOG="${fixture_root}/completion.log" \
     BRT_TEST_SLOW="${BRT_TEST_SLOW:-0}" \
     PARITY_REPORT="${fixture_root}/parity.jsonl" \
@@ -116,7 +121,9 @@ run_benchmark() {
 
 : >"${fixture_root}/preflight.log"
 : >"${fixture_root}/completion.log"
-run_benchmark
+BRT_TEST_PREFLIGHT_FAIL_CALL=2 \
+  BRT_PREFLIGHT_RETRY_SECONDS=0 \
+  run_benchmark
 
 [[ "$(wc -l <"${fixture_root}/benchmark.jsonl" | tr -d ' ')" -eq 2 ]]
 jq -e -s '
@@ -129,7 +136,7 @@ jq -e -s '
     .peak_allocated_gpu_bytes == 18000000000 and
     .peak_memory_status == "measured_by_brt_rmm")
 ' "${fixture_root}/benchmark.jsonl" >/dev/null
-[[ "$(wc -l <"${fixture_root}/preflight.log" | tr -d ' ')" -eq 3 ]]
+[[ "$(wc -l <"${fixture_root}/preflight.log" | tr -d ' ')" -eq 4 ]]
 [[ "$(wc -l <"${fixture_root}/completion.log" | tr -d ' ')" -eq 50 ]]
 
 set +e

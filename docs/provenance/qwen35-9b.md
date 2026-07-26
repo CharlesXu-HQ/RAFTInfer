@@ -29,34 +29,34 @@ The following artifact was observed on the RTX 50 validation host:
 
 | Field | Observed value |
 |---|---|
-| Hugging Face checkout path | `/home/charles/brt-artifacts/Qwen3.5-9B` |
-| BF16 GGUF path | `/home/charles/brt-artifacts/Qwen3.5-9B-GGUF/Qwen3.5-9B-bf16.gguf` |
-| GGUF size | `17920697312` bytes |
-| GGUF SHA-256 | `cf362b9cc9f928ff7603c0b254f7ae547fa8ce35833a475782f34820e0f95444` |
+| Hugging Face repository | `Qwen/Qwen3.5-9B` |
+| Hugging Face checkout path | `/home/charles/brt-artifacts/Qwen3.5-9B-c202236` |
+| Hugging Face revision | `c202236235762e1c871ad0ccb60c8ee5ba337b9a` |
+| BF16 GGUF path | `/home/charles/brt-artifacts/Qwen3.5-9B-GGUF/Qwen3.5-9B-c202236-bf16.gguf` |
+| GGUF size | `18407321408` bytes |
+| GGUF SHA-256 | `5e2d54b1b54df02cf1797e6a5e1465255ed68a9547bfd0ab0bde1357347d65e8` |
 | Transformers environment | `/home/charles/brt-tools/qwen35-reference-env` |
-| Transformers version | `5.14.1` |
 | Transformers revision | `a08ace4bbd97e721c98751deec37d87b026acadc` |
+| llama.cpp converter/reference path | `/home/charles/brt-tools/llama.cpp-aedb2a5-full` |
+| llama.cpp converter/reference revision | `aedb2a5e9ca3d4064148bbb919e0ddc0c1b70ab3` |
+| Provenance record | `/home/charles/brt-artifacts/Qwen3.5-9B-GGUF/Qwen3.5-9B-c202236-bf16.provenance.json` |
 
-These values establish the identity and integrity of the existing GGUF file,
-but they do **not** establish reproducible conversion provenance:
-
-- the target model directory has no authoritative Hugging Face cache/revision
-  metadata or `.brt-source-revision` record;
-- the source model revision is therefore unresolved;
-- the llama.cpp converter checkout/revision and exact conversion command are
-  unresolved;
-- no pinned llama.cpp reference checkout was found on the target.
-
-Consequently, this existing file may be used for diagnostic loading only after
-the usual GPU safety checks. It must not be presented as the reproducible M2
-golden artifact, and its unknown revisions must not be guessed or backfilled.
-A newly prepared artifact satisfying the script contract is required for final
-M2 parity and performance evidence.
+The provenance record was generated on `2026-07-25T15:22:53Z`. It pins the
+source revision through
+`/home/charles/brt-artifacts/Qwen3.5-9B-c202236/.brt-source-revision`, records
+the exact `convert_hf_to_gguf.py ... --outtype bf16` argument vector, and pins
+the same llama.cpp revision for conversion and reference execution. This is
+the reproducible M2 golden artifact used by the accepted parity and performance
+reports.
 
 ## Kernel provenance
 
-The M2 Qwen3.5 CUDA executor uses project-native source. No `bw24` kernel was
-imported because the audited material contained no reusable implementation
-with existing performance evidence. Future `bw24` imports remain allowed when
-the source path, upstream revision, license, local modifications, correctness
-evidence, and RTX 50 performance evidence are recorded before reuse.
+No `bw24` kernel was imported because the audited material contained no
+reusable Qwen3.5 implementation with existing performance evidence. The
+register-resident gated-delta strategy was independently adapted from the
+pinned llama.cpp implementation after profiling showed the project-native
+generic kernel was the dominant prefill cost. The BRT code remains native to
+this repository and is validated independently against CPU FP32 semantics.
+Future `bw24` imports remain allowed when the source path, upstream revision,
+license, local modifications, correctness evidence, and RTX 50 performance
+evidence are recorded before reuse.

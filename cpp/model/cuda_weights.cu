@@ -8,10 +8,8 @@
 #include <rmm/aligned.hpp>
 
 #include <algorithm>
-#include <bit>
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include <exception>
 #include <memory>
 #include <optional>
@@ -62,7 +60,7 @@ private:
                         cudaGetErrorString(error));
 }
 
-CudaWeightType checked_type(const gguf::TensorInfo &tensor) {
+CudaWeightType checked_primary_type(const gguf::TensorInfo &tensor) {
   if (tensor.type == static_cast<std::uint32_t>(CudaWeightType::f16)) {
     return CudaWeightType::f16;
   }
@@ -87,12 +85,12 @@ std::vector<ManifestTensor> manifest_tensors(const Qwen35Manifest &manifest) {
   std::vector<ManifestTensor> tensors;
   tensors.reserve(3 + manifest.layers.size() * 14);
   const auto add_primary = [&tensors](const gguf::TensorInfo *tensor) {
-    tensors.push_back(ManifestTensor{
-        .descriptor = tensor, .role = TensorUploadRole::primary});
+    tensors.push_back(ManifestTensor{.descriptor = tensor,
+                                     .role = TensorUploadRole::primary});
   };
   const auto add_auxiliary = [&tensors](const gguf::TensorInfo *tensor) {
-    tensors.push_back(ManifestTensor{
-        .descriptor = tensor, .role = TensorUploadRole::auxiliary});
+    tensors.push_back(ManifestTensor{.descriptor = tensor,
+                                     .role = TensorUploadRole::auxiliary});
   };
 
   add_primary(manifest.token_embedding);
@@ -136,119 +134,12 @@ std::vector<ManifestTensor> manifest_tensors(const Qwen35Manifest &manifest) {
       add_primary(linear.output);
     }
   }
-  if (std::any_of(tensors.begin(), tensors.end(),
-                  [](const auto &tensor) {
-                    return tensor.descriptor == nullptr;
-                  })) {
+  if (std::any_of(tensors.begin(), tensors.end(), [](const auto &tensor) {
+        return tensor.descriptor == nullptr;
+      })) {
     throw CudaWeightError("Qwen3.5 manifest contains a null primary tensor");
   }
   return tensors;
-}
-
-std::uint32_t round_shift_right(std::uint32_t value, unsigned shift) {
-  if (shift == 0) {
-    return value;
-  }
-  if (shift >= 32) {
-    return 0;
-  }
-  const std::uint32_t quotient = value >> shift;
-  const std::uint32_t remainder_mask = (std::uint32_t{1} << shift) - 1U;
-  const std::uint32_t remainder = value & remainder_mask;
-  const std::uint32_t halfway = std::uint32_t{1} << (shift - 1U);
-  if (remainder > halfway || (remainder == halfway && (quotient & 1U) != 0)) {
-    return quotient + 1U;
-  }
-  return quotient;
-}
-
-std::uint16_t float_to_f16_bits(float value) {
-  const std::uint32_t bits = std::bit_cast<std::uint32_t>(value);
-  const std::uint16_t sign = static_cast<std::uint16_t>((bits >> 16U) & 0x8000U);
-  const std::uint32_t exponent = (bits >> 23U) & 0xffU;
-  const std::uint32_t mantissa = bits & 0x7fffffU;
-  if (exponent == 0xffU) {
-    if (mantissa == 0) {
-      return static_cast<std::uint16_t>(sign | 0x7c00U);
-    }
-    std::uint16_t payload = static_cast<std::uint16_t>(mantissa >> 13U);
-    if (payload == 0) {
-      payload = 1;
-    }
-    return static_cast<std::uint16_t>(sign | 0x7c00U | payload);
-  }
-
-  const int half_exponent = static_cast<int>(exponent) - 127 + 15;
-  if (half_exponent >= 31) {
-    return static_cast<std::uint16_t>(sign | 0x7c00U);
-  }
-  if (half_exponent <= 0) {
-    if (half_exponent < -24) {
-      return sign;
-    }
-    const std::uint32_t rounded =
-        round_shift_right(mantissa | 0x800000U,
-                          static_cast<unsigned>(14 - half_exponent));
-    return static_cast<std::uint16_t>(sign | rounded);
-  }
-
-  std::uint32_t rounded_mantissa = round_shift_right(mantissa, 13);
-  std::uint32_t rounded_exponent = static_cast<std::uint32_t>(half_exponent);
-  if (rounded_mantissa == 0x400U) {
-    rounded_mantissa = 0;
-    ++rounded_exponent;
-    if (rounded_exponent >= 31) {
-      return static_cast<std::uint16_t>(sign | 0x7c00U);
-    }
-  }
-  return static_cast<std::uint16_t>(sign | (rounded_exponent << 10U) |
-                                    rounded_mantissa);
-}
-
-std::uint16_t float_to_bf16_bits(float value) {
-  const std::uint32_t bits = std::bit_cast<std::uint32_t>(value);
-  if ((bits & 0x7F800000U) == 0x7F800000U) {
-    const std::uint16_t sign_and_exp =
-        static_cast<std::uint16_t>((bits >> 16U) & 0xFF80U);
-    if ((bits & 0x007FFFFFU) == 0) {
-      return sign_and_exp;
-    }
-    std::uint16_t payload =
-        static_cast<std::uint16_t>((bits >> 16U) & 0x007FU);
-    if (payload == 0) {
-      payload = 1;
-    }
-    return static_cast<std::uint16_t>(sign_and_exp | payload);
-  }
-  const std::uint32_t lsb = (bits >> 16U) & 1U;
-  const std::uint32_t rounded = bits + 0x7FFFU + lsb;
-  return static_cast<std::uint16_t>(rounded >> 16U);
-}
-
-std::vector<std::uint8_t>
-convert_f32_payload(std::span<const std::uint8_t> payload,
-                    CudaWeightType target_type,
-                    const std::string &tensor_name) {
-  if (payload.size() % sizeof(float) != 0) {
-    throw CudaWeightError("F32 auxiliary tensor byte size is invalid: " +
-                          tensor_name);
-  }
-  std::vector<std::uint8_t> converted(payload.size() / sizeof(float) *
-                                      sizeof(std::uint16_t));
-  for (std::size_t element = 0; element < payload.size() / sizeof(float);
-       ++element) {
-    float value = 0.0F;
-    std::memcpy(&value, payload.data() + element * sizeof(float),
-                sizeof(value));
-    const std::uint16_t bits = target_type == CudaWeightType::f16
-                                   ? float_to_f16_bits(value)
-                                   : float_to_bf16_bits(value);
-    converted[element * sizeof(std::uint16_t)] =
-        static_cast<std::uint8_t>(bits & 0xffU);
-    converted[element * sizeof(std::uint16_t) + 1] =
-        static_cast<std::uint8_t>((bits >> 8U) & 0xffU);
-  }
-  return converted;
 }
 
 bool descriptors_equal(const gguf::TensorInfo &left,
@@ -387,14 +278,14 @@ CudaWeightPlan::upload(ExecutionContext &context, const Model &model,
     const gguf::TensorInfo *descriptor;
     CudaWeightType type;
     std::span<const std::uint8_t> payload;
-    std::vector<std::uint8_t> converted_payload;
   };
   std::vector<ValidatedTensor> validated;
   validated.reserve(tensors.size());
   std::unordered_map<std::string, std::size_t> indices_by_name;
   indices_by_name.reserve(tensors.size());
   try {
-    const CudaWeightType primary_type = checked_type(*manifest.token_embedding);
+    const CudaWeightType primary_type =
+        checked_primary_type(*manifest.token_embedding);
     for (std::size_t index = 0; index < tensors.size(); ++index) {
       const auto *tensor = tensors[index].descriptor;
       const bool inserted = indices_by_name.emplace(tensor->name, index).second;
@@ -411,11 +302,10 @@ CudaWeightPlan::upload(ExecutionContext &context, const Model &model,
           .descriptor = tensor,
           .type = primary_type,
           .payload = {},
-          .converted_payload = {},
       });
       auto &validated_tensor = validated.back();
       if (tensors[index].role == TensorUploadRole::primary) {
-        const CudaWeightType type = checked_type(*tensor);
+        const CudaWeightType type = checked_primary_type(*tensor);
         if (type != primary_type) {
           throw CudaWeightError("Qwen3.5 primary CUDA weights must share the "
                                 "selected dtype: " +
@@ -424,10 +314,10 @@ CudaWeightPlan::upload(ExecutionContext &context, const Model &model,
         validated_tensor.payload = payload;
       } else if (tensor->type == static_cast<std::uint32_t>(primary_type)) {
         validated_tensor.payload = payload;
-      } else if (tensor->type == 0) {
-        validated_tensor.converted_payload =
-            convert_f32_payload(payload, primary_type, tensor->name);
-        validated_tensor.payload = validated_tensor.converted_payload;
+      } else if (tensor->type ==
+                 static_cast<std::uint32_t>(CudaWeightType::f32)) {
+        validated_tensor.type = CudaWeightType::f32;
+        validated_tensor.payload = payload;
       } else {
         throw CudaWeightError(
             "Qwen3.5 auxiliary CUDA weight must be F32 or match the selected "

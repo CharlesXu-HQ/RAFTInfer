@@ -80,6 +80,12 @@ template <> struct DTypeTraits<__nv_bfloat16> {
   static float decode(__nv_bfloat16 value) { return __bfloat162float(value); }
 };
 
+template <> struct DTypeTraits<float> {
+  static constexpr BrtDataType dtype = BRT_DTYPE_F32;
+  static float encode(float value) { return value; }
+  static float decode(float value) { return value; }
+};
+
 template <typename T> std::vector<T> encode(std::span<const float> values) {
   std::vector<T> result(values.size());
   std::transform(values.begin(), values.end(), result.begin(),
@@ -215,6 +221,43 @@ template <typename T> void check_shape(brt::CublasLtMatmulShape shape) {
     }
     // Repeated run must retain the initialization-time heuristic selection.
     assert(plan->algorithm_id() == algorithm_before);
+  }
+}
+
+template <typename Input>
+void check_f32_output_shape(brt::CublasLtMatmulShape shape) {
+  const auto logical_input = sequence(shape.m * shape.k, 0.007F, 0.03F);
+  const auto logical_weight = sequence(shape.k * shape.n, -0.005F, 0.01F);
+  const auto physical_input = shape.transpose_input
+                                  ? transpose(logical_input, shape.m, shape.k)
+                                  : logical_input;
+  const auto physical_weight = shape.transpose_weight
+                                   ? transpose(logical_weight, shape.k, shape.n)
+                                   : logical_weight;
+  const auto input = encode<Input>(physical_input);
+  const auto weight = encode<Input>(physical_weight);
+  const auto expected = reference_matmul(logical_input, logical_weight, shape);
+  auto config = config_for(shape, DTypeTraits<Input>::dtype);
+  config.output_dtype = BRT_DTYPE_F32;
+  auto plan = brt::CublasLtMatmulPlan::create(config);
+  assert(plan->input_bytes() == input.size() * sizeof(Input));
+  assert(plan->weight_bytes() == weight.size() * sizeof(Input));
+  assert(plan->output_bytes() == expected.size() * sizeof(float));
+
+  Stream stream;
+  auto input_device = upload<Input>(input, stream.get());
+  auto weight_device = upload<Input>(weight, stream.get());
+  DeviceBuffer output_device{plan->output_bytes()};
+  DeviceBuffer workspace_device{plan->workspace_bytes()};
+  plan->run(stream.get(), input_device.data(), input_device.bytes(),
+            weight_device.data(), weight_device.bytes(), output_device.data(),
+            output_device.bytes(),
+            plan->workspace_bytes() == 0 ? nullptr : workspace_device.data(),
+            plan->workspace_bytes());
+  const auto output =
+      download<float>(output_device, expected.size(), stream.get());
+  for (std::size_t i = 0; i < output.size(); ++i) {
+    assert(close_enough(output[i], expected[i]));
   }
 }
 
@@ -385,6 +428,8 @@ int main() {
        }) {
     check_shape<__half>(shape);
     check_shape<__nv_bfloat16>(shape);
+    check_f32_output_shape<__half>(shape);
+    check_f32_output_shape<__nv_bfloat16>(shape);
   }
   check_validation();
   check_run_validation();

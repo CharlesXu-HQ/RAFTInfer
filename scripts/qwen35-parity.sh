@@ -16,6 +16,8 @@ context_tokens="${BRT_CONTEXT_TOKENS:-4096}"
 max_new_tokens="${BRT_MAX_NEW_TOKENS:-32}"
 llama_port="${LLAMA_SERVER_PORT:-18080}"
 llama_url="http://127.0.0.1:${llama_port}"
+preflight_retries="${BRT_PREFLIGHT_RETRIES:-30}"
+preflight_retry_seconds="${BRT_PREFLIGHT_RETRY_SECONDS:-1}"
 
 fail_usage() {
   printf 'qwen35-parity: %s\n' "$1" >&2
@@ -41,6 +43,28 @@ command -v "${jq_bin}" >/dev/null ||
   fail_usage "BRT_MAX_NEW_TOKENS must be a positive integer"
 [[ "${llama_port}" =~ ^[1-9][0-9]*$ ]] ||
   fail_usage "LLAMA_SERVER_PORT must be a positive integer"
+[[ "${preflight_retries}" =~ ^[1-9][0-9]*$ ]] ||
+  fail_usage "BRT_PREFLIGHT_RETRIES must be a positive integer"
+[[ "${preflight_retry_seconds}" =~ ^[0-9]+$ ]] ||
+  fail_usage "BRT_PREFLIGHT_RETRY_SECONDS must be a non-negative integer"
+
+wait_for_gpu_preflight() {
+  local attempt=1
+  local preflight_output
+  local preflight_status
+  while :; do
+    if preflight_output="$("${gpu_preflight}" 2>&1)"; then
+      return 0
+    fi
+    preflight_status=$?
+    if [[ "${attempt}" -ge "${preflight_retries}" ]]; then
+      printf '%s\n' "${preflight_output}" >&2
+      return "${preflight_status}"
+    fi
+    sleep "${preflight_retry_seconds}"
+    attempt=$((attempt + 1))
+  done
+}
 
 mkdir -p "$(dirname "${output}")"
 reference_file="$(mktemp "${TMPDIR:-/tmp}/brt-qwen35-reference.XXXXXX")"
@@ -62,7 +86,7 @@ if ! flock -n 9; then
   exit 30
 fi
 
-"${gpu_preflight}" >/dev/null
+wait_for_gpu_preflight
 "${llama_server}" \
   --model "${llama_model}" \
   --host 127.0.0.1 \
@@ -197,7 +221,7 @@ while IFS= read -r reference_line || [[ -n "${reference_line}" ]]; do
   expected_generated="$("${jq_bin}" -c '.reference_generated_token_ids' \
     <<<"${reference_line}")"
 
-  "${gpu_preflight}" >/dev/null
+  wait_for_gpu_preflight
   brt_response="$("${brt_cli}" generate \
     --model "${brt_model}" \
     --prompt "${prompt}" \

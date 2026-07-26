@@ -40,6 +40,9 @@ if(BRT_ENABLE_CUDA)
   target_link_libraries(brt_cpp PUBLIC raft::raft rmm::rmm CUDA::cudart CUDA::cublasLt)
   target_compile_options(brt_cpp PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--expt-extended-lambda --expt-relaxed-constexpr>)
+
+  add_executable(brt-qwen35-logits tools/qwen35_logits_probe.cpp)
+  target_link_libraries(brt-qwen35-logits PRIVATE brt_cpp)
 endif()
 
 include(GNUInstallDirs)

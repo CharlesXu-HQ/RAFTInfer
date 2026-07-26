@@ -8,14 +8,12 @@
 #include "assert_enabled.hpp"
 #include "qwen35_gguf_fixture.hpp"
 
-#include <cuda_bf16.h>
-#include <cuda_fp16.h>
 #include <cuda_runtime_api.h>
 
 #include <algorithm>
 #include <cassert>
-#include <cstring>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -52,9 +50,8 @@ std::vector<std::uint8_t> filled_fixture(std::uint32_t tensor_type = 1,
       assert(tensor.byte_size % sizeof(float) == 0);
       const std::size_t elements = tensor.byte_size / sizeof(float);
       for (std::size_t element = 0; element < elements; ++element) {
-        const float value =
-            static_cast<float>(tensor_index + 1) +
-            static_cast<float>(element + 1) / 128.0F;
+        const float value = static_cast<float>(tensor_index + 1) +
+                            static_cast<float>(element + 1) / 128.0F;
         std::memcpy(bytes.data() + begin + element * sizeof(float), &value,
                     sizeof(value));
       }
@@ -90,45 +87,6 @@ bool device_bytes_equal(const brt::model::CudaTensorView &view,
          std::equal(actual.begin(), actual.end(), expected.begin());
 }
 
-std::uint16_t f32_to_f16_bits(float value) {
-  const __half converted = __float2half_rn(value);
-  std::uint16_t bits = 0;
-  std::memcpy(&bits, &converted, sizeof(bits));
-  return bits;
-}
-
-std::uint16_t f32_to_bf16_bits(float value) {
-  const __nv_bfloat16 converted = __float2bfloat16_rn(value);
-  std::uint16_t bits = 0;
-  std::memcpy(&bits, &converted, sizeof(bits));
-  return bits;
-}
-
-std::vector<std::uint8_t>
-converted_f32_payload(const brt::model::Model &model,
-                      const brt::gguf::TensorInfo &tensor,
-                      brt::model::CudaWeightType target_type) {
-  const auto payload = model.tensor_payload(tensor);
-  assert(payload.size() % sizeof(float) == 0);
-  std::vector<std::uint8_t> converted(payload.size() / sizeof(float) *
-                                      sizeof(std::uint16_t));
-  for (std::size_t element = 0; element < payload.size() / sizeof(float);
-       ++element) {
-    float value = 0.0F;
-    std::memcpy(&value, payload.data() + element * sizeof(float),
-                sizeof(value));
-    const std::uint16_t bits =
-        target_type == brt::model::CudaWeightType::f16
-            ? f32_to_f16_bits(value)
-            : f32_to_bf16_bits(value);
-    converted[element * sizeof(std::uint16_t)] =
-        static_cast<std::uint8_t>(bits & 0xffU);
-    converted[element * sizeof(std::uint16_t) + 1] =
-        static_cast<std::uint8_t>((bits >> 8U) & 0xffU);
-  }
-  return converted;
-}
-
 void expect_weight_error(auto &&fn) {
   bool thrown = false;
   try {
@@ -149,17 +107,14 @@ void expect_view_matches(const brt::model::CudaTensorView &view,
   assert(device_bytes_equal(view, model.tensor_payload(tensor)));
 }
 
-void expect_f32_aux_converted(const brt::model::CudaTensorView &view,
+void expect_f32_aux_preserved(const brt::model::CudaTensorView &view,
                               const brt::gguf::TensorInfo &tensor,
-                              const brt::model::Model &model,
-                              brt::model::CudaWeightType expected_type) {
+                              const brt::model::Model &model) {
   assert(tensor.type == 0);
   assert(view.device_data != nullptr);
-  assert(view.bytes == tensor.byte_size / 2);
-  assert(view.type == expected_type);
-  assert(device_bytes_equal(view,
-                            converted_f32_payload(model, tensor,
-                                                  expected_type)));
+  assert(view.bytes == tensor.byte_size);
+  assert(view.type == brt::model::CudaWeightType::f32);
+  assert(device_bytes_equal(view, model.tensor_payload(tensor)));
 }
 
 void expect_common_matches(
@@ -243,10 +198,9 @@ void run_mixed_f32_auxiliary_case(std::uint32_t primary_tensor_type,
   const auto plan = device.upload_qwen35_weights(model);
   const auto &manifest = model.qwen35_manifest();
 
-  expect_view_matches(plan->token_embedding(), *manifest.token_embedding,
-                      model, expected_type);
-  expect_f32_aux_converted(plan->output_norm(), *manifest.output_norm, model,
-                           expected_type);
+  expect_view_matches(plan->token_embedding(), *manifest.token_embedding, model,
+                      expected_type);
+  expect_f32_aux_preserved(plan->output_norm(), *manifest.output_norm, model);
   expect_view_matches(plan->output(), *manifest.output, model, expected_type);
   assert(&plan->tensor(*manifest.output_norm) == &plan->output_norm());
 
@@ -254,16 +208,14 @@ void run_mixed_f32_auxiliary_case(std::uint32_t primary_tensor_type,
        ++layer_index) {
     const auto &layer = plan->layer(layer_index);
     const auto &expected = manifest.layers[layer_index];
-    expect_f32_aux_converted(layer.common.input_norm,
-                             *expected.common.input_norm, model,
-                             expected_type);
-    expect_f32_aux_converted(layer.common.post_attention_norm,
-                             *expected.common.post_attention_norm, model,
-                             expected_type);
-    expect_view_matches(layer.common.ffn_gate, *expected.common.ffn_gate,
-                        model, expected_type);
-    expect_view_matches(layer.common.ffn_down, *expected.common.ffn_down,
-                        model, expected_type);
+    expect_f32_aux_preserved(layer.common.input_norm,
+                             *expected.common.input_norm, model);
+    expect_f32_aux_preserved(layer.common.post_attention_norm,
+                             *expected.common.post_attention_norm, model);
+    expect_view_matches(layer.common.ffn_gate, *expected.common.ffn_gate, model,
+                        expected_type);
+    expect_view_matches(layer.common.ffn_down, *expected.common.ffn_down, model,
+                        expected_type);
     expect_view_matches(layer.common.ffn_up, *expected.common.ffn_up, model,
                         expected_type);
     if (expected.full_attention.has_value()) {
@@ -276,30 +228,30 @@ void run_mixed_f32_auxiliary_case(std::uint32_t primary_tensor_type,
                           expected_type);
       expect_view_matches(layer.full_attention->output, *full.output, model,
                           expected_type);
-      expect_f32_aux_converted(layer.full_attention->query_norm,
-                               *full.query_norm, model, expected_type);
-      expect_f32_aux_converted(layer.full_attention->key_norm, *full.key_norm,
-                               model, expected_type);
+      expect_f32_aux_preserved(layer.full_attention->query_norm,
+                               *full.query_norm, model);
+      expect_f32_aux_preserved(layer.full_attention->key_norm, *full.key_norm,
+                               model);
     } else {
       const auto &linear = *expected.linear_attention;
       expect_view_matches(layer.linear_attention->qkv, *linear.qkv, model,
                           expected_type);
       expect_view_matches(layer.linear_attention->gate, *linear.gate, model,
                           expected_type);
-      expect_f32_aux_converted(layer.linear_attention->convolution,
-                               *linear.convolution, model, expected_type);
-      expect_f32_aux_converted(layer.linear_attention->time_step_bias,
-                               *linear.time_step_bias, model, expected_type);
-      expect_f32_aux_converted(layer.linear_attention->recurrent_a,
-                               *linear.recurrent_a, model, expected_type);
+      expect_f32_aux_preserved(layer.linear_attention->convolution,
+                               *linear.convolution, model);
+      expect_f32_aux_preserved(layer.linear_attention->time_step_bias,
+                               *linear.time_step_bias, model);
+      expect_f32_aux_preserved(layer.linear_attention->recurrent_a,
+                               *linear.recurrent_a, model);
       expect_view_matches(layer.linear_attention->beta, *linear.beta, model,
                           expected_type);
       expect_view_matches(layer.linear_attention->alpha, *linear.alpha, model,
                           expected_type);
-      expect_f32_aux_converted(layer.linear_attention->output_norm,
-                               *linear.output_norm, model, expected_type);
-      expect_view_matches(layer.linear_attention->output, *linear.output,
-                          model, expected_type);
+      expect_f32_aux_preserved(layer.linear_attention->output_norm,
+                               *linear.output_norm, model);
+      expect_view_matches(layer.linear_attention->output, *linear.output, model,
+                          expected_type);
     }
   }
 }
