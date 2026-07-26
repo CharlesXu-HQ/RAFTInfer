@@ -640,26 +640,29 @@ void run_grouped_input_cast_tests() {
                               max_context, grouped_policy};
   brt::Qwen35Executor ungrouped{ungrouped_context, model.qwen35_config(),
                                 *weights, max_context, ungrouped_policy};
+  const std::vector<std::size_t> expected_grouped_full{1};
+  const std::vector<std::size_t> expected_grouped_linear{1, 1, 1};
+  const std::vector<std::size_t> expected_grouped_ffn{1, 1, 1, 1};
+  const std::vector<std::size_t> expected_ungrouped_full{3};
+  const std::vector<std::size_t> expected_ungrouped_linear{4, 4, 4};
+  const std::vector<std::size_t> expected_ungrouped_ffn{2, 2, 2, 2};
 
   brt::test::reset_qwen35_executor_input_cast_launches();
   const auto grouped_result = grouped.decode(1);
   const auto grouped_casts = brt::test::qwen35_executor_input_cast_launches();
   assert(grouped_casts.total == 17);
-  assert(grouped_casts.full_attention_projection ==
-         std::vector<std::size_t>{1});
-  assert(grouped_casts.linear_attention_projection ==
-         std::vector<std::size_t>{1, 1, 1});
-  assert(grouped_casts.ffn_gate_up == std::vector<std::size_t>{1, 1, 1, 1});
+  assert(grouped_casts.full_attention_projection == expected_grouped_full);
+  assert(grouped_casts.linear_attention_projection == expected_grouped_linear);
+  assert(grouped_casts.ffn_gate_up == expected_grouped_ffn);
 
   brt::test::reset_qwen35_executor_input_cast_launches();
   const auto ungrouped_result = ungrouped.decode(1);
   const auto ungrouped_casts = brt::test::qwen35_executor_input_cast_launches();
   assert(ungrouped_casts.total == 32);
-  assert(ungrouped_casts.full_attention_projection ==
-         std::vector<std::size_t>{3});
+  assert(ungrouped_casts.full_attention_projection == expected_ungrouped_full);
   assert(ungrouped_casts.linear_attention_projection ==
-         std::vector<std::size_t>{4, 4, 4});
-  assert(ungrouped_casts.ffn_gate_up == std::vector<std::size_t>{2, 2, 2, 2});
+         expected_ungrouped_linear);
+  assert(ungrouped_casts.ffn_gate_up == expected_ungrouped_ffn);
 
   assert(grouped_result.token == ungrouped_result.token);
   assert(grouped_result.position == ungrouped_result.position);
