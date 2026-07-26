@@ -671,7 +671,8 @@ void run_grouped_input_cast_tests() {
   grouped.copy_last_logits(grouped_logits);
   ungrouped.copy_last_logits(ungrouped_logits);
   assert(std::memcmp(grouped_logits.data(), ungrouped_logits.data(),
-                     grouped_logits.size_bytes()) == 0);
+                     grouped_logits.size() * sizeof(grouped_logits.front())) ==
+         0);
 }
 
 void run_executor_online_materialized_parity_tests() {
