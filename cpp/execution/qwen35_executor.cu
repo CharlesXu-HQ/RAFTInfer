@@ -468,6 +468,62 @@ std::size_t workspace_estimate(const model::Qwen35Config &config,
 
 } // namespace
 
+#if defined(BRT_QWEN35_EXECUTOR_TESTING)
+namespace test {
+
+struct InputCastLaunches {
+  std::size_t total{};
+  std::vector<std::size_t> full_attention_projection;
+  std::vector<std::size_t> linear_attention_projection;
+  std::vector<std::size_t> ffn_gate_up;
+};
+
+namespace {
+
+InputCastLaunches input_cast_launches;
+std::size_t *active_input_cast_group{};
+
+} // namespace
+
+void reset_qwen35_executor_input_cast_launches() {
+  input_cast_launches = {};
+  active_input_cast_group = nullptr;
+}
+
+InputCastLaunches qwen35_executor_input_cast_launches() {
+  return input_cast_launches;
+}
+
+} // namespace test
+
+namespace {
+
+class InputCastGroupCounter {
+public:
+  explicit InputCastGroupCounter(std::vector<std::size_t> &groups)
+      : previous_(test::active_input_cast_group) {
+    groups.push_back(0);
+    test::active_input_cast_group = &groups.back();
+  }
+
+  ~InputCastGroupCounter() { test::active_input_cast_group = previous_; }
+
+  InputCastGroupCounter(const InputCastGroupCounter &) = delete;
+  InputCastGroupCounter &operator=(const InputCastGroupCounter &) = delete;
+
+private:
+  std::size_t *previous_{};
+};
+
+void record_input_cast_launch() {
+  ++test::input_cast_launches.total;
+  if (test::active_input_cast_group != nullptr)
+    ++*test::active_input_cast_group;
+}
+
+} // namespace
+#endif
+
 class Qwen35Executor::Impl {
 public:
   Impl(ExecutionContext &context, const model::Qwen35Config &config,
@@ -961,17 +1017,51 @@ private:
     throw Qwen35ExecutorError("unsupported Qwen3.5 executor token bucket");
   }
 
+  struct MatmulBinding {
+    const CublasLtMatmulPlan *plan;
+    const model::CudaTensorView *weight;
+    void *output;
+  };
+
+  void run_matmul_group(const void *f32_input,
+                        std::span<const MatmulBinding> bindings) {
+    require(f32_input != nullptr, "Qwen3.5 matmul input must not be null");
+    require(!bindings.empty(), "Qwen3.5 matmul group must not be empty");
+    require(bindings.front().plan != nullptr,
+            "Qwen3.5 matmul group plan must not be null");
+    const std::size_t input_bytes = bindings.front().plan->input_bytes();
+    const std::size_t weight_element_bytes = dtype_size(weight_dtype_);
+    require(input_bytes % weight_element_bytes == 0,
+            "Qwen3.5 matmul input byte size is not dtype-aligned");
+    for (const auto &binding : bindings) {
+      require(binding.plan != nullptr && binding.weight != nullptr &&
+                  binding.output != nullptr,
+              "Qwen3.5 matmul group binding must not be null");
+      require(binding.plan->input_bytes() == input_bytes,
+              "Qwen3.5 matmul group inputs must have identical byte sizes");
+      require(dtype_from_weight(binding.weight->type) == weight_dtype_,
+              "Qwen3.5 matmul group inputs must have identical dtypes");
+    }
+    kernels::qwen35_cast_f32(static_cast<const float *>(f32_input),
+                             matmul_input_, input_bytes / weight_element_bytes,
+                             weight_dtype_, context_.stream());
+#if defined(BRT_QWEN35_EXECUTOR_TESTING)
+    record_input_cast_launch();
+#endif
+    for (const auto &binding : bindings) {
+      binding.plan->run(context_.stream(), matmul_input_, input_bytes,
+                        binding.weight->device_data, binding.weight->bytes,
+                        binding.output, binding.plan->output_bytes(),
+                        matmul_workspace_, kMatmulWorkspaceBudget);
+    }
+  }
+
   void run_matmul(const CublasLtMatmulPlan &plan, const void *input,
                   const model::CudaTensorView &weight, void *output) {
-    const std::size_t weight_element_bytes = dtype_size(weight_dtype_);
-    require(plan.input_bytes() % weight_element_bytes == 0,
-            "Qwen3.5 matmul input byte size is not dtype-aligned");
-    kernels::qwen35_cast_f32(static_cast<const float *>(input), matmul_input_,
-                             plan.input_bytes() / weight_element_bytes,
-                             weight_dtype_, context_.stream());
-    plan.run(context_.stream(), matmul_input_, plan.input_bytes(),
-             weight.device_data, weight.bytes, output, plan.output_bytes(),
-             matmul_workspace_, kMatmulWorkspaceBudget);
+    const MatmulBinding binding{
+        .plan = &plan, .weight = &weight, .output = output};
+    run_matmul_group(input,
+                     std::span<const MatmulBinding>{&binding, std::size_t{1}});
   }
 
   Qwen35ExecutorResult run_chunk(std::span<const std::int32_t> tokens,
@@ -1029,10 +1119,27 @@ private:
           context_.stream());
       record_trace("attn_post_norm-" + std::to_string(layer), scratch,
                    hidden_elements);
-      run_matmul(*plans.ffn_gate, scratch, weights.common.ffn_gate,
-                 intermediate_a_);
-      run_matmul(*plans.ffn_up, scratch, weights.common.ffn_up,
-                 intermediate_b_);
+      {
+#if defined(BRT_QWEN35_EXECUTOR_TESTING)
+        InputCastGroupCounter ffn_casts{test::input_cast_launches.ffn_gate_up};
+#endif
+        if (policy_.grouped_input_casts) {
+          const std::array bindings{
+              MatmulBinding{.plan = plans.ffn_gate.get(),
+                            .weight = &weights.common.ffn_gate,
+                            .output = intermediate_a_},
+              MatmulBinding{.plan = plans.ffn_up.get(),
+                            .weight = &weights.common.ffn_up,
+                            .output = intermediate_b_},
+          };
+          run_matmul_group(scratch, std::span<const MatmulBinding>{bindings});
+        } else {
+          run_matmul(*plans.ffn_gate, scratch, weights.common.ffn_gate,
+                     intermediate_a_);
+          run_matmul(*plans.ffn_up, scratch, weights.common.ffn_up,
+                     intermediate_b_);
+        }
+      }
       kernels::qwen35_swiglu(intermediate_a_, intermediate_b_, intermediate_a_,
                              tokens.size() * config_.intermediate_size, dtype_,
                              context_.stream());
@@ -1086,9 +1193,30 @@ private:
     const auto &full = *weights.full_attention;
     const std::size_t kv_width = config_.full_attention_kv_head_count *
                                  config_.full_attention_head_dimension;
-    run_matmul(*plans.query_gate, input, full.query, full_query_gate_);
-    run_matmul(*plans.key, input, full.key, full_key_);
-    run_matmul(*plans.value, input, full.value, full_value_);
+    {
+#if defined(BRT_QWEN35_EXECUTOR_TESTING)
+      InputCastGroupCounter projection_casts{
+          test::input_cast_launches.full_attention_projection};
+#endif
+      if (policy_.grouped_input_casts) {
+        const std::array bindings{
+            MatmulBinding{.plan = plans.query_gate.get(),
+                          .weight = &full.query,
+                          .output = full_query_gate_},
+            MatmulBinding{.plan = plans.key.get(),
+                          .weight = &full.key,
+                          .output = full_key_},
+            MatmulBinding{.plan = plans.value.get(),
+                          .weight = &full.value,
+                          .output = full_value_},
+        };
+        run_matmul_group(input, std::span<const MatmulBinding>{bindings});
+      } else {
+        run_matmul(*plans.query_gate, input, full.query, full_query_gate_);
+        run_matmul(*plans.key, input, full.key, full_key_);
+        run_matmul(*plans.value, input, full.value, full_value_);
+      }
+    }
     kernels::qwen35_split_full_query_gate(
         full_query_gate_, full_query_, linear_gate_, tokens,
         config_.full_attention_head_count,
@@ -1147,12 +1275,36 @@ private:
     const std::size_t alpha_width = config_.linear_value_head_count;
     const std::size_t gate_width =
         config_.linear_value_head_count * config_.linear_head_dimension;
-    run_matmul(*plans.qkv, input, linear.qkv, linear_qkv_);
+    {
+#if defined(BRT_QWEN35_EXECUTOR_TESTING)
+      InputCastGroupCounter projection_casts{
+          test::input_cast_launches.linear_attention_projection};
+#endif
+      if (policy_.grouped_input_casts) {
+        const std::array bindings{
+            MatmulBinding{.plan = plans.qkv.get(),
+                          .weight = &linear.qkv,
+                          .output = linear_qkv_},
+            MatmulBinding{.plan = plans.beta.get(),
+                          .weight = &linear.beta,
+                          .output = linear_beta_},
+            MatmulBinding{.plan = plans.alpha.get(),
+                          .weight = &linear.alpha,
+                          .output = linear_alpha_},
+            MatmulBinding{.plan = plans.gate.get(),
+                          .weight = &linear.gate,
+                          .output = linear_gate_},
+        };
+        run_matmul_group(input, std::span<const MatmulBinding>{bindings});
+      } else {
+        run_matmul(*plans.qkv, input, linear.qkv, linear_qkv_);
+        run_matmul(*plans.beta, input, linear.beta, linear_beta_);
+        run_matmul(*plans.alpha, input, linear.alpha, linear_alpha_);
+        run_matmul(*plans.gate, input, linear.gate, linear_gate_);
+      }
+    }
     record_trace("linear_attn_qkv_mixed-" + std::to_string(layer), linear_qkv_,
                  tokens * qkv_width);
-    run_matmul(*plans.beta, input, linear.beta, linear_beta_);
-    run_matmul(*plans.alpha, input, linear.alpha, linear_alpha_);
-    run_matmul(*plans.gate, input, linear.gate, linear_gate_);
     kernels::qwen35_pack_linear_delta_input(
         linear_qkv_, linear_beta_, linear_alpha_, linear_gate_, linear_pack_,
         tokens, qkv_width, beta_width, alpha_width, gate_width, dtype_,

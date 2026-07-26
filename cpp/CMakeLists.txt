@@ -57,6 +57,11 @@ add_executable(brt-smoke tools/brt_smoke.cpp)
 target_link_libraries(brt-smoke PRIVATE brt_cpp)
 
 if(BRT_BUILD_TESTS)
+  # Keep executor launch accounting out of release binaries.  The CUDA test
+  # declares the internal seam directly, so this definition need not be part
+  # of the installed public interface.
+  target_compile_definitions(brt_cpp PRIVATE BRT_QWEN35_EXECUTOR_TESTING=1)
+
   enable_testing()
 
   function(brt_add_assert_test target)

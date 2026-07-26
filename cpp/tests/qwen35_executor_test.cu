@@ -24,6 +24,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <cuda/stream_ref>
 #include <filesystem>
 #include <fstream>
@@ -32,6 +33,20 @@
 #include <string>
 #include <utility>
 #include <vector>
+
+namespace brt::test {
+
+struct InputCastLaunches {
+  std::size_t total{};
+  std::vector<std::size_t> full_attention_projection;
+  std::vector<std::size_t> linear_attention_projection;
+  std::vector<std::size_t> ffn_gate_up;
+};
+
+void reset_qwen35_executor_input_cast_launches();
+InputCastLaunches qwen35_executor_input_cast_launches();
+
+} // namespace brt::test
 
 namespace {
 
@@ -602,6 +617,60 @@ void run_executor_f32_auxiliary_smoke() {
   assert(!executor.poisoned());
 }
 
+void run_grouped_input_cast_tests() {
+  assert(cudaSetDevice(0) == cudaSuccess);
+  const auto path =
+      write_fixture(brt::test::make_qwen35_nonzero_bf16_gguf_fixture());
+  brt::model::Model model{path.string()};
+  constexpr std::size_t max_context = 64;
+
+  auto grouped_policy = materialized_policy();
+  grouped_policy.grouped_input_casts = true;
+  const auto ungrouped_policy = materialized_policy();
+  const std::size_t workspace_bytes = brt::Qwen35Executor::workspace_bytes(
+      model.qwen35_config(), max_context, grouped_policy);
+
+  brt::DeviceContext device{0, 256U * 1024U * 1024U};
+  auto weights = device.upload_qwen35_weights(model);
+  auto grouped_owner = device.create_execution_owner(workspace_bytes);
+  auto ungrouped_owner = device.create_execution_owner(workspace_bytes);
+  auto grouped_context = grouped_owner->execution_context();
+  auto ungrouped_context = ungrouped_owner->execution_context();
+  brt::Qwen35Executor grouped{grouped_context, model.qwen35_config(), *weights,
+                              max_context, grouped_policy};
+  brt::Qwen35Executor ungrouped{ungrouped_context, model.qwen35_config(),
+                                *weights, max_context, ungrouped_policy};
+
+  brt::test::reset_qwen35_executor_input_cast_launches();
+  const auto grouped_result = grouped.decode(1);
+  const auto grouped_casts = brt::test::qwen35_executor_input_cast_launches();
+  assert(grouped_casts.total == 17);
+  assert(grouped_casts.full_attention_projection ==
+         std::vector<std::size_t>{1});
+  assert(grouped_casts.linear_attention_projection ==
+         std::vector<std::size_t>{1, 1, 1});
+  assert(grouped_casts.ffn_gate_up == std::vector<std::size_t>{1, 1, 1, 1});
+
+  brt::test::reset_qwen35_executor_input_cast_launches();
+  const auto ungrouped_result = ungrouped.decode(1);
+  const auto ungrouped_casts = brt::test::qwen35_executor_input_cast_launches();
+  assert(ungrouped_casts.total == 32);
+  assert(ungrouped_casts.full_attention_projection ==
+         std::vector<std::size_t>{3});
+  assert(ungrouped_casts.linear_attention_projection ==
+         std::vector<std::size_t>{4, 4, 4});
+  assert(ungrouped_casts.ffn_gate_up == std::vector<std::size_t>{2, 2, 2, 2});
+
+  assert(grouped_result.token == ungrouped_result.token);
+  assert(grouped_result.position == ungrouped_result.position);
+  std::vector<float> grouped_logits(model.qwen35_config().vocabulary_size);
+  std::vector<float> ungrouped_logits(model.qwen35_config().vocabulary_size);
+  grouped.copy_last_logits(grouped_logits);
+  ungrouped.copy_last_logits(ungrouped_logits);
+  assert(std::memcmp(grouped_logits.data(), ungrouped_logits.data(),
+                     grouped_logits.size_bytes()) == 0);
+}
+
 void run_executor_online_materialized_parity_tests() {
   assert(cudaSetDevice(0) == cudaSuccess);
   const auto path = write_fixture(make_release_attention_fixture());
@@ -799,6 +868,7 @@ int main() {
   run_support_kernel_tests();
   run_executor_fixture_smoke();
   run_executor_f32_auxiliary_smoke();
+  run_grouped_input_cast_tests();
   run_executor_online_materialized_parity_tests();
   run_executor_reference_and_allocation_tests();
 }
