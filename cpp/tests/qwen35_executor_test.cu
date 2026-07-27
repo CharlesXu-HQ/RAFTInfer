@@ -973,9 +973,6 @@ void run_executor_online_materialized_parity_tests() {
   brt::WorkspaceArena reference_workspace{
       rmm::device_async_resource_ref{statistics}, cuda::stream_ref{stream},
       stream, reference_workspace_bytes};
-  brt::WorkspaceArena online_workspace{
-      rmm::device_async_resource_ref{statistics}, cuda::stream_ref{stream},
-      stream, online_workspace_bytes};
   cudaDeviceProp properties{};
   assert(cudaGetDeviceProperties(&properties, 0) == cudaSuccess);
   assert(properties.sharedMemPerBlock <=
