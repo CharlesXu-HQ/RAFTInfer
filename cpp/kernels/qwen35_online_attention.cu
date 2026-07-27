@@ -5,8 +5,10 @@
 #include <cuda_bf16.h>
 #include <math_constants.h>
 
+#include <cstdint>
 #include <limits>
 #include <string>
+#include <type_traits>
 
 namespace brt::kernels {
 namespace {
@@ -28,7 +30,8 @@ bool multiplication_fits(std::size_t lhs, std::size_t rhs) noexcept {
 
 bool online_prefill_signature_supported(
     Qwen35AttentionShape shape, BrtDataType activation_dtype,
-    Qwen35KvCacheDType cache_dtype) noexcept {
+    Qwen35KvCacheDType cache_dtype,
+    Qwen35KvCacheLayout cache_layout) noexcept {
   if (shape.tokens <= 1 || shape.query_heads == 0 || shape.kv_heads == 0 ||
       shape.head_dim == 0 || shape.head_dim > kModelHeadDim ||
       shape.max_context_tokens == 0 ||
@@ -48,6 +51,13 @@ bool online_prefill_signature_supported(
     break;
   case Qwen35KvCacheDType::bf16:
     cache_element_bytes = sizeof(__nv_bfloat16);
+    break;
+  default:
+    return false;
+  }
+  switch (cache_layout) {
+  case Qwen35KvCacheLayout::token_major:
+  case Qwen35KvCacheLayout::head_major:
     break;
   default:
     return false;
@@ -82,7 +92,8 @@ bool online_prefill_signature_supported(
 
 bool online_decode_signature_supported(
     Qwen35AttentionShape shape, BrtDataType activation_dtype,
-    Qwen35KvCacheDType cache_dtype) noexcept {
+    Qwen35KvCacheDType cache_dtype,
+    Qwen35KvCacheLayout cache_layout) noexcept {
   if (shape.tokens != 1 || shape.query_heads != kModelQueryHeads ||
       shape.kv_heads != kModelKvHeads || shape.head_dim != kModelHeadDim ||
       shape.max_context_tokens == 0 ||
@@ -100,6 +111,13 @@ bool online_decode_signature_supported(
     break;
   case Qwen35KvCacheDType::bf16:
     cache_element_bytes = sizeof(__nv_bfloat16);
+    break;
+  default:
+    return false;
+  }
+  switch (cache_layout) {
+  case Qwen35KvCacheLayout::token_major:
+  case Qwen35KvCacheLayout::head_major:
     break;
   default:
     return false;
@@ -151,6 +169,13 @@ __device__ float load_as_float(const T *data, std::size_t index) {
 
 template <>
 __device__ float load_as_float(const __nv_bfloat16 *data, std::size_t index) {
+  if (index > 0 && (index & 1U) != 0U &&
+      (reinterpret_cast<std::uintptr_t>(data + index - 1) %
+       alignof(__nv_bfloat162)) == 0U) {
+    const auto pair =
+        *reinterpret_cast<const __nv_bfloat162 *>(data + index - 1);
+    return __bfloat1622float2(pair).y;
+  }
   return __bfloat162float(data[index]);
 }
 
@@ -165,11 +190,67 @@ __device__ void store_from_float(__nv_bfloat16 *data, std::size_t index,
   data[index] = __float2bfloat16_rn(value);
 }
 
+__host__ __device__ std::size_t
+cache_element_index(Qwen35KvCacheLayout layout, std::size_t token,
+                    std::size_t kv_head, std::size_t dim,
+                    std::size_t max_context_tokens, std::size_t kv_heads,
+                    std::size_t head_dim) {
+  switch (layout) {
+  case Qwen35KvCacheLayout::token_major:
+    return (token * kv_heads + kv_head) * head_dim + dim;
+  case Qwen35KvCacheLayout::head_major:
+    return (kv_head * max_context_tokens + token) * head_dim + dim;
+  }
+  return 0;
+}
+
+template <typename ActivationT>
+__device__ void store_bf16_cache_element_or_pair(
+    const ActivationT *source, __nv_bfloat16 *destination,
+    std::size_t source_index, std::size_t destination_index, std::size_t dim,
+    std::size_t head_dim) {
+  const bool can_pair =
+      (dim + 1) < head_dim && (dim & 1U) == 0U &&
+      (source_index & 1U) == 0U && (destination_index & 1U) == 0U &&
+      (reinterpret_cast<std::uintptr_t>(destination + destination_index) %
+       alignof(__nv_bfloat162)) == 0U;
+  if (can_pair) {
+    const float2 values{load_as_float(source, source_index),
+                        load_as_float(source, source_index + 1)};
+    *reinterpret_cast<__nv_bfloat162 *>(destination + destination_index) =
+        __floats2bfloat162_rn(values.x, values.y);
+    return;
+  }
+  if ((dim & 1U) != 0U && (source_index & 1U) != 0U &&
+      (destination_index & 1U) != 0U && source_index > 0 &&
+      destination_index > 0 &&
+      (reinterpret_cast<std::uintptr_t>(destination + destination_index - 1) %
+       alignof(__nv_bfloat162)) == 0U) {
+    return;
+  }
+  store_from_float(destination, destination_index,
+                   load_as_float(source, source_index));
+}
+
+template <typename ActivationT, typename CacheT>
+__device__ void store_cache_element_or_pair(
+    const ActivationT *source, CacheT *destination, std::size_t source_index,
+    std::size_t destination_index, std::size_t dim, std::size_t head_dim) {
+  if constexpr (std::is_same_v<CacheT, __nv_bfloat16>) {
+    store_bf16_cache_element_or_pair(source, destination, source_index,
+                                     destination_index, dim, head_dim);
+  } else {
+    store_from_float(destination, destination_index,
+                     load_as_float(source, source_index));
+  }
+}
+
 template <typename ActivationT, typename CacheT>
 __global__ void append_online_cache_kernel(
     const ActivationT *key, const ActivationT *value, CacheT *kv_cache,
     std::size_t tokens, std::size_t kv_heads, std::size_t head_dim,
-    std::size_t max_context_tokens, std::size_t past_tokens) {
+    std::size_t max_context_tokens, std::size_t past_tokens,
+    Qwen35KvCacheLayout cache_layout) {
   const std::size_t element =
       static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   const std::size_t kv_size = kv_heads * head_dim;
@@ -180,19 +261,25 @@ __global__ void append_online_cache_kernel(
 
   const std::size_t token = element / kv_size;
   const std::size_t within_token = element - token * kv_size;
-  const std::size_t cache_index =
-      (past_tokens + token) * kv_size + within_token;
+  const std::size_t kv_head = within_token / head_dim;
+  const std::size_t dim = within_token - kv_head * head_dim;
+  const std::size_t cache_index = cache_element_index(
+      cache_layout, past_tokens + token, kv_head, dim, max_context_tokens,
+      kv_heads, head_dim);
   const std::size_t value_plane = max_context_tokens * kv_size;
-  store_from_float(kv_cache, cache_index, load_as_float(key, element));
-  store_from_float(kv_cache, value_plane + cache_index,
-                   load_as_float(value, element));
+  store_cache_element_or_pair(key, kv_cache, element, cache_index, dim,
+                              head_dim);
+  store_cache_element_or_pair(value, kv_cache, element, value_plane + cache_index,
+                              dim, head_dim);
 }
 
 template <typename ActivationT, typename CacheT>
 __global__ void append_online_decode_cache_kernel(
     const ActivationT *key, const ActivationT *value, CacheT *kv_cache,
     std::size_t kv_size, std::size_t max_context_tokens,
-    std::size_t host_position, const std::uint32_t *device_position) {
+    std::size_t host_position, Qwen35KvCacheLayout cache_layout,
+    std::size_t kv_heads, std::size_t head_dim,
+    const std::uint32_t *device_position) {
   const std::size_t element =
       static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   if (element >= kv_size) {
@@ -205,18 +292,24 @@ __global__ void append_online_decode_cache_kernel(
     return;
   }
 
-  const std::size_t cache_index = position * kv_size + element;
+  const std::size_t kv_head = element / head_dim;
+  const std::size_t dim = element - kv_head * head_dim;
+  const std::size_t cache_index = cache_element_index(
+      cache_layout, position, kv_head, dim, max_context_tokens, kv_heads,
+      head_dim);
   const std::size_t value_plane = max_context_tokens * kv_size;
-  store_from_float(kv_cache, cache_index, load_as_float(key, element));
-  store_from_float(kv_cache, value_plane + cache_index,
-                   load_as_float(value, element));
+  store_cache_element_or_pair(key, kv_cache, element, cache_index, dim,
+                              head_dim);
+  store_cache_element_or_pair(value, kv_cache, element, value_plane + cache_index,
+                              dim, head_dim);
 }
 
 template <typename ActivationT, typename CacheT, int Warps>
 __global__ __launch_bounds__(256, 1) void online_decode_model_kernel(
     const ActivationT *query, const ActivationT *gate, ActivationT *output,
     const CacheT *kv_cache, std::size_t max_context_tokens,
-    std::size_t host_position, const std::uint32_t *device_position) {
+    std::size_t host_position, Qwen35KvCacheLayout cache_layout,
+    const std::uint32_t *device_position) {
   static_assert(Warps == 4 || Warps == 8);
   __shared__ float warp_max[Warps];
   __shared__ float warp_sum[Warps];
@@ -246,7 +339,8 @@ __global__ __launch_bounds__(256, 1) void online_decode_model_kernel(
        warp < active_warps && key_token < context_tokens;
        key_token += active_warps) {
     const std::size_t key_base =
-        (key_token * kModelKvHeads + kv_head) * kModelHeadDim;
+        cache_element_index(cache_layout, key_token, kv_head, 0,
+                            max_context_tokens, kModelKvHeads, kModelHeadDim);
     float score = 0.0F;
 #pragma unroll
     for (int component = 0; component < kValuesPerLane; ++component) {
@@ -333,7 +427,7 @@ template <typename ActivationT, typename CacheT, int HeadDim, int QueryHeads,
 __global__ __launch_bounds__(128, 2) void online_prefill_model_kernel(
     const ActivationT *query, const ActivationT *gate, ActivationT *output,
     const CacheT *kv_cache, std::size_t tokens, std::size_t max_context_tokens,
-    std::size_t past_tokens) {
+    std::size_t past_tokens, Qwen35KvCacheLayout cache_layout) {
   static_assert(HeadDim == kModelHeadDim);
   static_assert(QueryHeads == kModelQueryHeads);
   static_assert(KvHeads == kModelKvHeads);
@@ -373,7 +467,9 @@ __global__ __launch_bounds__(128, 2) void online_prefill_model_kernel(
       float dot = 0.0F;
       if (static_cast<std::size_t>(key_in_tile) < keys_in_tile) {
         const std::size_t key_token = key_tile + key_in_tile;
-        const std::size_t key_base = (key_token * KvHeads + kv_head) * HeadDim;
+        const std::size_t key_base =
+            cache_element_index(cache_layout, key_token, kv_head, 0,
+                                max_context_tokens, KvHeads, HeadDim);
 #pragma unroll
         for (int component = 0; component < kValuesPerLane; ++component) {
           const int dim = lane + component * kWarpSize;
@@ -405,7 +501,9 @@ __global__ __launch_bounds__(128, 2) void online_prefill_model_kernel(
       }
       const std::size_t key_token = key_tile + key_in_tile;
       const std::size_t value_base =
-          value_plane + (key_token * KvHeads + kv_head) * HeadDim;
+          value_plane + cache_element_index(cache_layout, key_token, kv_head, 0,
+                                            max_context_tokens, KvHeads,
+                                            HeadDim);
       const float tile_scale = expf(scores[key_in_tile] - next_max);
       row_sum += tile_scale;
 #pragma unroll
@@ -434,7 +532,7 @@ __global__ __launch_bounds__(128) void online_prefill_generic_kernel(
     const ActivationT *query, const ActivationT *gate, ActivationT *output,
     const CacheT *kv_cache, std::size_t tokens, std::size_t query_heads,
     std::size_t kv_heads, std::size_t head_dim, std::size_t max_context_tokens,
-    std::size_t past_tokens) {
+    std::size_t past_tokens, Qwen35KvCacheLayout cache_layout) {
   const int lane = threadIdx.x % kWarpSize;
   const int query_in_tile = threadIdx.x / kWarpSize;
   const std::size_t query_token =
@@ -471,7 +569,8 @@ __global__ __launch_bounds__(128) void online_prefill_generic_kernel(
       if (static_cast<std::size_t>(key_in_tile) < keys_in_tile) {
         const std::size_t key_token = key_tile + key_in_tile;
         const std::size_t key_base =
-            (key_token * kv_heads + kv_head) * head_dim;
+            cache_element_index(cache_layout, key_token, kv_head, 0,
+                                max_context_tokens, kv_heads, head_dim);
 #pragma unroll
         for (int component = 0; component < kValuesPerLane; ++component) {
           const std::size_t dim =
@@ -506,7 +605,9 @@ __global__ __launch_bounds__(128) void online_prefill_generic_kernel(
       }
       const std::size_t key_token = key_tile + key_in_tile;
       const std::size_t value_base =
-          value_plane + (key_token * kv_heads + kv_head) * head_dim;
+          value_plane + cache_element_index(cache_layout, key_token, kv_head, 0,
+                                            max_context_tokens, kv_heads,
+                                            head_dim);
       const float tile_scale = expf(scores[key_in_tile] - next_max);
       row_sum += tile_scale;
 #pragma unroll
@@ -541,6 +642,7 @@ template <typename ActivationT, typename CacheT>
 void launch_online_prefill(const void *query, const void *key,
                            const void *value, const void *gate, void *output,
                            void *kv_cache, Qwen35AttentionShape shape,
+                           Qwen35KvCacheLayout cache_layout,
                            cudaStream_t stream) {
   const std::size_t kv_elements =
       checked_mul(shape.tokens,
@@ -555,7 +657,8 @@ void launch_online_prefill(const void *query, const void *key,
           static_cast<const ActivationT *>(key),
           static_cast<const ActivationT *>(value),
           static_cast<CacheT *>(kv_cache), shape.tokens, shape.kv_heads,
-          shape.head_dim, shape.max_context_tokens, shape.past_tokens);
+          shape.head_dim, shape.max_context_tokens, shape.past_tokens,
+          cache_layout);
   check_launch("qwen35_online_attention_append_cache");
 
   const dim3 grid{static_cast<unsigned int>(checked_grid_dimension(
@@ -575,7 +678,7 @@ void launch_online_prefill(const void *query, const void *key,
             static_cast<const ActivationT *>(gate),
             static_cast<ActivationT *>(output),
             static_cast<const CacheT *>(kv_cache), shape.tokens,
-            shape.max_context_tokens, shape.past_tokens);
+            shape.max_context_tokens, shape.past_tokens, cache_layout);
     check_launch("qwen35_online_attention_prefill_sm120_hd256");
     return;
   }
@@ -587,7 +690,7 @@ void launch_online_prefill(const void *query, const void *key,
           static_cast<ActivationT *>(output),
           static_cast<const CacheT *>(kv_cache), shape.tokens,
           shape.query_heads, shape.kv_heads, shape.head_dim,
-          shape.max_context_tokens, shape.past_tokens);
+          shape.max_context_tokens, shape.past_tokens, cache_layout);
   check_launch("qwen35_online_attention_prefill_generic");
 }
 
@@ -595,6 +698,7 @@ template <typename ActivationT, typename CacheT>
 void launch_online_decode(const void *query, const void *key, const void *value,
                           const void *gate, void *output, void *kv_cache,
                           Qwen35AttentionShape shape,
+                          Qwen35KvCacheLayout cache_layout,
                           const std::uint32_t *device_position,
                           cudaStream_t stream) {
   constexpr std::size_t kv_size = kModelKvHeads * kModelHeadDim;
@@ -605,7 +709,8 @@ void launch_online_decode(const void *query, const void *key, const void *value,
           static_cast<const ActivationT *>(key),
           static_cast<const ActivationT *>(value),
           static_cast<CacheT *>(kv_cache), kv_size, shape.max_context_tokens,
-          shape.past_tokens, device_position);
+          shape.past_tokens, cache_layout, shape.kv_heads, shape.head_dim,
+          device_position);
   check_launch("qwen35_online_attention_decode_append_cache");
 
   const int query_head_grid = checked_grid_dimension(
@@ -617,7 +722,7 @@ void launch_online_decode(const void *query, const void *key, const void *value,
             static_cast<const ActivationT *>(gate),
             static_cast<ActivationT *>(output),
             static_cast<const CacheT *>(kv_cache), shape.max_context_tokens,
-            shape.past_tokens, device_position);
+            shape.past_tokens, cache_layout, device_position);
   } else {
     online_decode_model_kernel<ActivationT, CacheT, 8>
         <<<query_head_grid, 8 * kWarpSize, 0, stream>>>(
@@ -625,7 +730,7 @@ void launch_online_decode(const void *query, const void *key, const void *value,
             static_cast<const ActivationT *>(gate),
             static_cast<ActivationT *>(output),
             static_cast<const CacheT *>(kv_cache), shape.max_context_tokens,
-            shape.past_tokens, device_position);
+            shape.past_tokens, cache_layout, device_position);
   }
   check_launch("qwen35_online_attention_decode_sm120_hd256");
 }
@@ -635,15 +740,17 @@ void launch_by_cache_dtype(const void *query, const void *key,
                            const void *value, const void *gate, void *output,
                            void *kv_cache, Qwen35AttentionShape shape,
                            Qwen35KvCacheDType cache_dtype,
+                           Qwen35KvCacheLayout cache_layout,
                            cudaStream_t stream) {
   switch (cache_dtype) {
   case Qwen35KvCacheDType::f32:
     launch_online_prefill<ActivationT, float>(query, key, value, gate, output,
-                                              kv_cache, shape, stream);
+                                              kv_cache, shape, cache_layout,
+                                              stream);
     return;
   case Qwen35KvCacheDType::bf16:
     launch_online_prefill<ActivationT, __nv_bfloat16>(
-        query, key, value, gate, output, kv_cache, shape, stream);
+        query, key, value, gate, output, kv_cache, shape, cache_layout, stream);
     return;
   }
   require(false, "unsupported online attention KV cache dtype");
@@ -655,17 +762,19 @@ void launch_decode_by_cache_dtype(const void *query, const void *key,
                                   void *output, void *kv_cache,
                                   Qwen35AttentionShape shape,
                                   Qwen35KvCacheDType cache_dtype,
+                                  Qwen35KvCacheLayout cache_layout,
                                   const std::uint32_t *device_position,
                                   cudaStream_t stream) {
   switch (cache_dtype) {
   case Qwen35KvCacheDType::f32:
     launch_online_decode<ActivationT, float>(query, key, value, gate, output,
-                                             kv_cache, shape, device_position,
-                                             stream);
+                                             kv_cache, shape, cache_layout,
+                                             device_position, stream);
     return;
   case Qwen35KvCacheDType::bf16:
     launch_online_decode<ActivationT, __nv_bfloat16>(query, key, value, gate,
                                                      output, kv_cache, shape,
+                                                     cache_layout,
                                                      device_position, stream);
     return;
   }
@@ -677,12 +786,11 @@ void launch_decode_by_cache_dtype(const void *query, const void *key,
 bool qwen35_online_attention_prefill_supported(
     Qwen35AttentionShape shape, BrtDataType activation_dtype,
     Qwen35AttentionLaunchPolicy policy) noexcept {
-  if (policy.implementation != Qwen35AttentionImplementation::online_tiled ||
-      policy.kv_cache_layout != Qwen35KvCacheLayout::token_major) {
+  if (policy.implementation != Qwen35AttentionImplementation::online_tiled) {
     return false;
   }
-  return online_prefill_signature_supported(shape, activation_dtype,
-                                            policy.kv_cache_dtype);
+  return online_prefill_signature_supported(
+      shape, activation_dtype, policy.kv_cache_dtype, policy.kv_cache_layout);
 }
 
 std::size_t
@@ -695,7 +803,8 @@ void qwen35_online_attention_prefill(
     const void *query, const void *key, const void *value, const void *gate,
     void *output, void *kv_cache, std::size_t kv_cache_bytes,
     Qwen35AttentionShape shape, BrtDataType activation_dtype,
-    Qwen35KvCacheDType cache_dtype, cudaStream_t stream) {
+    Qwen35KvCacheDType cache_dtype, Qwen35KvCacheLayout cache_layout,
+    cudaStream_t stream) {
   require(query != nullptr, "online attention query pointer is null");
   require(key != nullptr, "online attention key pointer is null");
   require(value != nullptr, "online attention value pointer is null");
@@ -704,7 +813,8 @@ void qwen35_online_attention_prefill(
   require(kv_cache != nullptr, "online attention KV cache pointer is null");
   require(stream != nullptr, "online attention CUDA stream is null");
   require(
-      online_prefill_signature_supported(shape, activation_dtype, cache_dtype),
+      online_prefill_signature_supported(shape, activation_dtype, cache_dtype,
+                                         cache_layout),
       "unsupported online attention prefill signature; select the "
       "materialized implementation before allocation");
 
@@ -718,6 +828,13 @@ void qwen35_online_attention_prefill(
     break;
   default:
     require(false, "unsupported online attention KV cache dtype");
+  }
+  switch (cache_layout) {
+  case Qwen35KvCacheLayout::token_major:
+  case Qwen35KvCacheLayout::head_major:
+    break;
+  default:
+    require(false, "unsupported online attention KV cache layout");
   }
   const std::size_t required_cache_bytes = checked_mul(
       checked_mul(
@@ -733,19 +850,20 @@ void qwen35_online_attention_prefill(
 
   if (activation_dtype == BRT_DTYPE_F32) {
     launch_by_cache_dtype<float>(query, key, value, gate, output, kv_cache,
-                                 shape, cache_dtype, stream);
+                                 shape, cache_dtype, cache_layout, stream);
     return;
   }
   launch_by_cache_dtype<__nv_bfloat16>(query, key, value, gate, output,
-                                       kv_cache, shape, cache_dtype, stream);
+                                       kv_cache, shape, cache_dtype,
+                                       cache_layout, stream);
 }
 
 void qwen35_online_attention_decode(
     const void *query, const void *key, const void *value, const void *gate,
     void *output, void *kv_cache, std::size_t kv_cache_bytes,
     Qwen35AttentionShape shape, BrtDataType activation_dtype,
-    Qwen35KvCacheDType cache_dtype, const std::uint32_t *device_position,
-    cudaStream_t stream) {
+    Qwen35KvCacheDType cache_dtype, Qwen35KvCacheLayout cache_layout,
+    const std::uint32_t *device_position, cudaStream_t stream) {
   require(query != nullptr, "online decode query pointer is null");
   require(key != nullptr, "online decode key pointer is null");
   require(value != nullptr, "online decode value pointer is null");
@@ -754,13 +872,29 @@ void qwen35_online_attention_decode(
   require(kv_cache != nullptr, "online decode KV cache pointer is null");
   require(stream != nullptr, "online decode CUDA stream is null");
   require(
-      online_decode_signature_supported(shape, activation_dtype, cache_dtype),
+      online_decode_signature_supported(shape, activation_dtype, cache_dtype,
+                                        cache_layout),
       "unsupported online attention decode signature; select the "
       "materialized implementation before allocation");
 
-  const std::size_t cache_element_bytes = cache_dtype == Qwen35KvCacheDType::f32
-                                              ? sizeof(float)
-                                              : sizeof(__nv_bfloat16);
+  std::size_t cache_element_bytes = 0;
+  switch (cache_dtype) {
+  case Qwen35KvCacheDType::f32:
+    cache_element_bytes = sizeof(float);
+    break;
+  case Qwen35KvCacheDType::bf16:
+    cache_element_bytes = sizeof(__nv_bfloat16);
+    break;
+  default:
+    require(false, "unsupported online attention KV cache dtype");
+  }
+  switch (cache_layout) {
+  case Qwen35KvCacheLayout::token_major:
+  case Qwen35KvCacheLayout::head_major:
+    break;
+  default:
+    require(false, "unsupported online attention KV cache layout");
+  }
   const std::size_t required_cache_bytes = checked_mul(
       checked_mul(2,
                   checked_mul(shape.max_context_tokens,
@@ -775,12 +909,13 @@ void qwen35_online_attention_decode(
   if (activation_dtype == BRT_DTYPE_F32) {
     launch_decode_by_cache_dtype<float>(query, key, value, gate, output,
                                         kv_cache, shape, cache_dtype,
-                                        device_position, stream);
+                                        cache_layout, device_position, stream);
     return;
   }
   launch_decode_by_cache_dtype<__nv_bfloat16>(query, key, value, gate, output,
                                               kv_cache, shape, cache_dtype,
-                                              device_position, stream);
+                                              cache_layout, device_position,
+                                              stream);
 }
 
 } // namespace brt::kernels

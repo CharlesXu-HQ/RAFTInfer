@@ -592,12 +592,11 @@ void qwen35_causal_attention(const void *query, const void *key,
   case brt::Qwen35AttentionImplementation::online_tiled:
     require(workspace == nullptr && workspace_bytes == 0,
             "online tiled attention forbids logits workspace");
-    require(policy.kv_cache_layout == brt::Qwen35KvCacheLayout::token_major,
-            "online tiled attention requires a token-major KV cache");
     if (shape.tokens == 1) {
       qwen35_online_attention_decode(query, key, value, gate, output, kv_cache,
                                      kv_cache_bytes, shape, activation_dtype,
-                                     policy.kv_cache_dtype, nullptr, stream);
+                                     policy.kv_cache_dtype,
+                                     policy.kv_cache_layout, nullptr, stream);
       return;
     }
     require(qwen35_online_attention_prefill_supported(shape, activation_dtype,
@@ -606,7 +605,8 @@ void qwen35_causal_attention(const void *query, const void *key,
             "materialized implementation before allocation");
     qwen35_online_attention_prefill(query, key, value, gate, output, kv_cache,
                                     kv_cache_bytes, shape, activation_dtype,
-                                    policy.kv_cache_dtype, stream);
+                                    policy.kv_cache_dtype,
+                                    policy.kv_cache_layout, stream);
     return;
   }
   require(false, "unsupported Qwen3.5 attention implementation");

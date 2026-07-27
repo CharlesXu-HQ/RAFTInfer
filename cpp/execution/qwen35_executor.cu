@@ -385,10 +385,18 @@ attention_launch_policy(Qwen35ExecutionPolicy policy) noexcept {
 
 bool online_decode_supported(const model::Qwen35Config &config,
                              Qwen35ExecutionPolicy policy) noexcept {
-  return config.full_attention_head_count == 16 &&
-         config.full_attention_kv_head_count == 4 &&
-         config.full_attention_head_dimension == 256 &&
-         policy.kv_cache_layout == Qwen35KvCacheLayout::token_major;
+  if (config.full_attention_head_count != 16 ||
+      config.full_attention_kv_head_count != 4 ||
+      config.full_attention_head_dimension != 256) {
+    return false;
+  }
+  switch (policy.kv_cache_layout) {
+  case Qwen35KvCacheLayout::token_major:
+  case Qwen35KvCacheLayout::head_major:
+    return true;
+  default:
+    return false;
+  }
 }
 
 Qwen35ExecutionPolicy
@@ -1807,7 +1815,8 @@ private:
           full_query_norm_, full_key_norm_, full_value_, linear_gate_,
           attention_out_, full_states_[state_index].kv_cache,
           full_states_[state_index].kv_cache_bytes, attention_shape, dtype_,
-          policy_.kv_cache, device_position, context_.stream());
+          policy_.kv_cache, policy_.kv_cache_layout, device_position,
+          context_.stream());
     } else {
       kernels::qwen35_causal_attention(
           full_query_norm_, full_key_norm_, full_value_, linear_gate_,

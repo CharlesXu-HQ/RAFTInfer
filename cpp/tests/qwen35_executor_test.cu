@@ -95,6 +95,16 @@ brt::Qwen35ExecutionPolicy materialized_policy() {
   return policy;
 }
 
+brt::Qwen35ExecutionPolicy online_policy(brt::Qwen35KvCacheDType dtype,
+                                         brt::Qwen35KvCacheLayout layout,
+                                         bool decode_graph = true) {
+  auto policy = brt::Qwen35ExecutionPolicy{};
+  policy.kv_cache = dtype;
+  policy.kv_cache_layout = layout;
+  policy.decode_graph = decode_graph;
+  return policy;
+}
+
 std::vector<std::uint8_t>
 make_release_attention_fixture(std::uint32_t context_length = 4) {
   constexpr std::uint32_t tensor_type = 30;
@@ -394,10 +404,17 @@ void run_workspace_contract_tests() {
   expect_executor_error([&] {
     (void)brt::Qwen35Executor::workspace_bytes(release, 17, invalid_reference);
   });
-  auto unsupported_online = online;
-  unsupported_online.kv_cache_layout = brt::Qwen35KvCacheLayout::head_major;
-  assert(brt::Qwen35Executor::workspace_bytes(release, 1, unsupported_online) ==
-         brt::Qwen35Executor::workspace_bytes(release, 1, reference));
+  for (const auto dtype :
+       {brt::Qwen35KvCacheDType::f32, brt::Qwen35KvCacheDType::bf16}) {
+    for (const auto layout : {brt::Qwen35KvCacheLayout::token_major,
+                              brt::Qwen35KvCacheLayout::head_major}) {
+      const auto candidate = online_policy(dtype, layout);
+      assert(brt::Qwen35Executor::workspace_bytes(release, 17, candidate) <
+             reference_bytes);
+      assert(brt::Qwen35Executor::workspace_bytes(release, 1, candidate) <
+             brt::Qwen35Executor::workspace_bytes(release, 1, reference));
+    }
+  }
 
   auto invalid = config;
   invalid.hidden_size = 0;
@@ -700,86 +717,100 @@ void run_cublaslt_plan_tuning_tests() {
   const auto path = write_fixture(make_release_attention_fixture(512));
   brt::model::Model model{path.string()};
   constexpr std::size_t max_context = 512;
-  auto policy = brt::Qwen35ExecutionPolicy{};
-  policy.decode_graph = true;
-  const std::size_t workspace_bytes = brt::Qwen35Executor::workspace_bytes(
-      model.qwen35_config(), max_context, policy);
 
   brt::DeviceContext device{0, 256U * 1024U * 1024U};
   auto weights = device.upload_qwen35_weights(model);
-  auto owner = device.create_execution_owner(workspace_bytes);
-  auto context = owner->execution_context();
+  for (const auto dtype :
+       {brt::Qwen35KvCacheDType::f32, brt::Qwen35KvCacheDType::bf16}) {
+    for (const auto layout : {brt::Qwen35KvCacheLayout::token_major,
+                              brt::Qwen35KvCacheLayout::head_major}) {
+      const auto policy = online_policy(dtype, layout, true);
+      const std::size_t workspace_bytes =
+          brt::Qwen35Executor::workspace_bytes(model.qwen35_config(),
+                                               max_context, policy);
+      auto owner = device.create_execution_owner(workspace_bytes);
+      auto context = owner->execution_context();
 
-  brt::Qwen35Executor executor{context, model.qwen35_config(), *weights,
-                               max_context, policy};
-  const auto construction = executor.diagnostics();
-  assert(construction.attention ==
-         brt::Qwen35AttentionImplementation::online_tiled);
-  assert(!construction.cublaslt_algorithm_ids.empty());
-  assert(!construction.cublaslt_plans.empty());
-  assert(construction.gated_delta_schedules.size() == 3);
-  for (const std::size_t bucket :
-       {std::size_t{1}, std::size_t{128}, std::size_t{512}}) {
-    assert(std::any_of(construction.gated_delta_schedules.begin(),
-                       construction.gated_delta_schedules.end(),
-                       [bucket](const auto &schedule) {
-                         return schedule.bucket_tokens == bucket &&
-                                schedule.key_dim == 256 &&
-                                schedule.value_dim == 256 &&
-                                schedule.schedule ==
-                                    brt::kernels::GatedDeltaSchedule::
-                                        register_resident_current &&
-                                schedule.warps_per_block == 4 &&
-                                !schedule.transposed_boundary_state &&
-                                !schedule.candidate_accepted;
-                       }));
+      brt::Qwen35Executor executor{context, model.qwen35_config(), *weights,
+                                   max_context, policy};
+      const auto construction = executor.diagnostics();
+      assert(construction.attention ==
+             brt::Qwen35AttentionImplementation::online_tiled);
+      assert(construction.kv_cache_dtype == dtype);
+      assert(construction.kv_cache_layout == layout);
+      assert(!construction.cublaslt_algorithm_ids.empty());
+      assert(!construction.cublaslt_plans.empty());
+      assert(construction.gated_delta_schedules.size() == 3);
+      for (const std::size_t bucket :
+           {std::size_t{1}, std::size_t{128}, std::size_t{512}}) {
+        assert(std::any_of(construction.gated_delta_schedules.begin(),
+                           construction.gated_delta_schedules.end(),
+                           [bucket](const auto &schedule) {
+                             return schedule.bucket_tokens == bucket &&
+                                    schedule.key_dim == 256 &&
+                                    schedule.value_dim == 256 &&
+                                    schedule.schedule ==
+                                        brt::kernels::GatedDeltaSchedule::
+                                            register_resident_current &&
+                                    schedule.warps_per_block == 4 &&
+                                    !schedule.transposed_boundary_state &&
+                                    !schedule.candidate_accepted;
+                           }));
+      }
+      assert(construction.cublaslt_algorithm_ids.size() ==
+             construction.cublaslt_plans.size());
+      assert(std::all_of(construction.cublaslt_algorithm_ids.begin(),
+                         construction.cublaslt_algorithm_ids.end(),
+                         [](int id) { return id >= 0; }));
+      for (const std::size_t bucket :
+           {std::size_t{1}, std::size_t{128}, std::size_t{512}}) {
+        assert(std::any_of(construction.cublaslt_plans.begin(),
+                           construction.cublaslt_plans.end(),
+                           [bucket](const auto &plan) {
+                             return plan.bucket_tokens == bucket &&
+                                    plan.m == bucket && plan.tuned &&
+                                    plan.algorithm_id >= 0;
+                           }));
+      }
+
+      const std::vector<std::int32_t> prompt128(128, 1);
+      const auto prefill = executor.prefill(prompt128);
+      assert(prefill.position == prompt128.size() - 1);
+      const auto after_prefill = executor.diagnostics();
+      assert(after_prefill.kv_cache_dtype == dtype);
+      assert(after_prefill.kv_cache_layout == layout);
+      assert(after_prefill.cublaslt_algorithm_ids ==
+             construction.cublaslt_algorithm_ids);
+      assert(after_prefill.cublaslt_plans == construction.cublaslt_plans);
+      assert(after_prefill.gated_delta_schedules ==
+             construction.gated_delta_schedules);
+
+      executor.reset();
+      const auto decoded = executor.decode(1);
+      assert(decoded.position == 0);
+      const auto after_capture_decode = executor.diagnostics();
+      assert(after_capture_decode.kv_cache_dtype == dtype);
+      assert(after_capture_decode.kv_cache_layout == layout);
+      assert(after_capture_decode.cublaslt_algorithm_ids ==
+             construction.cublaslt_algorithm_ids);
+      assert(after_capture_decode.cublaslt_plans == construction.cublaslt_plans);
+      assert(after_capture_decode.gated_delta_schedules ==
+             construction.gated_delta_schedules);
+      assert(after_capture_decode.decode_graph_captured);
+
+      const auto replayed = executor.decode(2);
+      assert(replayed.position == 1);
+      const auto after_replay = executor.diagnostics();
+      assert(after_replay.kv_cache_dtype == dtype);
+      assert(after_replay.kv_cache_layout == layout);
+      assert(after_replay.cublaslt_algorithm_ids ==
+             construction.cublaslt_algorithm_ids);
+      assert(after_replay.cublaslt_plans == construction.cublaslt_plans);
+      assert(after_replay.gated_delta_schedules ==
+             construction.gated_delta_schedules);
+      assert(after_replay.decode_graph_replayed);
+    }
   }
-  assert(construction.cublaslt_algorithm_ids.size() ==
-         construction.cublaslt_plans.size());
-  assert(std::all_of(construction.cublaslt_algorithm_ids.begin(),
-                     construction.cublaslt_algorithm_ids.end(),
-                     [](int id) { return id >= 0; }));
-  for (const std::size_t bucket :
-       {std::size_t{1}, std::size_t{128}, std::size_t{512}}) {
-    assert(std::any_of(construction.cublaslt_plans.begin(),
-                       construction.cublaslt_plans.end(),
-                       [bucket](const auto &plan) {
-                         return plan.bucket_tokens == bucket &&
-                                plan.m == bucket && plan.tuned &&
-                                plan.algorithm_id >= 0;
-                       }));
-  }
-
-  const std::vector<std::int32_t> prompt128(128, 1);
-  const auto prefill = executor.prefill(prompt128);
-  assert(prefill.position == prompt128.size() - 1);
-  const auto after_prefill = executor.diagnostics();
-  assert(after_prefill.cublaslt_algorithm_ids ==
-         construction.cublaslt_algorithm_ids);
-  assert(after_prefill.cublaslt_plans == construction.cublaslt_plans);
-  assert(after_prefill.gated_delta_schedules ==
-         construction.gated_delta_schedules);
-
-  executor.reset();
-  const auto decoded = executor.decode(1);
-  assert(decoded.position == 0);
-  const auto after_capture_decode = executor.diagnostics();
-  assert(after_capture_decode.cublaslt_algorithm_ids ==
-         construction.cublaslt_algorithm_ids);
-  assert(after_capture_decode.cublaslt_plans == construction.cublaslt_plans);
-  assert(after_capture_decode.gated_delta_schedules ==
-         construction.gated_delta_schedules);
-  assert(after_capture_decode.decode_graph_captured);
-
-  const auto replayed = executor.decode(2);
-  assert(replayed.position == 1);
-  const auto after_replay = executor.diagnostics();
-  assert(after_replay.cublaslt_algorithm_ids ==
-         construction.cublaslt_algorithm_ids);
-  assert(after_replay.cublaslt_plans == construction.cublaslt_plans);
-  assert(after_replay.gated_delta_schedules ==
-         construction.gated_delta_schedules);
-  assert(after_replay.decode_graph_replayed);
 }
 
 void maybe_write_delta_microbenchmark_evidence(
@@ -927,13 +958,9 @@ void run_executor_online_materialized_parity_tests() {
   brt::model::Model model{path.string()};
   constexpr std::size_t max_context = 4;
   const auto reference_policy = materialized_policy();
-  const auto online_policy = brt::Qwen35ExecutionPolicy{};
   const std::size_t reference_workspace_bytes =
       brt::Qwen35Executor::workspace_bytes(model.qwen35_config(), max_context,
                                            reference_policy);
-  const std::size_t online_workspace_bytes =
-      brt::Qwen35Executor::workspace_bytes(model.qwen35_config(), max_context,
-                                           online_policy);
 
   brt::DeviceContext device{0, 256U * 1024U * 1024U};
   auto weights = device.upload_qwen35_weights(model);
@@ -966,56 +993,81 @@ void run_executor_online_materialized_parity_tests() {
     };
   };
   auto reference_context = context_for(reference_workspace);
-  auto online_context = context_for(online_workspace);
   brt::Qwen35Executor reference{reference_context, model.qwen35_config(),
                                 *weights, max_context, reference_policy};
-  brt::Qwen35Executor online{online_context, model.qwen35_config(), *weights,
-                             max_context, online_policy};
 
   const auto reference_diagnostics = reference.diagnostics();
-  const auto online_diagnostics = online.diagnostics();
   assert(reference_diagnostics.attention ==
          brt::Qwen35AttentionImplementation::materialized_reference);
   assert(reference_diagnostics.attention_workspace_bytes > 0);
-  assert(online_diagnostics.attention ==
-         brt::Qwen35AttentionImplementation::online_tiled);
-  assert(online_diagnostics.attention_workspace_bytes == 0);
 
   const std::vector<std::int32_t> prompt{1, 2};
   const auto reference_prefill = reference.prefill(prompt);
-  const auto online_prefill = online.prefill(prompt);
-  assert(online_prefill.token == reference_prefill.token);
-  assert(online_prefill.position == reference_prefill.position);
   std::vector<float> reference_logits(model.qwen35_config().vocabulary_size);
-  std::vector<float> online_logits(model.qwen35_config().vocabulary_size);
   reference.copy_last_logits(reference_logits);
-  online.copy_last_logits(online_logits);
-  assert_reference_close("online-prefill", online_logits, reference_logits);
+  const auto reference_prefill_logits = reference_logits;
 
   const auto reference_decode = reference.decode(3);
-  const auto online_decode = online.decode(3);
-  assert(online_decode.token == reference_decode.token);
-  assert(online_decode.position == reference_decode.position);
   reference.copy_last_logits(reference_logits);
-  online.copy_last_logits(online_logits);
-  assert_reference_close("online-decode", online_logits, reference_logits);
+  const auto reference_decode_logits = reference_logits;
 
-  (void)statistics.push_counters();
-  for (std::size_t index = 0; index < 2; ++index) {
-    reference.reset();
-    online.reset();
-    (void)reference.prefill(prompt);
-    (void)online.prefill(prompt);
-    (void)reference.decode(3);
-    (void)online.decode(3);
+  for (const auto dtype :
+       {brt::Qwen35KvCacheDType::f32, brt::Qwen35KvCacheDType::bf16}) {
+    for (const auto layout : {brt::Qwen35KvCacheLayout::token_major,
+                              brt::Qwen35KvCacheLayout::head_major}) {
+      const auto candidate_policy = online_policy(dtype, layout, false);
+      const std::size_t online_workspace_bytes =
+          brt::Qwen35Executor::workspace_bytes(
+              model.qwen35_config(), max_context, candidate_policy);
+      brt::WorkspaceArena online_workspace{
+          rmm::device_async_resource_ref{statistics}, cuda::stream_ref{stream},
+          stream, online_workspace_bytes};
+      auto online_context = context_for(online_workspace);
+      brt::Qwen35Executor online{online_context, model.qwen35_config(),
+                                 *weights, max_context, candidate_policy};
+      const auto online_diagnostics = online.diagnostics();
+      assert(online_diagnostics.attention ==
+             brt::Qwen35AttentionImplementation::online_tiled);
+      assert(online_diagnostics.kv_cache_dtype == dtype);
+      assert(online_diagnostics.kv_cache_layout == layout);
+      assert(online_diagnostics.attention_workspace_bytes == 0);
+
+      const auto online_prefill = online.prefill(prompt);
+      assert(online_prefill.token == reference_prefill.token);
+      assert(online_prefill.position == reference_prefill.position);
+      std::vector<float> online_logits(model.qwen35_config().vocabulary_size);
+      online.copy_last_logits(online_logits);
+      assert_reference_close("online-prefill", online_logits,
+                             reference_prefill_logits);
+
+      const auto online_decode = online.decode(3);
+      assert(online_decode.token == reference_decode.token);
+      assert(online_decode.position == reference_decode.position);
+      online.copy_last_logits(online_logits);
+      assert_reference_close("online-decode", online_logits,
+                             reference_decode_logits);
+
+      online.reset();
+      const auto reset_prefill = online.prefill(prompt);
+      assert(reset_prefill.token == reference_prefill.token);
+      const auto reset_decode = online.decode(3);
+      assert(reset_decode.token == reference_decode.token);
+
+      (void)statistics.push_counters();
+      for (std::size_t index = 0; index < 2; ++index) {
+        online.reset();
+        (void)online.prefill(prompt);
+        (void)online.decode(3);
+      }
+      const auto [bytes, allocations] = statistics.pop_counters();
+      assert(bytes.value == 0);
+      assert(bytes.peak == 0);
+      assert(bytes.total == 0);
+      assert(allocations.value == 0);
+      assert(allocations.peak == 0);
+      assert(allocations.total == 0);
+    }
   }
-  const auto [bytes, allocations] = statistics.pop_counters();
-  assert(bytes.value == 0);
-  assert(bytes.peak == 0);
-  assert(bytes.total == 0);
-  assert(allocations.value == 0);
-  assert(allocations.peak == 0);
-  assert(allocations.total == 0);
 }
 
 void run_executor_reference_and_allocation_tests() {

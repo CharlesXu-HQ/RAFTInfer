@@ -243,8 +243,13 @@ void run_attention_policy_contract_tests(brt::ExecutionContext &context) {
       supported_prefill, BRT_DTYPE_F32, kReferenceAttentionPolicy));
   auto head_major_online = f32_online;
   head_major_online.kv_cache_layout = brt::Qwen35KvCacheLayout::head_major;
-  assert(!brt::kernels::qwen35_online_attention_prefill_supported(
+  assert(brt::kernels::qwen35_online_attention_prefill_supported(
       supported_prefill, BRT_DTYPE_F32, head_major_online));
+  auto unknown_layout_online = f32_online;
+  unknown_layout_online.kv_cache_layout =
+      static_cast<brt::Qwen35KvCacheLayout>(99);
+  assert(!brt::kernels::qwen35_online_attention_prefill_supported(
+      supported_prefill, BRT_DTYPE_F32, unknown_layout_online));
   auto decode_shape = supported_prefill;
   decode_shape.tokens = 1;
   assert(!brt::kernels::qwen35_online_attention_prefill_supported(
@@ -302,19 +307,29 @@ void run_attention_policy_contract_tests(brt::ExecutionContext &context) {
         const_pointer, const_pointer, const_pointer, const_pointer, pointer,
         pointer, std::numeric_limits<std::size_t>::max(),
         brt::kernels::Qwen35AttentionShape{1, 16, 4, 255, 32, 0}, BRT_DTYPE_F32,
-        brt::Qwen35KvCacheDType::f32, nullptr, context.stream());
+        brt::Qwen35KvCacheDType::f32,
+        brt::Qwen35KvCacheLayout::token_major, nullptr, context.stream());
   });
   expect_primitive_error([&] {
     brt::kernels::qwen35_online_attention_decode(
         const_pointer, const_pointer, const_pointer, const_pointer, pointer,
         pointer, std::numeric_limits<std::size_t>::max(), decode_model_shape,
-        BRT_DTYPE_F16, brt::Qwen35KvCacheDType::f32, nullptr, context.stream());
+        BRT_DTYPE_F16, brt::Qwen35KvCacheDType::f32,
+        brt::Qwen35KvCacheLayout::token_major, nullptr, context.stream());
   });
   expect_primitive_error([&] {
     brt::kernels::qwen35_online_attention_decode(
         const_pointer, const_pointer, const_pointer, const_pointer, pointer,
         pointer, sizeof(float), decode_model_shape, BRT_DTYPE_F32,
-        brt::Qwen35KvCacheDType::f32, nullptr, context.stream());
+        brt::Qwen35KvCacheDType::f32,
+        brt::Qwen35KvCacheLayout::token_major, nullptr, context.stream());
+  });
+  expect_primitive_error([&] {
+    brt::kernels::qwen35_online_attention_decode(
+        const_pointer, const_pointer, const_pointer, const_pointer, pointer,
+        pointer, std::numeric_limits<std::size_t>::max(), decode_model_shape,
+        BRT_DTYPE_F32, brt::Qwen35KvCacheDType::f32,
+        static_cast<brt::Qwen35KvCacheLayout>(99), nullptr, context.stream());
   });
 
   const std::size_t supported_output_elements = supported_prefill.tokens *
@@ -421,7 +436,7 @@ struct OnlinePrefillCase {
 };
 
 template <typename T>
-constexpr brt::Qwen35KvCacheDType online_cache_dtype() noexcept {
+constexpr brt::Qwen35KvCacheDType cache_dtype_for() noexcept {
   if constexpr (std::is_same_v<T, float>) {
     return brt::Qwen35KvCacheDType::f32;
   } else {
@@ -430,17 +445,43 @@ constexpr brt::Qwen35KvCacheDType online_cache_dtype() noexcept {
   }
 }
 
+std::size_t cache_index_for_layout(brt::Qwen35KvCacheLayout layout,
+                                   std::size_t token, std::size_t kv_head,
+                                   std::size_t dim,
+                                   brt::kernels::Qwen35AttentionShape shape) {
+  switch (layout) {
+  case brt::Qwen35KvCacheLayout::token_major:
+    return (token * shape.kv_heads + kv_head) * shape.head_dim + dim;
+  case brt::Qwen35KvCacheLayout::head_major:
+    return (kv_head * shape.max_context_tokens + token) * shape.head_dim + dim;
+  }
+  assert(false);
+  return 0;
+}
+
 template <typename CacheT>
 std::vector<CacheT>
 make_online_cache(std::span<const float> past_key,
                   std::span<const float> past_value,
-                  brt::kernels::Qwen35AttentionShape shape) {
+                  brt::kernels::Qwen35AttentionShape shape,
+                  brt::Qwen35KvCacheLayout layout) {
   const std::size_t kv_size = shape.kv_heads * shape.head_dim;
   const std::size_t plane = shape.max_context_tokens * kv_size;
   std::vector<float> cache_f32(2 * plane, 0.0F);
-  std::copy(past_key.begin(), past_key.end(), cache_f32.begin());
-  std::copy(past_value.begin(), past_value.end(),
-            cache_f32.begin() + static_cast<std::ptrdiff_t>(plane));
+  assert(past_key.size() == shape.past_tokens * kv_size);
+  assert(past_value.size() == shape.past_tokens * kv_size);
+  for (std::size_t token = 0; token < shape.past_tokens; ++token) {
+    for (std::size_t kv_head = 0; kv_head < shape.kv_heads; ++kv_head) {
+      for (std::size_t dim = 0; dim < shape.head_dim; ++dim) {
+        const std::size_t logical =
+            (token * shape.kv_heads + kv_head) * shape.head_dim + dim;
+        const std::size_t cache_index =
+            cache_index_for_layout(layout, token, kv_head, dim, shape);
+        cache_f32[cache_index] = past_key[logical];
+        cache_f32[plane + cache_index] = past_value[logical];
+      }
+    }
+  }
   return encode<CacheT>(cache_f32);
 }
 
@@ -452,13 +493,14 @@ std::vector<float> run_materialized_prefill(
     brt::kernels::Qwen35AttentionShape shape) {
   const std::size_t output_elements =
       shape.tokens * shape.query_heads * shape.head_dim;
-  const auto cache = make_online_cache<float>(past_key, past_value, shape);
+  const auto cache = make_online_cache<float>(
+      past_key, past_value, shape, brt::Qwen35KvCacheLayout::token_major);
   auto device_cache = upload(context, std::span{cache});
   const auto device_query = upload(context, query);
   const auto device_key = upload(context, key);
   const auto device_value = upload(context, value);
   const auto device_gate = upload(context, gate);
-  DeviceBuffer device_output{context, output_elements * sizeof(T)};
+  DeviceBuffer device_output{context, output_elements * sizeof(ActivationT)};
   DeviceBuffer device_workspace{context,
                                 brt::kernels::qwen35_attention_workspace_bytes(
                                     shape, kReferenceAttentionPolicy)};
@@ -480,28 +522,31 @@ std::vector<float> run_materialized_prefill(
   return output;
 }
 
-template <typename T>
+template <typename ActivationT, typename CacheT>
 std::vector<float>
-run_online_prefill(brt::ExecutionContext &context, std::span<const T> query,
-                   std::span<const T> key, std::span<const T> value,
-                   std::span<const T> gate, std::span<const float> past_key,
+run_online_prefill(brt::ExecutionContext &context,
+                   std::span<const ActivationT> query,
+                   std::span<const ActivationT> key,
+                   std::span<const ActivationT> value,
+                   std::span<const ActivationT> gate,
+                   std::span<const float> past_key,
                    std::span<const float> past_value,
-                   brt::kernels::Qwen35AttentionShape shape) {
-  using CacheT =
-      std::conditional_t<std::is_same_v<T, float>, float, __nv_bfloat16>;
+                   brt::kernels::Qwen35AttentionShape shape,
+                   brt::Qwen35KvCacheLayout layout) {
   const std::size_t output_elements =
       shape.tokens * shape.query_heads * shape.head_dim;
-  const auto cache = make_online_cache<CacheT>(past_key, past_value, shape);
+  const auto cache = make_online_cache<CacheT>(past_key, past_value, shape,
+                                               layout);
   auto device_cache = upload(context, std::span{cache});
   const auto device_query = upload(context, query);
   const auto device_key = upload(context, key);
   const auto device_value = upload(context, value);
   const auto device_gate = upload(context, gate);
-  DeviceBuffer device_output{context, output_elements * sizeof(T)};
+  DeviceBuffer device_output{context, output_elements * sizeof(ActivationT)};
   const brt::kernels::Qwen35AttentionLaunchPolicy online_policy{
       .implementation = brt::Qwen35AttentionImplementation::online_tiled,
-      .kv_cache_dtype = online_cache_dtype<T>(),
-      .kv_cache_layout = brt::Qwen35KvCacheLayout::token_major,
+      .kv_cache_dtype = cache_dtype_for<CacheT>(),
+      .kv_cache_layout = layout,
   };
 
   assert(brt::kernels::qwen35_online_attention_workspace_bytes(shape) == 0);
@@ -510,20 +555,21 @@ run_online_prefill(brt::ExecutionContext &context, std::span<const T> query,
   brt::kernels::qwen35_causal_attention(
       device_query.data(), device_key.data(), device_value.data(),
       device_gate.data(), device_output.data(), device_cache.data(),
-      cache.size() * sizeof(CacheT), nullptr, 0, shape, DTypeTraits<T>::dtype,
-      online_policy, context.stream());
+      cache.size() * sizeof(CacheT), nullptr, 0, shape,
+      DTypeTraits<ActivationT>::dtype, online_policy, context.stream());
 
   const auto encoded =
-      download<T>(context, device_output.data(), output_elements);
+      download<ActivationT>(context, device_output.data(), output_elements);
   std::vector<float> output(encoded.size());
   std::transform(encoded.begin(), encoded.end(), output.begin(),
-                 DTypeTraits<T>::to_float);
+                 DTypeTraits<ActivationT>::to_float);
   return output;
 }
 
-template <typename T>
+template <typename ActivationT, typename CacheT>
 void run_online_materialized_parity_case(brt::ExecutionContext &context,
-                                         OnlinePrefillCase test_case) {
+                                         OnlinePrefillCase test_case,
+                                         brt::Qwen35KvCacheLayout layout) {
   const brt::kernels::Qwen35AttentionShape shape{
       .tokens = test_case.tokens,
       .query_heads = test_case.query_heads,
@@ -544,15 +590,15 @@ void run_online_materialized_parity_case(brt::ExecutionContext &context,
   const auto gate_f32 = sequence(q_elements, -0.019F, 0.2F);
   const auto past_key = sequence(past_elements, 0.009F, -0.04F);
   const auto past_value = sequence(past_elements, -0.015F, 0.50F);
-  const auto query = encode<T>(query_f32);
-  const auto key = encode<T>(key_f32);
-  const auto value = encode<T>(value_f32);
-  const auto gate = encode<T>(gate_f32);
+  const auto query = encode<ActivationT>(query_f32);
+  const auto key = encode<ActivationT>(key_f32);
+  const auto value = encode<ActivationT>(value_f32);
+  const auto gate = encode<ActivationT>(gate_f32);
 
-  const auto reference = run_materialized_prefill<T>(
+  const auto reference = run_materialized_prefill<ActivationT>(
       context, query, key, value, gate, past_key, past_value, shape);
-  const auto online = run_online_prefill<T>(context, query, key, value, gate,
-                                            past_key, past_value, shape);
+  const auto online = run_online_prefill<ActivationT, CacheT>(
+      context, query, key, value, gate, past_key, past_value, shape, layout);
   assert(reference.size() == online.size());
 
   float max_abs = 0.0F;
@@ -566,7 +612,7 @@ void run_online_materialized_parity_case(brt::ExecutionContext &context,
     max_rel = std::max(max_rel, rel_error);
   }
   assert(max_abs <= 2.0e-2F);
-  if constexpr (std::is_same_v<T, __nv_bfloat16>) {
+  if constexpr (std::is_same_v<CacheT, __nv_bfloat16>) {
     assert(max_rel <= 2.0e-2F);
   }
 
@@ -578,11 +624,11 @@ void run_online_materialized_parity_case(brt::ExecutionContext &context,
     future_key_f32[i] += 7.0F;
     future_value_f32[i] -= 9.0F;
   }
-  const auto future_key = encode<T>(future_key_f32);
-  const auto future_value = encode<T>(future_value_f32);
-  const auto future_output =
-      run_online_prefill<T>(context, query, future_key, future_value, gate,
-                            past_key, past_value, shape);
+  const auto future_key = encode<ActivationT>(future_key_f32);
+  const auto future_value = encode<ActivationT>(future_value_f32);
+  const auto future_output = run_online_prefill<ActivationT, CacheT>(
+      context, query, future_key, future_value, gate, past_key, past_value,
+      shape, layout);
   const std::size_t causal_elements =
       (shape.tokens - 1) * shape.query_heads * shape.head_dim;
   for (std::size_t i = 0; i < causal_elements; ++i) {
@@ -590,7 +636,7 @@ void run_online_materialized_parity_case(brt::ExecutionContext &context,
   }
 }
 
-template <typename T>
+template <typename ActivationT, typename CacheT>
 void run_adversarial_online_rescaling_case(brt::ExecutionContext &context) {
   constexpr std::size_t tokens = 17;
   constexpr std::size_t query_heads = 4;
@@ -616,15 +662,16 @@ void run_adversarial_online_rescaling_case(brt::ExecutionContext &context) {
       }
     }
   }
-  const auto query = encode<T>(query_f32);
-  const auto key = encode<T>(key_f32);
-  const auto value = encode<T>(value_f32);
-  const auto gate = encode<T>(gate_f32);
+  const auto query = encode<ActivationT>(query_f32);
+  const auto key = encode<ActivationT>(key_f32);
+  const auto value = encode<ActivationT>(value_f32);
+  const auto gate = encode<ActivationT>(gate_f32);
   const std::vector<float> no_past;
-  const auto reference = run_materialized_prefill<T>(
+  const auto reference = run_materialized_prefill<ActivationT>(
       context, query, key, value, gate, no_past, no_past, shape);
-  const auto online = run_online_prefill<T>(context, query, key, value, gate,
-                                            no_past, no_past, shape);
+  const auto online = run_online_prefill<ActivationT, CacheT>(
+      context, query, key, value, gate, no_past, no_past, shape,
+      brt::Qwen35KvCacheLayout::head_major);
 
   assert(reference.size() == online.size());
   for (std::size_t i = 0; i < online.size(); ++i) {
@@ -633,20 +680,26 @@ void run_adversarial_online_rescaling_case(brt::ExecutionContext &context) {
   }
 }
 
-template <typename T>
+template <typename ActivationT, typename CacheT>
 void run_online_prefill_cases(brt::ExecutionContext &context) {
-  run_online_materialized_parity_case<T>(context, {4, 4, 2, 64, 0});
-  run_online_materialized_parity_case<T>(context, {17, 16, 4, 256, 0});
-  run_online_materialized_parity_case<T>(context, {128, 16, 4, 256, 0});
-  run_online_materialized_parity_case<T>(context, {17, 16, 4, 256, 111});
-  run_adversarial_online_rescaling_case<T>(context);
+  for (const auto layout : {brt::Qwen35KvCacheLayout::token_major,
+                            brt::Qwen35KvCacheLayout::head_major}) {
+    run_online_materialized_parity_case<ActivationT, CacheT>(
+        context, {4, 4, 2, 64, 0}, layout);
+    run_online_materialized_parity_case<ActivationT, CacheT>(
+        context, {17, 16, 4, 256, 0}, layout);
+    run_online_materialized_parity_case<ActivationT, CacheT>(
+        context, {128, 16, 4, 256, 0}, layout);
+    run_online_materialized_parity_case<ActivationT, CacheT>(
+        context, {17, 16, 4, 256, 111}, layout);
+  }
+  run_adversarial_online_rescaling_case<ActivationT, CacheT>(context);
 }
 
-template <typename T>
+template <typename ActivationT, typename CacheT>
 void run_online_decode_case(brt::ExecutionContext &context,
-                            std::size_t context_tokens) {
-  using CacheT =
-      std::conditional_t<std::is_same_v<T, float>, float, __nv_bfloat16>;
+                            std::size_t context_tokens,
+                            brt::Qwen35KvCacheLayout layout) {
   constexpr std::size_t query_heads = 16;
   constexpr std::size_t kv_heads = 4;
   constexpr std::size_t head_dim = 256;
@@ -669,12 +722,12 @@ void run_online_decode_case(brt::ExecutionContext &context,
   const auto key_f32 = sequence(2 * kv_size, -0.005F, 0.06F);
   const auto value_f32 = sequence(2 * kv_size, 0.006F, -0.13F);
   const auto gate_f32 = sequence(2 * hidden_size, -0.008F, 0.24F);
-  const auto query = encode<T>(query_f32);
-  const auto key = encode<T>(key_f32);
-  const auto value = encode<T>(value_f32);
-  const auto gate = encode<T>(gate_f32);
+  const auto query = encode<ActivationT>(query_f32);
+  const auto key = encode<ActivationT>(key_f32);
+  const auto value = encode<ActivationT>(value_f32);
+  const auto gate = encode<ActivationT>(gate_f32);
 
-  const auto first_reference = run_materialized_prefill<T>(
+  const auto first_reference = run_materialized_prefill<ActivationT>(
       context, std::span{query}.first(hidden_size),
       std::span{key}.first(kv_size), std::span{value}.first(kv_size),
       std::span{gate}.first(hidden_size), past_key, past_value,
@@ -685,13 +738,15 @@ void run_online_decode_case(brt::ExecutionContext &context,
   second_past_key.reserve(second_past_key.size() + kv_size);
   std::transform(key.begin(),
                  key.begin() + static_cast<std::ptrdiff_t>(kv_size),
-                 std::back_inserter(second_past_key), DTypeTraits<T>::to_float);
+                 std::back_inserter(second_past_key),
+                 DTypeTraits<ActivationT>::to_float);
   auto second_past_value = past_value;
   second_past_value.reserve(second_past_value.size() + kv_size);
   std::transform(
       value.begin(), value.begin() + static_cast<std::ptrdiff_t>(kv_size),
-      std::back_inserter(second_past_value), DTypeTraits<T>::to_float);
-  const auto second_reference = run_materialized_prefill<T>(
+      std::back_inserter(second_past_value),
+      DTypeTraits<ActivationT>::to_float);
+  const auto second_reference = run_materialized_prefill<ActivationT>(
       context, std::span{query}.subspan(hidden_size, hidden_size),
       std::span{key}.subspan(kv_size, kv_size),
       std::span{value}.subspan(kv_size, kv_size),
@@ -701,14 +756,16 @@ void run_online_decode_case(brt::ExecutionContext &context,
                                          max_context_tokens,
                                          first_position + 1});
 
-  const auto cache =
-      make_online_cache<CacheT>(past_key, past_value, decode_shape);
+  auto initial_cache_shape = decode_shape;
+  initial_cache_shape.past_tokens = first_position;
+  const auto cache = make_online_cache<CacheT>(past_key, past_value,
+                                               initial_cache_shape, layout);
   auto device_cache = upload(context, std::span{cache});
   const auto device_query = upload(context, std::span{query});
   const auto device_key = upload(context, std::span{key});
   const auto device_value = upload(context, std::span{value});
   const auto device_gate = upload(context, std::span{gate});
-  DeviceBuffer device_output{context, 2 * hidden_size * sizeof(T)};
+  DeviceBuffer device_output{context, 2 * hidden_size * sizeof(ActivationT)};
   std::uint32_t position = static_cast<std::uint32_t>(first_position);
   auto device_position = upload(
       context, std::span<const std::uint32_t>{&position, std::size_t{1}});
@@ -716,8 +773,8 @@ void run_online_decode_case(brt::ExecutionContext &context,
   brt::kernels::qwen35_online_attention_decode(
       device_query.data(), device_key.data(), device_value.data(),
       device_gate.data(), device_output.data(), device_cache.data(),
-      cache.size() * sizeof(CacheT), decode_shape, DTypeTraits<T>::dtype,
-      online_cache_dtype<T>(),
+      cache.size() * sizeof(CacheT), decode_shape,
+      DTypeTraits<ActivationT>::dtype, cache_dtype_for<CacheT>(), layout,
       static_cast<const std::uint32_t *>(device_position.data()),
       context.stream());
   ++position;
@@ -725,21 +782,21 @@ void run_online_decode_case(brt::ExecutionContext &context,
                          cudaMemcpyHostToDevice,
                          context.stream()) == cudaSuccess);
   brt::kernels::qwen35_online_attention_decode(
-      static_cast<const T *>(device_query.data()) + hidden_size,
-      static_cast<const T *>(device_key.data()) + kv_size,
-      static_cast<const T *>(device_value.data()) + kv_size,
-      static_cast<const T *>(device_gate.data()) + hidden_size,
-      static_cast<T *>(device_output.data()) + hidden_size, device_cache.data(),
-      cache.size() * sizeof(CacheT), decode_shape, DTypeTraits<T>::dtype,
-      online_cache_dtype<T>(),
+      static_cast<const ActivationT *>(device_query.data()) + hidden_size,
+      static_cast<const ActivationT *>(device_key.data()) + kv_size,
+      static_cast<const ActivationT *>(device_value.data()) + kv_size,
+      static_cast<const ActivationT *>(device_gate.data()) + hidden_size,
+      static_cast<ActivationT *>(device_output.data()) + hidden_size,
+      device_cache.data(), cache.size() * sizeof(CacheT), decode_shape,
+      DTypeTraits<ActivationT>::dtype, cache_dtype_for<CacheT>(), layout,
       static_cast<const std::uint32_t *>(device_position.data()),
       context.stream());
 
   const auto encoded_output =
-      download<T>(context, device_output.data(), 2 * hidden_size);
+      download<ActivationT>(context, device_output.data(), 2 * hidden_size);
   std::vector<float> output(encoded_output.size());
   std::transform(encoded_output.begin(), encoded_output.end(), output.begin(),
-                 DTypeTraits<T>::to_float);
+                 DTypeTraits<ActivationT>::to_float);
   expect_matches_reference(std::span{output}.first(hidden_size),
                            first_reference);
   expect_matches_reference(std::span{output}.subspan(hidden_size, hidden_size),
@@ -749,59 +806,82 @@ void run_online_decode_case(brt::ExecutionContext &context,
                                              2 * max_context_tokens * kv_size);
   const std::size_t value_plane = max_context_tokens * kv_size;
   for (std::size_t element = 0; element < kv_size; ++element) {
+    const std::size_t kv_head = element / head_dim;
+    const std::size_t dim = element - kv_head * head_dim;
+    const float first_key_expected =
+        DTypeTraits<CacheT>::to_float(DTypeTraits<CacheT>::from_float(
+            DTypeTraits<ActivationT>::to_float(key[element])));
+    const float second_key_expected = DTypeTraits<CacheT>::to_float(
+        DTypeTraits<CacheT>::from_float(
+            DTypeTraits<ActivationT>::to_float(key[kv_size + element])));
+    const float first_value_expected =
+        DTypeTraits<CacheT>::to_float(DTypeTraits<CacheT>::from_float(
+            DTypeTraits<ActivationT>::to_float(value[element])));
+    const float second_value_expected = DTypeTraits<CacheT>::to_float(
+        DTypeTraits<CacheT>::from_float(
+            DTypeTraits<ActivationT>::to_float(value[kv_size + element])));
     assert(close_enough(DTypeTraits<CacheT>::to_float(
-                            actual_cache[first_position * kv_size + element]),
-                        key_f32[element]));
+                            actual_cache[cache_index_for_layout(
+                                layout, first_position, kv_head, dim,
+                                decode_shape)]),
+                        first_key_expected));
     assert(close_enough(
         DTypeTraits<CacheT>::to_float(
-            actual_cache[(first_position + 1) * kv_size + element]),
-        key_f32[kv_size + element]));
+            actual_cache[cache_index_for_layout(layout, first_position + 1,
+                                                kv_head, dim, decode_shape)]),
+        second_key_expected));
     assert(close_enough(
-        DTypeTraits<CacheT>::to_float(
-            actual_cache[value_plane + first_position * kv_size + element]),
-        value_f32[element]));
+        DTypeTraits<CacheT>::to_float(actual_cache
+            [value_plane + cache_index_for_layout(layout, first_position,
+                                                  kv_head, dim, decode_shape)]),
+        first_value_expected));
     assert(close_enough(
-        DTypeTraits<CacheT>::to_float(
-            actual_cache[value_plane + (first_position + 1) * kv_size +
-                         element]),
-        value_f32[kv_size + element]));
+        DTypeTraits<CacheT>::to_float(actual_cache
+            [value_plane + cache_index_for_layout(layout, first_position + 1,
+                                                  kv_head, dim, decode_shape)]),
+        second_value_expected));
   }
 
   if (context_tokens == 32) {
     auto host_position_shape = decode_shape;
     host_position_shape.past_tokens = first_position;
-    const auto host_position_cache =
-        make_online_cache<CacheT>(past_key, past_value, host_position_shape);
+    const auto host_position_cache = make_online_cache<CacheT>(
+        past_key, past_value, host_position_shape, layout);
     auto device_host_position_cache =
         upload(context, std::span{host_position_cache});
-    DeviceBuffer device_host_position_output{context, hidden_size * sizeof(T)};
+    DeviceBuffer device_host_position_output{context,
+                                             hidden_size * sizeof(ActivationT)};
     const brt::kernels::Qwen35AttentionLaunchPolicy online_policy{
         .implementation = brt::Qwen35AttentionImplementation::online_tiled,
-        .kv_cache_dtype = online_cache_dtype<T>(),
-        .kv_cache_layout = brt::Qwen35KvCacheLayout::token_major,
+        .kv_cache_dtype = cache_dtype_for<CacheT>(),
+        .kv_cache_layout = layout,
     };
     brt::kernels::qwen35_causal_attention(
         device_query.data(), device_key.data(), device_value.data(),
         device_gate.data(), device_host_position_output.data(),
         device_host_position_cache.data(),
         host_position_cache.size() * sizeof(CacheT), nullptr, 0,
-        host_position_shape, DTypeTraits<T>::dtype, online_policy,
+        host_position_shape, DTypeTraits<ActivationT>::dtype, online_policy,
         context.stream());
     const auto host_position_encoded =
-        download<T>(context, device_host_position_output.data(), hidden_size);
+        download<ActivationT>(context, device_host_position_output.data(),
+                              hidden_size);
     std::vector<float> host_position_output(hidden_size);
     std::transform(host_position_encoded.begin(), host_position_encoded.end(),
-                   host_position_output.begin(), DTypeTraits<T>::to_float);
+                   host_position_output.begin(),
+                   DTypeTraits<ActivationT>::to_float);
     expect_matches_reference(host_position_output, first_reference);
   }
 }
 
-template <typename T>
+template <typename ActivationT, typename CacheT>
 void run_online_decode_cases(brt::ExecutionContext &context) {
-  run_online_decode_case<T>(context, 32);
-  run_online_decode_case<T>(context, 128);
-  run_online_decode_case<T>(context, 512);
-  run_online_decode_case<T>(context, 2048);
+  for (const auto layout : {brt::Qwen35KvCacheLayout::token_major,
+                            brt::Qwen35KvCacheLayout::head_major}) {
+    run_online_decode_case<ActivationT, CacheT>(context, 32, layout);
+    run_online_decode_case<ActivationT, CacheT>(context, 128, layout);
+    run_online_decode_case<ActivationT, CacheT>(context, 512, layout);
+  }
 }
 
 template <typename T>
@@ -1167,12 +1247,16 @@ int main() {
   run_prefill_dtype_cases<__half>(context);
   run_prefill_dtype_cases<__nv_bfloat16>(context);
   run_prefill_dtype_cases<float>(context);
-  run_online_prefill_cases<__nv_bfloat16>(context);
-  run_online_prefill_cases<float>(context);
+  run_online_prefill_cases<__nv_bfloat16, float>(context);
+  run_online_prefill_cases<__nv_bfloat16, __nv_bfloat16>(context);
+  run_online_prefill_cases<float, float>(context);
+  run_online_prefill_cases<float, __nv_bfloat16>(context);
   std::fprintf(stderr, "attention_implementation="
                        "qwen35_online_attention_decode_sm120_hd256\n");
-  run_online_decode_cases<__nv_bfloat16>(context);
-  run_online_decode_cases<float>(context);
+  run_online_decode_cases<__nv_bfloat16, float>(context);
+  run_online_decode_cases<__nv_bfloat16, __nv_bfloat16>(context);
+  run_online_decode_cases<float, float>(context);
+  run_online_decode_cases<float, __nv_bfloat16>(context);
   run_decode_after_prefill_case<__half>(context, 1);
   run_decode_after_prefill_case<__half>(context, 2);
   run_decode_after_prefill_case<__nv_bfloat16>(context, 1);
