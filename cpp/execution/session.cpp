@@ -51,8 +51,10 @@ void validate_request(const model::Qwen35Config &config,
 } // namespace
 
 Session::Session(std::shared_ptr<const model::Model> model,
-                 std::uint32_t max_context_tokens)
+                 std::uint32_t max_context_tokens,
+                 Qwen35ExecutionPolicy policy)
     : model_(std::move(model)),
+      policy_(policy),
       state_(create_session_layout(model_, max_context_tokens),
              Qwen35HostStorage::LogicalOnly) {
 #if BRT_ENABLE_CUDA
@@ -65,12 +67,14 @@ Session::Session(std::shared_ptr<const model::Model> model,
     if (!device || weights == nullptr) {
       throw std::logic_error("CUDA model attachment is incomplete");
     }
+    const auto workspace_bytes = Qwen35Executor::workspace_bytes(
+        model_->qwen35_config(), max_context_tokens, policy_);
     execution_owner_ = device->create_execution_owner(
-        Qwen35Executor::workspace_bytes(model_->qwen35_config(),
-                                        max_context_tokens));
+        workspace_bytes);
     auto context = execution_owner_->execution_context();
     executor_ = std::make_unique<Qwen35Executor>(
-        context, model_->qwen35_config(), *weights, max_context_tokens);
+        context, model_->qwen35_config(), *weights, max_context_tokens,
+        policy_);
   } catch (const std::bad_alloc &) {
     throw;
   } catch (const std::exception &error) {
@@ -125,6 +129,27 @@ SessionTokenResult Session::decode(std::int32_t token) {
 #endif
   throw SessionUnavailableError(
       "Qwen3.5 decode backend requires a CUDA-loaded model");
+}
+
+SessionDiagnostics Session::diagnostics() const {
+#if BRT_ENABLE_CUDA
+  if (executor_) {
+    const auto diagnostics = executor_->diagnostics();
+    return SessionDiagnostics{
+        .attention = diagnostics.attention,
+        .kv_cache = diagnostics.kv_cache_dtype,
+        .kv_cache_layout = diagnostics.kv_cache_layout,
+        .decode_graph_enabled =
+            policy_.decode_graph &&
+            diagnostics.attention == Qwen35AttentionImplementation::online_tiled,
+        .decode_graph_captured = diagnostics.decode_graph_captured,
+        .decode_graph_replayed = diagnostics.decode_graph_replayed,
+        .attention_workspace_bytes = diagnostics.attention_workspace_bytes,
+    };
+  }
+#endif
+  throw SessionUnavailableError(
+      "Qwen3.5 execution diagnostics require a CUDA-loaded model");
 }
 
 void Session::reset() {

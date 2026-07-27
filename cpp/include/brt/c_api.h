@@ -32,10 +32,46 @@ typedef struct BrtOwnedBuffer {
   size_t size;
 } BrtOwnedBuffer;
 
+enum {
+  BRT_QWEN35_ATTENTION_MATERIALIZED_REFERENCE = 0,
+  BRT_QWEN35_ATTENTION_ONLINE_TILED = 1,
+};
+
+enum {
+  BRT_QWEN35_KV_CACHE_F32 = 0,
+  BRT_QWEN35_KV_CACHE_BF16 = 1,
+};
+
+enum {
+  BRT_QWEN35_KV_CACHE_LAYOUT_TOKEN_MAJOR = 0,
+  BRT_QWEN35_KV_CACHE_LAYOUT_HEAD_MAJOR = 1,
+};
+
+typedef struct BrtQwen35ExecutionPolicy {
+  size_t struct_size;
+  uint32_t attention;
+  uint32_t kv_cache_dtype;
+  uint32_t kv_cache_layout;
+  int32_t decode_graph;
+  int32_t grouped_input_casts;
+} BrtQwen35ExecutionPolicy;
+
 typedef struct BrtSessionConfig {
   size_t struct_size;
   uint32_t max_context_tokens;
+  const BrtQwen35ExecutionPolicy *qwen35_policy;
 } BrtSessionConfig;
+
+typedef struct BrtSessionDiagnostics {
+  size_t struct_size;
+  uint32_t attention;
+  uint32_t kv_cache_dtype;
+  uint32_t kv_cache_layout;
+  int32_t decode_graph_enabled;
+  int32_t decode_graph_captured;
+  int32_t decode_graph_replayed;
+  size_t attention_workspace_bytes;
+} BrtSessionDiagnostics;
 
 typedef struct BrtTokenResult {
   int32_t token_id;
@@ -63,6 +99,8 @@ BrtStatus brt_session_prefill(BrtSessionHandle *session, const int32_t *tokens,
                               BrtTokenResult *out_result);
 BrtStatus brt_session_decode(BrtSessionHandle *session, int32_t token_id,
                              BrtTokenResult *out_result);
+BrtStatus brt_session_diagnostics(BrtSessionHandle *session,
+                                  BrtSessionDiagnostics *out_diagnostics);
 BrtStatus brt_session_reset(BrtSessionHandle *session);
 void brt_session_destroy(BrtSessionHandle *session);
 void brt_owned_buffer_free(BrtOwnedBuffer *buffer);

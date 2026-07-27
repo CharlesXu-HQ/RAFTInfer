@@ -219,6 +219,31 @@ fn generate_accepts_json_output_format_before_backend_selection() {
 }
 
 #[test]
+fn generate_accepts_explicit_kv_policy_before_backend_selection() {
+    let output = run(&[
+        "generate",
+        "--model",
+        "missing.gguf",
+        "--prompt",
+        "hello",
+        "--max-new-tokens",
+        "1",
+        "--context",
+        "8",
+        "--kv-cache-dtype",
+        "bf16",
+        "--kv-cache-layout",
+        "head-major",
+    ]);
+
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("generation requires a CUDA-enabled BRT build; this binary is host-only")
+    );
+}
+
+#[test]
 fn generate_rejects_invalid_and_duplicate_output_formats() {
     for (args, expected) in [
         (
@@ -267,6 +292,85 @@ fn generate_rejects_invalid_and_duplicate_output_formats() {
 }
 
 #[test]
+fn generate_rejects_invalid_duplicate_and_missing_kv_policy_values() {
+    for (args, expected) in [
+        (
+            vec![
+                "generate",
+                "--model",
+                "model.gguf",
+                "--prompt",
+                "hello",
+                "--max-new-tokens",
+                "1",
+                "--context",
+                "8",
+                "--kv-cache-dtype",
+                "fp16",
+            ],
+            "--kv-cache-dtype must be f32 or bf16",
+        ),
+        (
+            vec![
+                "generate",
+                "--model",
+                "model.gguf",
+                "--prompt",
+                "hello",
+                "--max-new-tokens",
+                "1",
+                "--context",
+                "8",
+                "--kv-cache-layout",
+                "layer-major",
+            ],
+            "--kv-cache-layout must be token-major or head-major",
+        ),
+        (
+            vec![
+                "generate",
+                "--model",
+                "model.gguf",
+                "--prompt",
+                "hello",
+                "--max-new-tokens",
+                "1",
+                "--context",
+                "8",
+                "--kv-cache-dtype",
+                "f32",
+                "--kv-cache-dtype",
+                "bf16",
+            ],
+            "--kv-cache-dtype may only be specified once",
+        ),
+        (
+            vec![
+                "generate",
+                "--model",
+                "model.gguf",
+                "--prompt",
+                "hello",
+                "--max-new-tokens",
+                "1",
+                "--context",
+                "8",
+                "--kv-cache-layout",
+            ],
+            "--kv-cache-layout requires a value",
+        ),
+    ] {
+        let output = run(&args);
+        assert!(!output.status.success(), "{args:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains(expected),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[test]
 fn benchmark_accepts_a_complete_arm_before_backend_selection() {
     let output = run(&[
         "benchmark",
@@ -291,6 +395,140 @@ fn benchmark_accepts_a_complete_arm_before_backend_selection() {
         String::from_utf8_lossy(&output.stderr)
             .contains("benchmark requires a CUDA-enabled BRT build; this binary is host-only")
     );
+}
+
+#[test]
+fn benchmark_accepts_explicit_kv_policy_before_backend_selection() {
+    let output = run(&[
+        "benchmark",
+        "--model",
+        "missing.gguf",
+        "--prompt",
+        "hello",
+        "--prompt-tokens",
+        "128",
+        "--decode-tokens",
+        "128",
+        "--context",
+        "4096",
+        "--warmups",
+        "5",
+        "--iterations",
+        "20",
+        "--kv-cache-dtype",
+        "bf16",
+        "--kv-cache-layout",
+        "head-major",
+    ]);
+
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("benchmark requires a CUDA-enabled BRT build; this binary is host-only")
+    );
+}
+
+#[test]
+fn benchmark_rejects_invalid_duplicate_and_missing_kv_policy_values() {
+    for (args, expected) in [
+        (
+            vec![
+                "benchmark",
+                "--model",
+                "model.gguf",
+                "--prompt",
+                "hello",
+                "--prompt-tokens",
+                "128",
+                "--decode-tokens",
+                "128",
+                "--context",
+                "4096",
+                "--warmups",
+                "5",
+                "--iterations",
+                "20",
+                "--kv-cache-dtype",
+                "fp16",
+            ],
+            "--kv-cache-dtype must be f32 or bf16",
+        ),
+        (
+            vec![
+                "benchmark",
+                "--model",
+                "model.gguf",
+                "--prompt",
+                "hello",
+                "--prompt-tokens",
+                "128",
+                "--decode-tokens",
+                "128",
+                "--context",
+                "4096",
+                "--warmups",
+                "5",
+                "--iterations",
+                "20",
+                "--kv-cache-layout",
+                "layer-major",
+            ],
+            "--kv-cache-layout must be token-major or head-major",
+        ),
+        (
+            vec![
+                "benchmark",
+                "--model",
+                "model.gguf",
+                "--prompt",
+                "hello",
+                "--prompt-tokens",
+                "128",
+                "--decode-tokens",
+                "128",
+                "--context",
+                "4096",
+                "--warmups",
+                "5",
+                "--iterations",
+                "20",
+                "--kv-cache-layout",
+                "token-major",
+                "--kv-cache-layout",
+                "head-major",
+            ],
+            "--kv-cache-layout may only be specified once",
+        ),
+        (
+            vec![
+                "benchmark",
+                "--model",
+                "model.gguf",
+                "--prompt",
+                "hello",
+                "--prompt-tokens",
+                "128",
+                "--decode-tokens",
+                "128",
+                "--context",
+                "4096",
+                "--warmups",
+                "5",
+                "--iterations",
+                "20",
+                "--kv-cache-dtype",
+            ],
+            "--kv-cache-dtype requires a value",
+        ),
+    ] {
+        let output = run(&args);
+        assert!(!output.status.success(), "{args:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains(expected),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 }
 
 #[test]

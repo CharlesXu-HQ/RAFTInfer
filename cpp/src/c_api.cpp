@@ -54,6 +54,106 @@ void set_last_error(const char *message) noexcept {
 
 void clear_last_error() noexcept { g_last_error.message[0] = '\0'; }
 
+constexpr std::size_t kLegacySessionConfigSize =
+    offsetof(BrtSessionConfig, qwen35_policy);
+constexpr std::size_t kSessionConfigPolicyPointerEnd =
+    offsetof(BrtSessionConfig, qwen35_policy) +
+    sizeof(const BrtQwen35ExecutionPolicy *);
+
+brt::Qwen35AttentionImplementation
+to_attention_implementation(std::uint32_t value) {
+  switch (value) {
+  case BRT_QWEN35_ATTENTION_MATERIALIZED_REFERENCE:
+    return brt::Qwen35AttentionImplementation::materialized_reference;
+  case BRT_QWEN35_ATTENTION_ONLINE_TILED:
+    return brt::Qwen35AttentionImplementation::online_tiled;
+  default:
+    throw std::invalid_argument("unknown Qwen3.5 attention implementation");
+  }
+}
+
+brt::Qwen35KvCacheDType to_kv_cache_dtype(std::uint32_t value) {
+  switch (value) {
+  case BRT_QWEN35_KV_CACHE_F32:
+    return brt::Qwen35KvCacheDType::f32;
+  case BRT_QWEN35_KV_CACHE_BF16:
+    return brt::Qwen35KvCacheDType::bf16;
+  default:
+    throw std::invalid_argument("unknown Qwen3.5 KV cache dtype");
+  }
+}
+
+brt::Qwen35KvCacheLayout to_kv_cache_layout(std::uint32_t value) {
+  switch (value) {
+  case BRT_QWEN35_KV_CACHE_LAYOUT_TOKEN_MAJOR:
+    return brt::Qwen35KvCacheLayout::token_major;
+  case BRT_QWEN35_KV_CACHE_LAYOUT_HEAD_MAJOR:
+    return brt::Qwen35KvCacheLayout::head_major;
+  default:
+    throw std::invalid_argument("unknown Qwen3.5 KV cache layout");
+  }
+}
+
+std::uint32_t
+from_attention_implementation(brt::Qwen35AttentionImplementation value) {
+  switch (value) {
+  case brt::Qwen35AttentionImplementation::materialized_reference:
+    return BRT_QWEN35_ATTENTION_MATERIALIZED_REFERENCE;
+  case brt::Qwen35AttentionImplementation::online_tiled:
+    return BRT_QWEN35_ATTENTION_ONLINE_TILED;
+  }
+  return BRT_QWEN35_ATTENTION_MATERIALIZED_REFERENCE;
+}
+
+std::uint32_t from_kv_cache_dtype(brt::Qwen35KvCacheDType value) {
+  switch (value) {
+  case brt::Qwen35KvCacheDType::f32:
+    return BRT_QWEN35_KV_CACHE_F32;
+  case brt::Qwen35KvCacheDType::bf16:
+    return BRT_QWEN35_KV_CACHE_BF16;
+  }
+  return BRT_QWEN35_KV_CACHE_F32;
+}
+
+std::uint32_t from_kv_cache_layout(brt::Qwen35KvCacheLayout value) {
+  switch (value) {
+  case brt::Qwen35KvCacheLayout::token_major:
+    return BRT_QWEN35_KV_CACHE_LAYOUT_TOKEN_MAJOR;
+  case brt::Qwen35KvCacheLayout::head_major:
+    return BRT_QWEN35_KV_CACHE_LAYOUT_HEAD_MAJOR;
+  }
+  return BRT_QWEN35_KV_CACHE_LAYOUT_TOKEN_MAJOR;
+}
+
+bool to_bool(int32_t value, const char *field_name) {
+  if (value == 0) {
+    return false;
+  }
+  if (value == 1) {
+    return true;
+  }
+  throw std::invalid_argument(field_name);
+}
+
+brt::Qwen35ExecutionPolicy
+to_execution_policy(const BrtQwen35ExecutionPolicy *policy) {
+  brt::Qwen35ExecutionPolicy result{};
+  if (policy == nullptr) {
+    return result;
+  }
+  if (policy->struct_size != sizeof(BrtQwen35ExecutionPolicy)) {
+    throw std::invalid_argument("BrtQwen35ExecutionPolicy size mismatch");
+  }
+  result.attention = to_attention_implementation(policy->attention);
+  result.kv_cache = to_kv_cache_dtype(policy->kv_cache_dtype);
+  result.kv_cache_layout = to_kv_cache_layout(policy->kv_cache_layout);
+  result.decode_graph =
+      to_bool(policy->decode_graph, "decode_graph must be 0 or 1");
+  result.grouped_input_casts = to_bool(
+      policy->grouped_input_casts, "grouped_input_casts must be 0 or 1");
+  return result;
+}
+
 } // namespace
 
 static BrtStatus fail(BrtStatusCode code, const char *message) noexcept {
@@ -236,7 +336,9 @@ extern "C" BrtStatus brt_session_create(BrtModelHandle *model,
       return fail(BRT_STATUS_INVALID_ARGUMENT,
                   "model, config, and out_session are required");
     }
-    if (config->struct_size < sizeof(BrtSessionConfig)) {
+    if (config->struct_size < kLegacySessionConfigSize ||
+        (config->struct_size > kLegacySessionConfigSize &&
+         config->struct_size < kSessionConfigPolicyPointerEnd)) {
       return fail(BRT_STATUS_INVALID_ARGUMENT, "BrtSessionConfig size mismatch");
     }
     if (config->max_context_tokens == 0) {
@@ -246,9 +348,14 @@ extern "C" BrtStatus brt_session_create(BrtModelHandle *model,
     if (model->model == nullptr) {
       return fail(BRT_STATUS_INVALID_ARGUMENT, "model is invalid");
     }
+    const BrtQwen35ExecutionPolicy *policy_config = nullptr;
+    if (config->struct_size >= kSessionConfigPolicyPointerEnd) {
+      policy_config = config->qwen35_policy;
+    }
+    const auto policy = to_execution_policy(policy_config);
     auto session = std::make_unique<BrtSessionHandle>(
         std::make_unique<brt::Session>(model->model,
-                                       config->max_context_tokens));
+                                       config->max_context_tokens, policy));
     *out_session = session.release();
     return BrtStatus{BRT_STATUS_OK, nullptr};
   } catch (const std::bad_alloc &) {
@@ -324,6 +431,44 @@ extern "C" BrtStatus brt_session_decode(BrtSessionHandle *session,
   } catch (const std::bad_alloc &) {
     return fail(BRT_STATUS_RESOURCE_EXHAUSTED,
                 "decode exhausted host memory");
+  } catch (const std::exception &error) {
+    return fail(BRT_STATUS_INTERNAL, error.what());
+  } catch (...) {
+    return fail(BRT_STATUS_INTERNAL, "internal error");
+  }
+}
+
+extern "C" BrtStatus
+brt_session_diagnostics(BrtSessionHandle *session,
+                        BrtSessionDiagnostics *out_diagnostics) {
+  try {
+    clear_last_error();
+    if (session == nullptr || out_diagnostics == nullptr) {
+      return fail(BRT_STATUS_INVALID_ARGUMENT,
+                  "session and out_diagnostics are required");
+    }
+    if (out_diagnostics->struct_size != sizeof(BrtSessionDiagnostics)) {
+      return fail(BRT_STATUS_INVALID_ARGUMENT,
+                  "BrtSessionDiagnostics size mismatch");
+    }
+    const auto diagnostics = session->session->diagnostics();
+    out_diagnostics->attention =
+        from_attention_implementation(diagnostics.attention);
+    out_diagnostics->kv_cache_dtype =
+        from_kv_cache_dtype(diagnostics.kv_cache);
+    out_diagnostics->kv_cache_layout =
+        from_kv_cache_layout(diagnostics.kv_cache_layout);
+    out_diagnostics->decode_graph_enabled =
+        diagnostics.decode_graph_enabled ? 1 : 0;
+    out_diagnostics->decode_graph_captured =
+        diagnostics.decode_graph_captured ? 1 : 0;
+    out_diagnostics->decode_graph_replayed =
+        diagnostics.decode_graph_replayed ? 1 : 0;
+    out_diagnostics->attention_workspace_bytes =
+        diagnostics.attention_workspace_bytes;
+    return BrtStatus{BRT_STATUS_OK, nullptr};
+  } catch (const brt::SessionUnavailableError &error) {
+    return fail(BRT_STATUS_UNAVAILABLE, error.what());
   } catch (const std::exception &error) {
     return fail(BRT_STATUS_INTERNAL, error.what());
   } catch (...) {

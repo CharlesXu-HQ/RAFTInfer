@@ -1,6 +1,7 @@
 use brt_runtime::{
-    BenchmarkConfig, Engine, EngineConfig, GenerationConfig, GenerationSession, Model,
-    SessionConfig, TokenResult, benchmark_session, generate_token_ids,
+    BenchmarkConfig, Engine, EngineConfig, GenerationConfig, GenerationSession, KvCacheDType,
+    KvCacheLayout, Model, Qwen35AttentionImplementation, Qwen35ExecutionPolicy, SessionConfig,
+    TokenResult, benchmark_session, generate_token_ids,
 };
 use std::{
     collections::VecDeque,
@@ -51,6 +52,24 @@ fn peak_gpu_allocation_reports_unavailable_without_cuda_backend() {
 }
 
 #[test]
+fn qwen35_execution_policy_defaults_to_online_f32_token_major_graphs() {
+    assert_eq!(
+        Qwen35ExecutionPolicy::default(),
+        Qwen35ExecutionPolicy {
+            attention: Qwen35AttentionImplementation::OnlineTiled,
+            kv_cache_dtype: KvCacheDType::F32,
+            kv_cache_layout: KvCacheLayout::TokenMajor,
+            decode_graph: true,
+            grouped_input_casts: true,
+        }
+    );
+    assert_eq!(
+        SessionConfig::default().qwen35_policy,
+        Qwen35ExecutionPolicy::default()
+    );
+}
+
+#[test]
 fn missing_model_is_an_atomic_load_failure() {
     let engine = Engine::new(EngineConfig::default()).expect("engine creation");
     let error = engine
@@ -69,8 +88,23 @@ fn session_wraps_coarse_native_prefill_decode_and_reset() {
     let mut session = model
         .create_session(SessionConfig {
             max_context_tokens: 8,
+            qwen35_policy: Qwen35ExecutionPolicy {
+                kv_cache_dtype: KvCacheDType::Bf16,
+                kv_cache_layout: KvCacheLayout::HeadMajor,
+                ..Qwen35ExecutionPolicy::default()
+            },
         })
         .expect("session creation");
+
+    let diagnostics_error = session
+        .diagnostics()
+        .expect_err("host-only diagnostics require CUDA execution state");
+    assert_eq!(diagnostics_error.code(), 2);
+    assert!(
+        diagnostics_error
+            .to_string()
+            .contains("execution diagnostics")
+    );
 
     let decode_error = session
         .decode(7)
@@ -97,6 +131,7 @@ fn session_rejects_zero_context_in_rust() {
     let error = model
         .create_session(SessionConfig {
             max_context_tokens: 0,
+            ..SessionConfig::default()
         })
         .expect_err("zero context must fail");
     assert_eq!(error.code(), 1);
@@ -279,6 +314,7 @@ fn session_lifetime_is_tied_to_model<'engine, 'model>(
     model
         .create_session(SessionConfig {
             max_context_tokens: 8,
+            ..SessionConfig::default()
         })
         .expect("session creation")
 }

@@ -83,6 +83,127 @@ pub struct SmokeResult {
 #[derive(Clone, Copy, Debug)]
 pub struct SessionConfig {
     pub max_context_tokens: u32,
+    pub qwen35_policy: Qwen35ExecutionPolicy,
+}
+
+impl Default for SessionConfig {
+    fn default() -> Self {
+        Self {
+            max_context_tokens: 4096,
+            qwen35_policy: Qwen35ExecutionPolicy::default(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Qwen35AttentionImplementation {
+    MaterializedReference,
+    OnlineTiled,
+}
+
+impl Qwen35AttentionImplementation {
+    fn to_native(self) -> u32 {
+        match self {
+            Self::MaterializedReference => brt_sys::BRT_QWEN35_ATTENTION_MATERIALIZED_REFERENCE,
+            Self::OnlineTiled => brt_sys::BRT_QWEN35_ATTENTION_ONLINE_TILED,
+        }
+    }
+
+    fn from_native(value: u32) -> Result<Self, Error> {
+        match value {
+            brt_sys::BRT_QWEN35_ATTENTION_MATERIALIZED_REFERENCE => Ok(Self::MaterializedReference),
+            brt_sys::BRT_QWEN35_ATTENTION_ONLINE_TILED => Ok(Self::OnlineTiled),
+            _ => Err(Error {
+                code: brt_sys::BRT_STATUS_UNSUPPORTED,
+                message: "native diagnostics returned an unknown attention implementation"
+                    .to_owned(),
+            }),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum KvCacheDType {
+    F32,
+    Bf16,
+}
+
+impl KvCacheDType {
+    fn to_native(self) -> u32 {
+        match self {
+            Self::F32 => brt_sys::BRT_QWEN35_KV_CACHE_F32,
+            Self::Bf16 => brt_sys::BRT_QWEN35_KV_CACHE_BF16,
+        }
+    }
+
+    fn from_native(value: u32) -> Result<Self, Error> {
+        match value {
+            brt_sys::BRT_QWEN35_KV_CACHE_F32 => Ok(Self::F32),
+            brt_sys::BRT_QWEN35_KV_CACHE_BF16 => Ok(Self::Bf16),
+            _ => Err(Error {
+                code: brt_sys::BRT_STATUS_UNSUPPORTED,
+                message: "native diagnostics returned an unknown KV cache dtype".to_owned(),
+            }),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum KvCacheLayout {
+    TokenMajor,
+    HeadMajor,
+}
+
+impl KvCacheLayout {
+    fn to_native(self) -> u32 {
+        match self {
+            Self::TokenMajor => brt_sys::BRT_QWEN35_KV_CACHE_LAYOUT_TOKEN_MAJOR,
+            Self::HeadMajor => brt_sys::BRT_QWEN35_KV_CACHE_LAYOUT_HEAD_MAJOR,
+        }
+    }
+
+    fn from_native(value: u32) -> Result<Self, Error> {
+        match value {
+            brt_sys::BRT_QWEN35_KV_CACHE_LAYOUT_TOKEN_MAJOR => Ok(Self::TokenMajor),
+            brt_sys::BRT_QWEN35_KV_CACHE_LAYOUT_HEAD_MAJOR => Ok(Self::HeadMajor),
+            _ => Err(Error {
+                code: brt_sys::BRT_STATUS_UNSUPPORTED,
+                message: "native diagnostics returned an unknown KV cache layout".to_owned(),
+            }),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Qwen35ExecutionPolicy {
+    pub attention: Qwen35AttentionImplementation,
+    pub kv_cache_dtype: KvCacheDType,
+    pub kv_cache_layout: KvCacheLayout,
+    pub decode_graph: bool,
+    pub grouped_input_casts: bool,
+}
+
+impl Default for Qwen35ExecutionPolicy {
+    fn default() -> Self {
+        Self {
+            attention: Qwen35AttentionImplementation::OnlineTiled,
+            kv_cache_dtype: KvCacheDType::F32,
+            kv_cache_layout: KvCacheLayout::TokenMajor,
+            decode_graph: true,
+            grouped_input_casts: true,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ExecutionDiagnostics {
+    pub attention: Qwen35AttentionImplementation,
+    pub kv_cache_dtype: KvCacheDType,
+    pub kv_cache_layout: KvCacheLayout,
+    pub decode_graph_enabled: bool,
+    pub decode_graph_captured: bool,
+    pub decode_graph_replayed: bool,
+    pub attention_workspace_bytes: usize,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -440,9 +561,18 @@ impl<'engine> Model<'engine> {
         &'model self,
         config: SessionConfig,
     ) -> Result<Session<'model, 'engine>, Error> {
+        let native_policy = brt_sys::BrtQwen35ExecutionPolicy {
+            struct_size: std::mem::size_of::<brt_sys::BrtQwen35ExecutionPolicy>(),
+            attention: config.qwen35_policy.attention.to_native(),
+            kv_cache_dtype: config.qwen35_policy.kv_cache_dtype.to_native(),
+            kv_cache_layout: config.qwen35_policy.kv_cache_layout.to_native(),
+            decode_graph: bool_to_native(config.qwen35_policy.decode_graph),
+            grouped_input_casts: bool_to_native(config.qwen35_policy.grouped_input_casts),
+        };
         let native = brt_sys::BrtSessionConfig {
             struct_size: std::mem::size_of::<brt_sys::BrtSessionConfig>(),
             max_context_tokens: config.max_context_tokens,
+            qwen35_policy: &native_policy,
         };
         let mut raw = std::ptr::null_mut();
         let status = unsafe { brt_sys::brt_session_create(self.raw.as_ptr(), &native, &mut raw) };
@@ -462,6 +592,24 @@ impl Drop for Model<'_> {
 }
 
 impl Session<'_, '_> {
+    pub fn diagnostics(&self) -> Result<ExecutionDiagnostics, Error> {
+        let mut native = brt_sys::BrtSessionDiagnostics {
+            struct_size: std::mem::size_of::<brt_sys::BrtSessionDiagnostics>(),
+            ..brt_sys::BrtSessionDiagnostics::default()
+        };
+        let status = unsafe { brt_sys::brt_session_diagnostics(self.raw.as_ptr(), &mut native) };
+        status_to_result(status)?;
+        Ok(ExecutionDiagnostics {
+            attention: Qwen35AttentionImplementation::from_native(native.attention)?,
+            kv_cache_dtype: KvCacheDType::from_native(native.kv_cache_dtype)?,
+            kv_cache_layout: KvCacheLayout::from_native(native.kv_cache_layout)?,
+            decode_graph_enabled: native.decode_graph_enabled != 0,
+            decode_graph_captured: native.decode_graph_captured != 0,
+            decode_graph_replayed: native.decode_graph_replayed != 0,
+            attention_workspace_bytes: native.attention_workspace_bytes,
+        })
+    }
+
     pub fn prefill(&mut self, tokens: &[i32]) -> Result<TokenResult, Error> {
         let mut native = brt_sys::BrtTokenResult::default();
         let status = unsafe {
@@ -514,6 +662,10 @@ impl Drop for Session<'_, '_> {
     fn drop(&mut self) {
         unsafe { brt_sys::brt_session_destroy(self.raw.as_ptr()) }
     }
+}
+
+fn bool_to_native(value: bool) -> i32 {
+    if value { 1 } else { 0 }
 }
 
 fn status_to_result(status: brt_sys::BrtStatus) -> Result<(), Error> {

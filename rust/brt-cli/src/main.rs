@@ -1,6 +1,7 @@
 use brt_runtime::{
-    BenchmarkConfig, ChatGeneration, Engine, EngineConfig, GenerationConfig, SessionConfig,
-    benchmark_session, generate_chat,
+    BenchmarkConfig, ChatGeneration, Engine, EngineConfig, ExecutionDiagnostics, GenerationConfig,
+    KvCacheDType, KvCacheLayout, Qwen35AttentionImplementation, Qwen35ExecutionPolicy,
+    SessionConfig, benchmark_session, generate_chat,
     tokenizer::{ChatMessage, ChatRole, Tokenizer},
 };
 use std::fmt::Write;
@@ -50,6 +51,8 @@ struct GenerateArguments {
     max_new_tokens: usize,
     context_tokens: usize,
     output_format: OutputFormat,
+    kv_cache_dtype: KvCacheDType,
+    kv_cache_layout: KvCacheLayout,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -67,6 +70,8 @@ struct BenchmarkArguments {
     context_tokens: usize,
     warmup_iterations: usize,
     measured_iterations: usize,
+    kv_cache_dtype: KvCacheDType,
+    kv_cache_layout: KvCacheLayout,
 }
 
 #[derive(Debug)]
@@ -83,6 +88,8 @@ fn parse_generate_arguments(
     let mut max_new_tokens = None;
     let mut context_tokens = None;
     let mut output_format = None;
+    let mut kv_cache_dtype = None;
+    let mut kv_cache_layout = None;
     let mut index = 0;
     while index < arguments.len() {
         let flag = arguments[index].as_str();
@@ -92,6 +99,8 @@ fn parse_generate_arguments(
             "--max-new-tokens" => &mut max_new_tokens,
             "--context" => &mut context_tokens,
             "--output-format" => &mut output_format,
+            "--kv-cache-dtype" => &mut kv_cache_dtype,
+            "--kv-cache-layout" => &mut kv_cache_layout,
             _ => return Err(format!("unknown generate argument: {flag}").into()),
         };
         if destination.is_some() {
@@ -135,6 +144,9 @@ fn parse_generate_arguments(
         "json" => OutputFormat::Json,
         _ => return Err("--output-format must be text or json".into()),
     };
+    let kv_cache_dtype = parse_kv_cache_dtype(kv_cache_dtype.as_deref().unwrap_or("f32"))?;
+    let kv_cache_layout =
+        parse_kv_cache_layout(kv_cache_layout.as_deref().unwrap_or("token-major"))?;
 
     Ok(GenerateArguments {
         model: model.into(),
@@ -142,6 +154,8 @@ fn parse_generate_arguments(
         max_new_tokens,
         context_tokens,
         output_format,
+        kv_cache_dtype,
+        kv_cache_layout,
     })
 }
 
@@ -166,6 +180,8 @@ fn parse_benchmark_arguments(
     let mut context_tokens = None;
     let mut warmup_iterations = None;
     let mut measured_iterations = None;
+    let mut kv_cache_dtype = None;
+    let mut kv_cache_layout = None;
     let mut index = 0;
     while index < arguments.len() {
         let flag = arguments[index].as_str();
@@ -178,6 +194,8 @@ fn parse_benchmark_arguments(
             "--context" => &mut context_tokens,
             "--warmups" => &mut warmup_iterations,
             "--iterations" => &mut measured_iterations,
+            "--kv-cache-dtype" => &mut kv_cache_dtype,
+            "--kv-cache-layout" => &mut kv_cache_layout,
             _ => return Err(format!("unknown benchmark argument: {flag}").into()),
         };
         if destination.is_some() {
@@ -245,6 +263,9 @@ fn parse_benchmark_arguments(
         }
         _ => return Err("exactly one of --prompt or --prompt-token-ids is required".into()),
     };
+    let kv_cache_dtype = parse_kv_cache_dtype(kv_cache_dtype.as_deref().unwrap_or("f32"))?;
+    let kv_cache_layout =
+        parse_kv_cache_layout(kv_cache_layout.as_deref().unwrap_or("token-major"))?;
 
     Ok(BenchmarkArguments {
         model: model.into(),
@@ -254,7 +275,25 @@ fn parse_benchmark_arguments(
         context_tokens,
         warmup_iterations,
         measured_iterations,
+        kv_cache_dtype,
+        kv_cache_layout,
     })
+}
+
+fn parse_kv_cache_dtype(value: &str) -> Result<KvCacheDType, Box<dyn std::error::Error>> {
+    match value {
+        "f32" => Ok(KvCacheDType::F32),
+        "bf16" => Ok(KvCacheDType::Bf16),
+        _ => Err("--kv-cache-dtype must be f32 or bf16".into()),
+    }
+}
+
+fn parse_kv_cache_layout(value: &str) -> Result<KvCacheLayout, Box<dyn std::error::Error>> {
+    match value {
+        "token-major" => Ok(KvCacheLayout::TokenMajor),
+        "head-major" => Ok(KvCacheLayout::HeadMajor),
+        _ => Err("--kv-cache-layout must be token-major or head-major".into()),
+    }
 }
 
 fn parse_token_ids(value: &str) -> Result<Vec<i32>, Box<dyn std::error::Error>> {
@@ -287,6 +326,11 @@ fn run_generate(arguments: GenerateArguments) -> Result<(), Box<dyn std::error::
     let tokenizer = Tokenizer::from_spec(&model.tokenizer_spec()?)?;
     let mut session = model.create_session(SessionConfig {
         max_context_tokens: arguments.context_tokens as u32,
+        qwen35_policy: Qwen35ExecutionPolicy {
+            kv_cache_dtype: arguments.kv_cache_dtype,
+            kv_cache_layout: arguments.kv_cache_layout,
+            ..Qwen35ExecutionPolicy::default()
+        },
     })?;
     let output = generate_chat(
         &mut session,
@@ -333,6 +377,11 @@ fn run_benchmark(arguments: BenchmarkArguments) -> Result<(), Box<dyn std::error
 
     let mut session = model.create_session(SessionConfig {
         max_context_tokens: arguments.context_tokens as u32,
+        qwen35_policy: Qwen35ExecutionPolicy {
+            kv_cache_dtype: arguments.kv_cache_dtype,
+            kv_cache_layout: arguments.kv_cache_layout,
+            ..Qwen35ExecutionPolicy::default()
+        },
     })?;
     let timings = benchmark_session(
         &mut session,
@@ -349,6 +398,7 @@ fn run_benchmark(arguments: BenchmarkArguments) -> Result<(), Box<dyn std::error
         warmup_iterations: arguments.warmup_iterations,
         measured_iterations: arguments.measured_iterations,
         peak_allocated_gpu_bytes: engine.peak_allocated_gpu_bytes()?,
+        execution: session.diagnostics()?,
         prefill: LatencySummary::from_microseconds(timings.prefill_microseconds),
         generation: LatencySummary::from_microseconds(timings.generation_microseconds),
     };
@@ -362,11 +412,26 @@ struct LatencySummary {
     median_us: f64,
     p95_us: f64,
     max_us: f64,
+    coefficient_of_variation: f64,
 }
 
 impl LatencySummary {
     fn from_microseconds(mut values: Vec<u64>) -> Self {
         assert!(!values.is_empty(), "latency samples must not be empty");
+        let mean_us = values.iter().map(|value| *value as f64).sum::<f64>() / values.len() as f64;
+        let coefficient_of_variation = if mean_us == 0.0 {
+            0.0
+        } else {
+            let variance = values
+                .iter()
+                .map(|value| {
+                    let delta = *value as f64 - mean_us;
+                    delta * delta
+                })
+                .sum::<f64>()
+                / values.len() as f64;
+            variance.sqrt() / mean_us
+        };
         values.sort_unstable();
         let middle = values.len() / 2;
         let median_us = if values.len().is_multiple_of(2) {
@@ -380,6 +445,7 @@ impl LatencySummary {
             median_us,
             p95_us: values[p95_index] as f64,
             max_us: values[values.len() - 1] as f64,
+            coefficient_of_variation,
         }
     }
 }
@@ -391,6 +457,7 @@ struct BenchmarkOutput {
     warmup_iterations: usize,
     measured_iterations: usize,
     peak_allocated_gpu_bytes: u64,
+    execution: ExecutionDiagnostics,
     prefill: LatencySummary,
     generation: LatencySummary,
 }
@@ -404,26 +471,62 @@ fn benchmark_json(benchmark: &BenchmarkOutput) -> String {
         "{{\"schema_version\":1,\"prompt_tokens\":{},\"generated_tokens\":{},\
          \"warmup_iterations\":{},\"measured_iterations\":{},\
          \"peak_allocated_gpu_bytes\":{},\
+         \"execution\":{{\"attention\":\"{}\",\"kv_cache_dtype\":\"{}\",\
+         \"kv_cache_layout\":\"{}\",\"decode_graph_enabled\":{},\
+         \"decode_graph_captured\":{},\"decode_graph_replayed\":{},\
+         \"attention_workspace_bytes\":{}}},\
          \"prefill\":{{\"min_us\":{},\"median_us\":{},\"p95_us\":{},\"max_us\":{},\
+         \"coefficient_of_variation\":{},\
          \"tokens_per_second\":{}}},\
          \"generation\":{{\"min_us\":{},\"median_us\":{},\"p95_us\":{},\"max_us\":{},\
+         \"coefficient_of_variation\":{},\
          \"tokens_per_second\":{}}}}}\n",
         benchmark.prompt_tokens,
         benchmark.generated_tokens,
         benchmark.warmup_iterations,
         benchmark.measured_iterations,
         benchmark.peak_allocated_gpu_bytes,
+        attention_name(benchmark.execution.attention),
+        kv_cache_dtype_name(benchmark.execution.kv_cache_dtype),
+        kv_cache_layout_name(benchmark.execution.kv_cache_layout),
+        benchmark.execution.decode_graph_enabled,
+        benchmark.execution.decode_graph_captured,
+        benchmark.execution.decode_graph_replayed,
+        benchmark.execution.attention_workspace_bytes,
         benchmark.prefill.min_us,
         benchmark.prefill.median_us,
         benchmark.prefill.p95_us,
         benchmark.prefill.max_us,
+        benchmark.prefill.coefficient_of_variation,
         prefill_tokens_per_second,
         benchmark.generation.min_us,
         benchmark.generation.median_us,
         benchmark.generation.p95_us,
         benchmark.generation.max_us,
+        benchmark.generation.coefficient_of_variation,
         generation_tokens_per_second,
     )
+}
+
+fn attention_name(value: Qwen35AttentionImplementation) -> &'static str {
+    match value {
+        Qwen35AttentionImplementation::MaterializedReference => "materialized_reference",
+        Qwen35AttentionImplementation::OnlineTiled => "online_tiled",
+    }
+}
+
+fn kv_cache_dtype_name(value: KvCacheDType) -> &'static str {
+    match value {
+        KvCacheDType::F32 => "f32",
+        KvCacheDType::Bf16 => "bf16",
+    }
+}
+
+fn kv_cache_layout_name(value: KvCacheLayout) -> &'static str {
+    match value {
+        KvCacheLayout::TokenMajor => "token-major",
+        KvCacheLayout::HeadMajor => "head-major",
+    }
 }
 
 fn generation_json(generation: &ChatGeneration) -> String {
@@ -470,7 +573,10 @@ fn append_json_string(output: &mut String, value: &str) {
 #[cfg(test)]
 mod tests {
     use super::{BenchmarkOutput, LatencySummary, benchmark_json, generation_json};
-    use brt_runtime::ChatGeneration;
+    use brt_runtime::{
+        ChatGeneration, ExecutionDiagnostics, KvCacheDType, KvCacheLayout,
+        Qwen35AttentionImplementation,
+    };
 
     #[test]
     fn generation_json_preserves_token_ids_and_escapes_text() {
@@ -498,6 +604,7 @@ mod tests {
                 median_us: 25.0,
                 p95_us: 40.0,
                 max_us: 40.0,
+                coefficient_of_variation: 0.447213595499958,
             }
         );
     }
@@ -510,17 +617,28 @@ mod tests {
             warmup_iterations: 5,
             measured_iterations: 20,
             peak_allocated_gpu_bytes: 18_000_000_000,
+            execution: ExecutionDiagnostics {
+                attention: Qwen35AttentionImplementation::OnlineTiled,
+                kv_cache_dtype: KvCacheDType::Bf16,
+                kv_cache_layout: KvCacheLayout::HeadMajor,
+                decode_graph_enabled: true,
+                decode_graph_captured: true,
+                decode_graph_replayed: true,
+                attention_workspace_bytes: 2_097_152,
+            },
             prefill: LatencySummary {
                 min_us: 900.0,
                 median_us: 1_000.0,
                 p95_us: 1_100.0,
                 max_us: 1_200.0,
+                coefficient_of_variation: 0.11180339887498948,
             },
             generation: LatencySummary {
                 min_us: 1_900.0,
                 median_us: 2_000.0,
                 p95_us: 2_100.0,
                 max_us: 2_200.0,
+                coefficient_of_variation: 0.05590169943749474,
             },
         });
 
@@ -529,10 +647,16 @@ mod tests {
             "{\"schema_version\":1,\"prompt_tokens\":128,\"generated_tokens\":128,\
              \"warmup_iterations\":5,\"measured_iterations\":20,\
              \"peak_allocated_gpu_bytes\":18000000000,\
+             \"execution\":{\"attention\":\"online_tiled\",\"kv_cache_dtype\":\"bf16\",\
+             \"kv_cache_layout\":\"head-major\",\"decode_graph_enabled\":true,\
+             \"decode_graph_captured\":true,\"decode_graph_replayed\":true,\
+             \"attention_workspace_bytes\":2097152},\
              \"prefill\":{\"min_us\":900,\"median_us\":1000,\"p95_us\":1100,\
-             \"max_us\":1200,\"tokens_per_second\":128000},\
+             \"max_us\":1200,\"coefficient_of_variation\":0.11180339887498948,\
+             \"tokens_per_second\":128000},\
              \"generation\":{\"min_us\":1900,\"median_us\":2000,\"p95_us\":2100,\
-             \"max_us\":2200,\"tokens_per_second\":64000}}\n"
+             \"max_us\":2200,\"coefficient_of_variation\":0.05590169943749474,\
+             \"tokens_per_second\":64000}}\n"
         );
     }
 }
