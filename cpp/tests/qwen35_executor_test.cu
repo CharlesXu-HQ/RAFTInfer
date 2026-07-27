@@ -212,9 +212,9 @@ std::filesystem::path write_linear_delta_fixture(std::uint32_t head_dim) {
                                               .hidden_size = 4U * head_dim,
                                               .intermediate_size = 16,
                                               .context_length = 512,
-                                              .full_head_count = 2,
+                                              .full_head_count = 4,
                                               .full_kv_head_count = 1,
-                                              .full_head_dimension = 4,
+                                              .full_head_dimension = head_dim,
                                               .linear_key_head_count = 2,
                                               .linear_value_head_count = 4,
                                               .linear_head_dimension = head_dim,
@@ -821,8 +821,27 @@ void run_gated_delta_schedule_tuning_tests() {
 
   brt::DeviceContext device{0, 512U * 1024U * 1024U};
   auto weights = device.upload_qwen35_weights(model);
-  auto owner = device.create_execution_owner(workspace_bytes);
-  auto context = owner->execution_context();
+
+  raft::device_resources resources;
+  const cudaStream_t stream =
+      raft::resource::get_cuda_stream(resources).value();
+  rmm::mr::cuda_memory_resource cuda_resource;
+  rmm::mr::statistics_resource_adaptor statistics{cuda_resource};
+  brt::WorkspaceArena workspace{rmm::device_async_resource_ref{statistics},
+                                cuda::stream_ref{stream}, stream,
+                                workspace_bytes};
+  cudaDeviceProp properties{};
+  assert(cudaGetDeviceProperties(&properties, 0) == cudaSuccess);
+  assert(properties.sharedMemPerBlock <=
+         static_cast<std::size_t>(std::numeric_limits<int>::max()));
+  brt::ExecutionContext context{resources,
+                                rmm::device_async_resource_ref{statistics},
+                                stream,
+                                workspace,
+                                0,
+                                properties.major,
+                                properties.minor,
+                                static_cast<int>(properties.sharedMemPerBlock)};
 
   brt::Qwen35Executor executor{context, model.qwen35_config(), *weights,
                                max_context, policy};
@@ -860,21 +879,33 @@ void run_gated_delta_schedule_tuning_tests() {
   }
 
   const std::vector<std::int32_t> prompt128(128, 1);
+  (void)statistics.push_counters();
+  executor.reset();
   const auto prefill = executor.prefill(prompt128);
   assert(prefill.position == prompt128.size() - 1);
   assert(executor.diagnostics().gated_delta_schedules ==
          construction.gated_delta_schedules);
 
-  executor.reset();
   const auto decoded = executor.decode(1);
-  assert(decoded.position == 0);
-  assert(executor.diagnostics().gated_delta_schedules ==
+  assert(decoded.position == prompt128.size());
+  const auto after_capture = executor.diagnostics();
+  assert(after_capture.gated_delta_schedules ==
          construction.gated_delta_schedules);
+  assert(after_capture.decode_graph_captured);
 
   const auto replayed = executor.decode(2);
-  assert(replayed.position == 1);
-  assert(executor.diagnostics().gated_delta_schedules ==
+  assert(replayed.position == prompt128.size() + 1);
+  const auto after_replay = executor.diagnostics();
+  assert(after_replay.gated_delta_schedules ==
          construction.gated_delta_schedules);
+  assert(after_replay.decode_graph_replayed);
+  const auto [bytes, allocations] = statistics.pop_counters();
+  assert(bytes.value == 0);
+  assert(bytes.peak == 0);
+  assert(bytes.total == 0);
+  assert(allocations.value == 0);
+  assert(allocations.peak == 0);
+  assert(allocations.total == 0);
 
   maybe_write_delta_microbenchmark_evidence(construction);
 }
