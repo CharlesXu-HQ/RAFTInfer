@@ -249,7 +249,7 @@ void run_executor_graph_equivalence_tests() {
   const std::vector<std::int32_t> prompt{1, 2, 3, 4};
   std::vector<float> ordinary_logits(model.qwen35_config().vocabulary_size);
   std::vector<float> graph_logits(model.qwen35_config().vocabulary_size);
-  const auto run_sequence = [&] {
+  const auto run_sequence = [&](bool expect_first_decode_replay) {
     const auto ordinary_prefill = ordinary.prefill(prompt);
     const auto graph_prefill = graph.prefill(prompt);
     assert(ordinary_prefill.token == graph_prefill.token);
@@ -268,17 +268,17 @@ void run_executor_graph_equivalence_tests() {
       const auto diagnostics = graph.diagnostics();
       assert(diagnostics.decode_graph_captured);
       if (step == 0)
-        assert(!diagnostics.decode_graph_replayed);
+        assert(diagnostics.decode_graph_replayed == expect_first_decode_replay);
       else
         assert(diagnostics.decode_graph_replayed);
     }
   };
-  run_sequence();
+  run_sequence(false);
   ordinary.reset();
   graph.reset();
   assert(ordinary.position() == 0);
   assert(graph.position() == 0);
-  run_sequence();
+  run_sequence(true);
 }
 
 } // namespace
