@@ -267,7 +267,9 @@ void run_executor_graph_equivalence_tests() {
                                   graph_logits);
       const auto diagnostics = graph.diagnostics();
       assert(diagnostics.decode_graph_captured);
-      if (step > 0)
+      if (step == 0)
+        assert(!diagnostics.decode_graph_replayed);
+      else
         assert(diagnostics.decode_graph_replayed);
     }
   };

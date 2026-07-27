@@ -41,6 +41,15 @@ void require(bool condition, const char *message) {
     throw Qwen35ExecutorError(message);
 }
 
+struct CudaHostInt32Deleter {
+  void operator()(std::int32_t *ptr) const noexcept {
+    if (ptr != nullptr)
+      (void)cudaFreeHost(ptr);
+  }
+};
+
+using CudaHostInt32 = std::unique_ptr<std::int32_t, CudaHostInt32Deleter>;
+
 std::size_t align_up(std::size_t value, std::size_t alignment) {
   require(alignment != 0 && (alignment & (alignment - 1)) == 0,
           "alignment must be a power of two");
@@ -551,12 +560,7 @@ public:
     reset();
   }
 
-  ~Impl() noexcept {
-    if (host_decode_result_ != nullptr)
-      (void)cudaFreeHost(host_decode_result_);
-    if (host_decode_token_ != nullptr)
-      (void)cudaFreeHost(host_decode_token_);
-  }
+  ~Impl() noexcept = default;
 
   Qwen35ExecutorResult prefill(std::span<const std::int32_t> tokens) {
     DeviceGuard guard{context_.device_id()};
@@ -820,13 +824,14 @@ private:
                                                          context_.stream());
     }
     decode_graph_->capture([this] {
-      check_cuda(cudaMemcpyAsync(device_decode_token_, host_decode_token_,
+      check_cuda(cudaMemcpyAsync(device_decode_token_, host_decode_token_.get(),
                                  sizeof(*host_decode_token_),
                                  cudaMemcpyHostToDevice, context_.stream()),
                  "Qwen3.5 decode graph token upload failed");
-      (void)run_chunk(std::span<const std::int32_t>{host_decode_token_, 1},
-                      true, 0, device_decode_token_, device_decode_position_,
-                      host_decode_result_, false);
+      (void)run_chunk(
+          std::span<const std::int32_t>{host_decode_token_.get(), 1}, true, 0,
+          device_decode_token_, device_decode_position_,
+          host_decode_result_.get(), false);
       increment_decode_position<<<1, 1, 0, context_.stream()>>>(
           device_decode_position_);
       check_cuda(cudaGetLastError(), "Qwen3.5 decode position increment failed");
@@ -894,19 +899,16 @@ private:
         allocate(arena, sizeof(std::int32_t), alignof(std::int32_t)));
     device_decode_position_ = static_cast<std::uint32_t *>(
         allocate(arena, sizeof(std::uint32_t), alignof(std::uint32_t)));
-    check_cuda(cudaHostAlloc(&host_decode_token_, sizeof(*host_decode_token_),
+    std::int32_t *host_decode_token{};
+    check_cuda(cudaHostAlloc(&host_decode_token, sizeof(*host_decode_token),
                              cudaHostAllocDefault),
                "Qwen3.5 decode token pinning failed");
-    try {
-      check_cuda(cudaHostAlloc(&host_decode_result_,
-                               sizeof(*host_decode_result_),
-                               cudaHostAllocDefault),
-                 "Qwen3.5 decode result pinning failed");
-    } catch (...) {
-      (void)cudaFreeHost(host_decode_token_);
-      host_decode_token_ = nullptr;
-      throw;
-    }
+    host_decode_token_.reset(host_decode_token);
+    std::int32_t *host_decode_result{};
+    check_cuda(cudaHostAlloc(&host_decode_result, sizeof(*host_decode_result),
+                             cudaHostAllocDefault),
+               "Qwen3.5 decode result pinning failed");
+    host_decode_result_.reset(host_decode_result);
     hidden_a_ =
         allocate(arena,
                  activation_bytes(max_tokens, hidden,
@@ -1311,6 +1313,9 @@ private:
     std::int32_t host_result = 0;
     std::int32_t *result =
         fixed_host_result == nullptr ? &host_result : fixed_host_result;
+    require(synchronize || fixed_host_result != nullptr,
+            "Qwen3.5 unsynchronized result download requires fixed host "
+            "storage");
     check_cuda(cudaMemcpyAsync(result, device_result_, sizeof(*result),
                                cudaMemcpyDeviceToHost,
                                context_.stream()),
@@ -1320,7 +1325,7 @@ private:
                  "Qwen3.5 executor synchronization failed");
     }
     return Qwen35ExecutorResult{
-        .token = *result,
+        .token = synchronize ? *result : 0,
         .position =
             static_cast<std::uint32_t>(chunk_position + tokens.size() - 1),
     };
@@ -1503,8 +1508,8 @@ private:
   std::int32_t *device_result_{};
   std::int32_t *device_decode_token_{};
   std::uint32_t *device_decode_position_{};
-  std::int32_t *host_decode_token_{};
-  std::int32_t *host_decode_result_{};
+  CudaHostInt32 host_decode_token_;
+  CudaHostInt32 host_decode_result_;
   void *hidden_a_{};
   void *hidden_b_{};
   void *intermediate_a_{};

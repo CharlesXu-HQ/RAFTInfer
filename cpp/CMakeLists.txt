@@ -129,6 +129,11 @@ if(BRT_BUILD_TESTS)
       -DCUDA_WEIGHTS_HEADER=${CMAKE_CURRENT_SOURCE_DIR}/model/cuda_weights.hpp
       -DCUDA_WEIGHTS_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/model/cuda_weights.cu
       -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/device_context_source_test.cmake)
+  add_test(
+    NAME brt_qwen35_executor_source_test
+    COMMAND ${CMAKE_COMMAND}
+      -DQWEN35_EXECUTOR_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/execution/qwen35_executor.cu
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/qwen35_executor_source_test.cmake)
   if(BRT_ENABLE_CUDA)
     brt_add_assert_test(brt_cublaslt_matmul_test
       tests/cublaslt_matmul_test.cu)
