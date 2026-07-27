@@ -625,7 +625,7 @@ struct GatedDeltaLaunchPolicy {
 };
 ```
 
-- [ ] **Step 1: Lock current-kernel parity and timing fixtures**
+- [x] **Step 1: Lock current-kernel parity and timing fixtures**
 
 For key/value dimensions `64` and `128`, compare prefill lengths
 `17,128,512`, continued prefill, and eight single-token decode steps against
@@ -633,7 +633,7 @@ the existing CPU FP32 reference. Snapshot convolution state, recurrent state,
 and hidden output after every call. Add a microbenchmark that reports the
 current kernel median separately for prefill and decode.
 
-- [ ] **Step 2: Run the focused tests before optimization**
+- [x] **Step 2: Run the focused tests before optimization**
 
 ```bash
 ctest --test-dir /home/charles/brt-builds/m4/cuda \
@@ -643,7 +643,7 @@ ctest --test-dir /home/charles/brt-builds/m4/cuda \
 Expected: the current register-resident schedule passes and establishes the
 candidate-selection baseline.
 
-- [ ] **Step 3: Add explicit RTX 50 candidate schedules**
+- [x] **Step 3: Add explicit RTX 50 candidate schedules**
 
 Implement four-warps-per-block column ownership, vectorized coalesced boundary
 loads/stores, and explicit dimension specializations. Use:
@@ -673,14 +673,18 @@ Expected: operator/state tests pass, selected schedule metadata is stable, no
 decode allocation is introduced, and all four prompts retain exact generated
 token IDs.
 
-Fix Round1 adds construction-time gated-delta schedule tuning in the executor:
-current and candidate schedules are correctness-gated on output, convolution
-state, and recurrent state before median timing can promote a candidate. The
-selected bucket policies and tuning diagnostics are immutable after
-construction, and executor tests assert the diagnostics remain unchanged after
-prefill, decode capture, and graph replay. Local host checks passed on
-2026-07-27; target CUDA 13.2/sm_120a revalidation remains the required final
-evidence for this fix commit.
+Final Task 8 commit `ffc99ed` passed target CUDA 13.2 `sm_120a` compile and
+focused GPU CTest 3/3: delta 0.51s, executor 0.54s, graph 1.71s. The focused
+microbenchmark evidence is
+`/home/charles/brt-validation/task8-ffc99ed/task8-delta-microbench.jsonl`:
+bucket `1` current/candidate medians 0.014368/0.008192 ms, bucket `128`
+0.607232/0.14336 ms, and bucket `512` 2.40742/0.548864 ms; all candidates were
+correctness-passing and accepted. Independent review is APPROVE. Real
+Qwen3.5-9B parity passed 4/4 prompts × 32 exact tokens at
+`/home/charles/brt-validation/task8-ffc99ed/qwen35-task8-parity.jsonl`, and
+post-validation preflight reported the GPU idle. The 64-dim fixture
+microbenchmark is a focused schedule-selection diagnostic, not end-to-end
+throughput evidence; the real 128-dim model path is covered by exact parity.
 
 - [x] **Step 6: Commit**
 
