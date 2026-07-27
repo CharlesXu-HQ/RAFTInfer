@@ -688,6 +688,7 @@ public:
         .decode_graph_replayed = decode_graph_replayed_,
         .attention_workspace_bytes = attention_workspace_bytes_,
         .cublaslt_algorithm_ids = cublaslt_algorithm_ids_,
+        .cublaslt_plans = cublaslt_plan_diagnostics_,
     };
   }
 
@@ -1108,7 +1109,8 @@ private:
       }
       auto unique = CublasLtMatmulPlan::create(config);
       std::shared_ptr<CublasLtMatmulPlan> plan{std::move(unique)};
-      if (release_tuning_bucket(bucket) && bucket <= max_context_) {
+      const bool tuned = release_tuning_bucket(bucket) && bucket <= max_context_;
+      if (tuned) {
         check_cuda(cudaMemsetAsync(matmul_input_, 0, plan->input_bytes(),
                                    context_.stream()),
                    "Qwen3.5 cuBLASLt tuning input initialization failed");
@@ -1117,6 +1119,15 @@ private:
                              kMatmulWorkspaceBudget);
       }
       cublaslt_algorithm_ids_.push_back(plan->algorithm_id());
+      cublaslt_plan_diagnostics_.push_back(Qwen35CublasLtPlanDiagnostic{
+          .bucket_tokens = bucket,
+          .m = config.shape.m,
+          .n = config.shape.n,
+          .k = config.shape.k,
+          .tuned = tuned,
+          .algorithm_id = plan->algorithm_id(),
+          .workspace_bytes = plan->workspace_bytes(),
+      });
       plan_cache.push_back(PlanCacheEntry{.config = config, .plan = plan});
       return plan;
     };
@@ -1606,6 +1617,7 @@ private:
   std::vector<std::size_t> linear_state_by_layer_;
   std::vector<BucketPlans> bucket_plans_;
   std::vector<int> cublaslt_algorithm_ids_;
+  std::vector<Qwen35CublasLtPlanDiagnostic> cublaslt_plan_diagnostics_;
   std::vector<Qwen35TraceEntry> trace_;
   std::unique_ptr<CudaGraphDecode> decode_graph_;
   bool decode_graph_replayed_{};

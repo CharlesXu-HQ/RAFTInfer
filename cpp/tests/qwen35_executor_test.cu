@@ -95,7 +95,8 @@ brt::Qwen35ExecutionPolicy materialized_policy() {
   return policy;
 }
 
-std::vector<std::uint8_t> make_release_attention_fixture() {
+std::vector<std::uint8_t>
+make_release_attention_fixture(std::uint32_t context_length = 4) {
   constexpr std::uint32_t tensor_type = 30;
   constexpr std::uint32_t vocabulary_size = 16;
   constexpr std::uint32_t hidden_size = 4096;
@@ -128,7 +129,7 @@ std::vector<std::uint8_t> make_release_attention_fixture() {
   u32("general.alignment", 32);
   u32("qwen35.embedding_length", hidden_size);
   u32("qwen35.feed_forward_length", intermediate_size);
-  u32("qwen35.context_length", 4);
+  u32("qwen35.context_length", context_length);
   u32("qwen35.block_count", 1);
   u32("qwen35.attention.head_count", query_heads);
   u32("qwen35.attention.head_count_kv", kv_heads);
@@ -677,9 +678,9 @@ void run_grouped_input_cast_tests() {
 
 void run_cublaslt_plan_tuning_tests() {
   assert(cudaSetDevice(0) == cudaSuccess);
-  const auto path = write_fixture(make_release_attention_fixture());
+  const auto path = write_fixture(make_release_attention_fixture(512));
   brt::model::Model model{path.string()};
-  constexpr std::size_t max_context = 128;
+  constexpr std::size_t max_context = 512;
   auto policy = brt::Qwen35ExecutionPolicy{};
   policy.decode_graph = true;
   const std::size_t workspace_bytes = brt::Qwen35Executor::workspace_bytes(
@@ -696,9 +697,21 @@ void run_cublaslt_plan_tuning_tests() {
   assert(construction.attention ==
          brt::Qwen35AttentionImplementation::online_tiled);
   assert(!construction.cublaslt_algorithm_ids.empty());
+  assert(!construction.cublaslt_plans.empty());
+  assert(construction.cublaslt_algorithm_ids.size() ==
+         construction.cublaslt_plans.size());
   assert(std::all_of(construction.cublaslt_algorithm_ids.begin(),
                      construction.cublaslt_algorithm_ids.end(),
                      [](int id) { return id >= 0; }));
+  for (const std::size_t bucket : {std::size_t{1}, std::size_t{128},
+                                   std::size_t{512}}) {
+    assert(std::any_of(construction.cublaslt_plans.begin(),
+                       construction.cublaslt_plans.end(),
+                       [bucket](const auto &plan) {
+                         return plan.bucket_tokens == bucket && plan.m == bucket &&
+                                plan.tuned && plan.algorithm_id >= 0;
+                       }));
+  }
 
   const std::vector<std::int32_t> prompt128(128, 1);
   const auto prefill = executor.prefill(prompt128);
@@ -706,6 +719,7 @@ void run_cublaslt_plan_tuning_tests() {
   const auto after_prefill = executor.diagnostics();
   assert(after_prefill.cublaslt_algorithm_ids ==
          construction.cublaslt_algorithm_ids);
+  assert(after_prefill.cublaslt_plans == construction.cublaslt_plans);
 
   executor.reset();
   const auto decoded = executor.decode(1);
@@ -713,6 +727,7 @@ void run_cublaslt_plan_tuning_tests() {
   const auto after_capture_decode = executor.diagnostics();
   assert(after_capture_decode.cublaslt_algorithm_ids ==
          construction.cublaslt_algorithm_ids);
+  assert(after_capture_decode.cublaslt_plans == construction.cublaslt_plans);
   assert(after_capture_decode.decode_graph_captured);
 
   const auto replayed = executor.decode(2);
@@ -720,6 +735,7 @@ void run_cublaslt_plan_tuning_tests() {
   const auto after_replay = executor.diagnostics();
   assert(after_replay.cublaslt_algorithm_ids ==
          construction.cublaslt_algorithm_ids);
+  assert(after_replay.cublaslt_plans == construction.cublaslt_plans);
   assert(after_replay.decode_graph_replayed);
 }
 

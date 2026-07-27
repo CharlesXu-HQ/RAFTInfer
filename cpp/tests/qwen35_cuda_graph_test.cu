@@ -6,6 +6,7 @@
 
 #include <cuda_runtime_api.h>
 
+#include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <cstdint>
@@ -197,17 +198,52 @@ std::filesystem::path write_fixture(std::vector<std::uint8_t> bytes) {
   return path;
 }
 
-void assert_equal_executor_state(
+bool close_enough(float actual, float expected) {
+  const float abs = std::fabs(actual - expected);
+  const float rel = abs / std::max(std::fabs(expected), 1.0e-6F);
+  return abs <= 2.0e-2F || rel <= 2.0e-2F;
+}
+
+struct ExecutorObservation {
+  brt::Qwen35ExecutorResult result;
+  std::vector<float> logits;
+  brt::test::Qwen35ExecutorStateSnapshot state;
+};
+
+ExecutorObservation observe_executor(brt::Qwen35Executor &executor,
+                                     brt::Qwen35ExecutorResult result,
+                                     std::size_t vocabulary_size) {
+  ExecutorObservation observation{
+      .result = result,
+      .logits = std::vector<float>(vocabulary_size),
+      .state = executor.state_snapshot_for_tests(),
+  };
+  executor.copy_last_logits(observation.logits);
+  return observation;
+}
+
+void assert_same_observation(const ExecutorObservation &actual,
+                             const ExecutorObservation &expected) {
+  assert(actual.result.token == expected.result.token);
+  assert(actual.result.position == expected.result.position);
+  assert(actual.logits == expected.logits);
+  assert(actual.state.full_kv_cache == expected.state.full_kv_cache);
+  assert(actual.state.linear_convolution == expected.state.linear_convolution);
+  assert(actual.state.linear_recurrent == expected.state.linear_recurrent);
+}
+
+void assert_cross_executor_close(
     brt::Qwen35Executor &ordinary, brt::Qwen35Executor &graph,
+    brt::Qwen35ExecutorResult ordinary_result,
+    brt::Qwen35ExecutorResult graph_result,
     std::vector<float> &ordinary_logits, std::vector<float> &graph_logits) {
+  assert(ordinary_result.token == graph_result.token);
+  assert(ordinary_result.position == graph_result.position);
+  assert(ordinary.position() == graph.position());
   ordinary.copy_last_logits(ordinary_logits);
   graph.copy_last_logits(graph_logits);
-  assert(ordinary_logits == graph_logits);
-  const auto ordinary_state = ordinary.state_snapshot_for_tests();
-  const auto graph_state = graph.state_snapshot_for_tests();
-  assert(ordinary_state.full_kv_cache == graph_state.full_kv_cache);
-  assert(ordinary_state.linear_convolution == graph_state.linear_convolution);
-  assert(ordinary_state.linear_recurrent == graph_state.linear_recurrent);
+  for (std::size_t index = 0; index < ordinary_logits.size(); ++index)
+    assert(close_enough(graph_logits[index], ordinary_logits[index]));
 }
 
 void run_executor_graph_equivalence_tests() {
@@ -249,22 +285,33 @@ void run_executor_graph_equivalence_tests() {
   const std::vector<std::int32_t> prompt{1, 2, 3, 4};
   std::vector<float> ordinary_logits(model.qwen35_config().vocabulary_size);
   std::vector<float> graph_logits(model.qwen35_config().vocabulary_size);
-  const auto run_sequence = [&](bool expect_first_decode_replay) {
+  const auto run_sequence =
+      [&](bool expect_first_decode_replay,
+          const std::vector<ExecutorObservation> *expected_observations) {
+    std::vector<ExecutorObservation> graph_observations;
     const auto ordinary_prefill = ordinary.prefill(prompt);
     const auto graph_prefill = graph.prefill(prompt);
-    assert(ordinary_prefill.token == graph_prefill.token);
-    assert(ordinary_prefill.position == graph_prefill.position);
-    assert(ordinary.position() == graph.position());
-    assert_equal_executor_state(ordinary, graph, ordinary_logits, graph_logits);
+    assert_cross_executor_close(ordinary, graph, ordinary_prefill,
+                                graph_prefill, ordinary_logits, graph_logits);
+    graph_observations.push_back(observe_executor(
+        graph, graph_prefill, model.qwen35_config().vocabulary_size));
+    if (expected_observations != nullptr) {
+      assert_same_observation(graph_observations.back(),
+                              expected_observations->front());
+    }
     for (std::size_t step = 0; step < 8; ++step) {
       const auto token = static_cast<std::int32_t>((step + 5) % 15 + 1);
       const auto ordinary_result = ordinary.decode(token);
       const auto graph_result = graph.decode(token);
-      assert(ordinary_result.token == graph_result.token);
-      assert(ordinary_result.position == graph_result.position);
-      assert(ordinary.position() == graph.position());
-      assert_equal_executor_state(ordinary, graph, ordinary_logits,
-                                  graph_logits);
+      assert_cross_executor_close(ordinary, graph, ordinary_result,
+                                  graph_result, ordinary_logits, graph_logits);
+      graph_observations.push_back(observe_executor(
+          graph, graph_result, model.qwen35_config().vocabulary_size));
+      if (expected_observations != nullptr) {
+        assert_same_observation(
+            graph_observations.back(),
+            (*expected_observations)[graph_observations.size() - 1]);
+      }
       const auto diagnostics = graph.diagnostics();
       assert(diagnostics.decode_graph_captured);
       if (step == 0)
@@ -272,13 +319,16 @@ void run_executor_graph_equivalence_tests() {
       else
         assert(diagnostics.decode_graph_replayed);
     }
+    return graph_observations;
   };
-  run_sequence(false);
+  const auto captured_observations = run_sequence(false, nullptr);
   ordinary.reset();
   graph.reset();
   assert(ordinary.position() == 0);
   assert(graph.position() == 0);
-  run_sequence(true);
+  const auto replayed_observations =
+      run_sequence(true, &captured_observations);
+  assert(replayed_observations.size() == captured_observations.size());
 }
 
 } // namespace

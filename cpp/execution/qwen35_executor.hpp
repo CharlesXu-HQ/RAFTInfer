@@ -27,6 +27,18 @@ struct Qwen35ExecutorResult {
   std::uint32_t position{};
 };
 
+struct Qwen35CublasLtPlanDiagnostic {
+  std::size_t bucket_tokens{};
+  std::size_t m{};
+  std::size_t n{};
+  std::size_t k{};
+  bool tuned{};
+  int algorithm_id{};
+  std::size_t workspace_bytes{};
+
+  bool operator==(const Qwen35CublasLtPlanDiagnostic &) const = default;
+};
+
 struct Qwen35ExecutionDiagnostics {
   Qwen35AttentionImplementation attention{};
   Qwen35KvCacheDType kv_cache_dtype{};
@@ -35,6 +47,7 @@ struct Qwen35ExecutionDiagnostics {
   bool decode_graph_replayed{};
   std::size_t attention_workspace_bytes{};
   std::vector<int> cublaslt_algorithm_ids;
+  std::vector<Qwen35CublasLtPlanDiagnostic> cublaslt_plans;
 };
 
 struct Qwen35TraceEntry {
