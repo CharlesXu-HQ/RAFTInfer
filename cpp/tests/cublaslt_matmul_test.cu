@@ -411,6 +411,56 @@ void check_deterministic_workspace_validation() {
   });
 }
 
+template <typename T> void check_candidate_selection_shape() {
+  const auto shape = brt::CublasLtMatmulShape{
+      .m = 128,
+      .n = 96,
+      .k = 64,
+      .transpose_input = false,
+      .transpose_weight = true,
+  };
+  auto config = config_for(shape, DTypeTraits<T>::dtype);
+  const auto candidates = brt::enumerate_cublaslt_candidates(config, 16);
+  assert(!candidates.empty());
+  assert(candidates.size() <= 16);
+  for (const auto &candidate : candidates) {
+    assert(candidate.algorithm_id >= 0);
+    assert(candidate.workspace_bytes <= config.workspace_budget_bytes);
+  }
+
+  const auto logical_input = sequence(shape.m * shape.k, 0.007F, 0.03F);
+  const auto logical_weight = sequence(shape.k * shape.n, -0.005F, 0.01F);
+  const auto input = encode<T>(logical_input);
+  const auto weight = encode<T>(transpose(logical_weight, shape.k, shape.n));
+
+  auto first_heuristic = brt::CublasLtMatmulPlan::create(config);
+  auto tuned = brt::CublasLtMatmulPlan::create(config);
+  assert(first_heuristic->algorithm_id() == candidates.front().algorithm_id);
+
+  Stream stream;
+  auto input_device = upload<T>(input, stream.get());
+  auto weight_device = upload<T>(weight, stream.get());
+  DeviceBuffer first_output{first_heuristic->output_bytes()};
+  DeviceBuffer tuned_output{tuned->output_bytes()};
+  DeviceBuffer workspace{config.workspace_budget_bytes};
+
+  first_heuristic->run(stream.get(), input_device.data(), input_device.bytes(),
+                       weight_device.data(), weight_device.bytes(),
+                       first_output.data(), first_output.bytes(),
+                       workspace.data(), workspace.bytes());
+  tuned->select_fastest(stream.get(), input_device.data(), weight_device.data(),
+                        tuned_output.data(), workspace.data(),
+                        workspace.bytes(), 1, 2);
+
+  const auto first = download<T>(first_output, shape.m * shape.n, stream.get());
+  const auto selected =
+      download<T>(tuned_output, shape.m * shape.n, stream.get());
+  for (std::size_t index = 0; index < first.size(); ++index) {
+    assert(close_enough(DTypeTraits<T>::decode(selected[index]),
+                        DTypeTraits<T>::decode(first[index])));
+  }
+}
+
 } // namespace
 
 int main() {
@@ -434,4 +484,6 @@ int main() {
   check_validation();
   check_run_validation();
   check_deterministic_workspace_validation();
+  check_candidate_selection_shape<__half>();
+  check_candidate_selection_shape<__nv_bfloat16>();
 }

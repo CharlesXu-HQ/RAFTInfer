@@ -2,12 +2,14 @@
 
 #include <cublasLt.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <memory>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace brt {
 namespace {
@@ -152,6 +154,39 @@ void set_minimum_alignment(cublasLtMatmulPreference_t preference,
                "cublasLtMatmulPreferenceSetAttribute");
 }
 
+int algorithm_id(const cublasLtMatmulAlgo_t &algorithm) {
+  int id = -1;
+  std::size_t written = 0;
+  check_status(cublasLtMatmulAlgoConfigGetAttribute(&algorithm,
+                                                    CUBLASLT_ALGO_CONFIG_ID,
+                                                    &id, sizeof(id), &written),
+               "cublasLtMatmulAlgoConfigGetAttribute");
+  require(written == sizeof(id) && id >= 0,
+          "cuBLASLt returned an invalid algorithm id");
+  return id;
+}
+
+class CudaEvent {
+public:
+  CudaEvent() {
+    require(cudaEventCreateWithFlags(&event_, cudaEventDefault) == cudaSuccess,
+            "cuBLASLt tuning event creation failed");
+  }
+
+  ~CudaEvent() noexcept {
+    if (event_ != nullptr)
+      (void)cudaEventDestroy(event_);
+  }
+
+  CudaEvent(const CudaEvent &) = delete;
+  CudaEvent &operator=(const CudaEvent &) = delete;
+
+  cudaEvent_t get() const noexcept { return event_; }
+
+private:
+  cudaEvent_t event_{};
+};
+
 } // namespace
 
 void detail::validate_cublaslt_shape(const CublasLtMatmulShape &shape) {
@@ -229,6 +264,7 @@ public:
   std::size_t workspace_bytes{};
   int algorithm_id{-1};
   int device_id{-1};
+  CublasLtMatmulConfig config{};
 };
 
 CublasLtMatmulPlan::CublasLtMatmulPlan(std::unique_ptr<Impl> impl) noexcept
@@ -264,6 +300,7 @@ CublasLtMatmulPlan::create(const CublasLtMatmulConfig &config) {
       checked_mul(config.shape.m, config.shape.n,
                   "cuBLASLt output element count overflow"),
       dtype_size(config.output_dtype), "cuBLASLt output byte size overflow");
+  impl->config = config;
 
   const cudaError_t device_error = cudaGetDevice(&impl->device_id);
   require(device_error == cudaSuccess,
@@ -335,20 +372,22 @@ CublasLtMatmulPlan::create(const CublasLtMatmulConfig &config) {
                           CUBLASLT_MATMUL_PREF_MIN_ALIGNMENT_D_BYTES,
                           kBufferAlignment);
 
-    cublasLtMatmulHeuristicResult_t result{};
+    std::vector<cublasLtMatmulHeuristicResult_t> results(1);
     int returned_results = 0;
     check_status(cublasLtMatmulAlgoGetHeuristic(
                      impl->handle, impl->operation, impl->input_layout,
                      impl->weight_layout, impl->output_layout,
-                     impl->output_layout, preference, 1, &result,
+                     impl->output_layout, preference,
+                     static_cast<int>(results.size()), results.data(),
                      &returned_results),
                  "cublasLtMatmulAlgoGetHeuristic");
-    require(returned_results == 1 && result.state == CUBLAS_STATUS_SUCCESS,
+    require(returned_results == 1 &&
+                results.front().state == CUBLAS_STATUS_SUCCESS,
             "cuBLASLt found no matmul algorithm within workspace budget");
-    require(result.workspaceSize <= config.workspace_budget_bytes,
+    require(results.front().workspaceSize <= config.workspace_budget_bytes,
             "cuBLASLt heuristic exceeded the workspace budget");
-    impl->algorithm = result.algo;
-    impl->workspace_bytes = result.workspaceSize;
+    impl->algorithm = results.front().algo;
+    impl->workspace_bytes = results.front().workspaceSize;
   } catch (...) {
     (void)cublasLtMatmulPreferenceDestroy(preference);
     throw;
@@ -356,16 +395,73 @@ CublasLtMatmulPlan::create(const CublasLtMatmulConfig &config) {
   check_status(cublasLtMatmulPreferenceDestroy(preference),
                "cublasLtMatmulPreferenceDestroy");
 
-  std::size_t written = 0;
-  check_status(cublasLtMatmulAlgoConfigGetAttribute(
-                   &impl->algorithm, CUBLASLT_ALGO_CONFIG_ID,
-                   &impl->algorithm_id, sizeof(impl->algorithm_id), &written),
-               "cublasLtMatmulAlgoConfigGetAttribute");
-  require(written == sizeof(impl->algorithm_id) && impl->algorithm_id >= 0,
-          "cuBLASLt returned an invalid algorithm id");
+  impl->algorithm_id = algorithm_id(impl->algorithm);
 
   return std::unique_ptr<CublasLtMatmulPlan>(
       new CublasLtMatmulPlan(std::move(impl)));
+}
+
+std::vector<CublasLtCandidate>
+enumerate_cublaslt_candidates(const CublasLtMatmulConfig &config,
+                              std::size_t maximum) {
+  require(maximum > 0, "cuBLASLt candidate maximum must be non-zero");
+  auto plan = CublasLtMatmulPlan::create(config);
+
+  cublasLtMatmulPreference_t preference{};
+  check_status(cublasLtMatmulPreferenceCreate(&preference),
+               "cublasLtMatmulPreferenceCreate");
+  try {
+    const std::uint64_t workspace_budget = config.workspace_budget_bytes;
+    check_status(cublasLtMatmulPreferenceSetAttribute(
+                     preference, CUBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES,
+                     &workspace_budget, sizeof(workspace_budget)),
+                 "cublasLtMatmulPreferenceSetAttribute(workspace)");
+    constexpr std::uint32_t kBufferAlignment = 16;
+    set_minimum_alignment(preference,
+                          CUBLASLT_MATMUL_PREF_MIN_ALIGNMENT_A_BYTES,
+                          kBufferAlignment);
+    set_minimum_alignment(preference,
+                          CUBLASLT_MATMUL_PREF_MIN_ALIGNMENT_B_BYTES,
+                          kBufferAlignment);
+    set_minimum_alignment(preference,
+                          CUBLASLT_MATMUL_PREF_MIN_ALIGNMENT_C_BYTES,
+                          kBufferAlignment);
+    set_minimum_alignment(preference,
+                          CUBLASLT_MATMUL_PREF_MIN_ALIGNMENT_D_BYTES,
+                          kBufferAlignment);
+
+    const std::size_t bounded_maximum = std::min<std::size_t>(
+        maximum, static_cast<std::size_t>(std::numeric_limits<int>::max()));
+    std::vector<cublasLtMatmulHeuristicResult_t> results(bounded_maximum);
+    int returned_results = 0;
+    check_status(cublasLtMatmulAlgoGetHeuristic(
+                     plan->impl_->handle, plan->impl_->operation,
+                     plan->impl_->input_layout, plan->impl_->weight_layout,
+                     plan->impl_->output_layout, plan->impl_->output_layout,
+                     preference, static_cast<int>(results.size()),
+                     results.data(), &returned_results),
+                 "cublasLtMatmulAlgoGetHeuristic");
+    std::vector<CublasLtCandidate> candidates;
+    candidates.reserve(static_cast<std::size_t>(returned_results));
+    for (int index = 0; index < returned_results; ++index) {
+      const auto &result = results[static_cast<std::size_t>(index)];
+      if (result.state != CUBLAS_STATUS_SUCCESS ||
+          result.workspaceSize > config.workspace_budget_bytes) {
+        continue;
+      }
+      candidates.push_back(CublasLtCandidate{
+          .algorithm = result.algo,
+          .algorithm_id = algorithm_id(result.algo),
+          .workspace_bytes = result.workspaceSize,
+      });
+    }
+    check_status(cublasLtMatmulPreferenceDestroy(preference),
+                 "cublasLtMatmulPreferenceDestroy");
+    return candidates;
+  } catch (...) {
+    (void)cublasLtMatmulPreferenceDestroy(preference);
+    throw;
+  }
 }
 
 std::size_t CublasLtMatmulPlan::input_bytes() const noexcept {
@@ -424,6 +520,96 @@ void CublasLtMatmulPlan::run(cudaStream_t stream, const void *input,
                               impl_->output_layout, &impl_->algorithm,
                               workspace, impl_->workspace_bytes, stream),
                "cublasLtMatmul");
+}
+
+void CublasLtMatmulPlan::select_fastest(cudaStream_t stream, const void *input,
+                                        const void *weight, void *output,
+                                        void *workspace,
+                                        std::size_t workspace_bytes,
+                                        std::uint32_t warmups,
+                                        std::uint32_t measurements) {
+  require(measurements > 0,
+          "cuBLASLt tuning requires at least one measurement");
+  detail::validate_cublaslt_run_buffers(
+      detail::CublasLtRunBuffers{
+          .input = input,
+          .input_bytes = impl_->input_bytes,
+          .weight = weight,
+          .weight_bytes = impl_->weight_bytes,
+          .output = output,
+          .output_bytes = impl_->output_bytes,
+          .workspace = workspace,
+          .workspace_bytes = workspace_bytes,
+      },
+      detail::CublasLtBufferRequirements{
+          .input_bytes = impl_->input_bytes,
+          .weight_bytes = impl_->weight_bytes,
+          .output_bytes = impl_->output_bytes,
+          .workspace_bytes = workspace_bytes,
+      });
+
+  int current_device = -1;
+  require(cudaGetDevice(&current_device) == cudaSuccess &&
+              current_device == impl_->device_id,
+          "cuBLASLt matmul plan used on a different CUDA device");
+
+  const auto candidates = enumerate_cublaslt_candidates(impl_->config, 16);
+  require(!candidates.empty(),
+          "cuBLASLt found no matmul tuning candidates within workspace budget");
+  CudaEvent start;
+  CudaEvent stop;
+  constexpr float alpha = 1.0F;
+  constexpr float beta = 0.0F;
+  std::vector<float> timings;
+  timings.reserve(measurements);
+  CublasLtCandidate best = candidates.front();
+  float best_median = std::numeric_limits<float>::infinity();
+
+  for (const auto &candidate : candidates) {
+    if (candidate.workspace_bytes > workspace_bytes)
+      continue;
+    for (std::uint32_t iteration = 0; iteration < warmups; ++iteration) {
+      check_status(cublasLtMatmul(impl_->handle, impl_->operation, &alpha,
+                                  input, impl_->input_layout, weight,
+                                  impl_->weight_layout, &beta, output,
+                                  impl_->output_layout, output,
+                                  impl_->output_layout, &candidate.algorithm,
+                                  workspace, candidate.workspace_bytes, stream),
+                   "cublasLtMatmul(tuning warmup)");
+    }
+    timings.clear();
+    for (std::uint32_t iteration = 0; iteration < measurements; ++iteration) {
+      require(cudaEventRecord(start.get(), stream) == cudaSuccess,
+              "cuBLASLt tuning start event record failed");
+      check_status(cublasLtMatmul(impl_->handle, impl_->operation, &alpha,
+                                  input, impl_->input_layout, weight,
+                                  impl_->weight_layout, &beta, output,
+                                  impl_->output_layout, output,
+                                  impl_->output_layout, &candidate.algorithm,
+                                  workspace, candidate.workspace_bytes, stream),
+                   "cublasLtMatmul(tuning measurement)");
+      require(cudaEventRecord(stop.get(), stream) == cudaSuccess,
+              "cuBLASLt tuning stop event record failed");
+      require(cudaEventSynchronize(stop.get()) == cudaSuccess,
+              "cuBLASLt tuning event synchronization failed");
+      float milliseconds = 0.0F;
+      require(cudaEventElapsedTime(&milliseconds, start.get(), stop.get()) ==
+                  cudaSuccess,
+              "cuBLASLt tuning event timing failed");
+      timings.push_back(milliseconds);
+    }
+    std::sort(timings.begin(), timings.end());
+    const float median = timings[timings.size() / 2];
+    if (median < best_median) {
+      best_median = median;
+      best = candidate;
+    }
+  }
+  require(best_median < std::numeric_limits<float>::infinity(),
+          "cuBLASLt tuning candidates exceeded caller workspace");
+  impl_->algorithm = best.algorithm;
+  impl_->algorithm_id = best.algorithm_id;
+  impl_->workspace_bytes = best.workspace_bytes;
 }
 
 } // namespace brt

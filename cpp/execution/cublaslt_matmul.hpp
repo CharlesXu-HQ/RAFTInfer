@@ -2,12 +2,15 @@
 
 #include <brt/tensor.h>
 
+#include <cublasLt.h>
 #include <cuda_runtime_api.h>
 
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace brt {
 
@@ -40,6 +43,12 @@ struct CublasLtMatmulConfig {
   std::size_t workspace_budget_bytes;
 };
 
+struct CublasLtCandidate {
+  cublasLtMatmulAlgo_t algorithm;
+  int algorithm_id;
+  std::size_t workspace_bytes;
+};
+
 namespace detail {
 
 struct CublasLtRunBuffers {
@@ -69,6 +78,10 @@ void validate_cublaslt_run_buffers(
 
 } // namespace detail
 
+std::vector<CublasLtCandidate>
+enumerate_cublaslt_candidates(const CublasLtMatmulConfig &config,
+                              std::size_t maximum = 16);
+
 // Immutable cuBLASLt descriptor and algorithm plan. Creation performs device
 // validation and the single heuristic query. `run` only validates caller-owned
 // buffers and enqueues the saved algorithm on the supplied stream.
@@ -95,9 +108,17 @@ public:
            std::size_t output_bytes, void *workspace,
            std::size_t workspace_bytes) const;
 
+  void select_fastest(cudaStream_t stream, const void *input,
+                      const void *weight, void *output, void *workspace,
+                      std::size_t workspace_bytes, std::uint32_t warmups = 2,
+                      std::uint32_t measurements = 5);
+
 private:
   class Impl;
   explicit CublasLtMatmulPlan(std::unique_ptr<Impl> impl) noexcept;
+  friend std::vector<CublasLtCandidate>
+  enumerate_cublaslt_candidates(const CublasLtMatmulConfig &config,
+                                std::size_t maximum);
 
   std::unique_ptr<Impl> impl_;
 };

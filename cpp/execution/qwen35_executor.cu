@@ -124,24 +124,24 @@ void *allocate(WorkspaceArena &arena, std::size_t bytes,
 }
 
 struct LinearPlans {
-  std::unique_ptr<CublasLtMatmulPlan> qkv;
-  std::unique_ptr<CublasLtMatmulPlan> beta;
-  std::unique_ptr<CublasLtMatmulPlan> alpha;
-  std::unique_ptr<CublasLtMatmulPlan> gate;
-  std::unique_ptr<CublasLtMatmulPlan> output;
+  std::shared_ptr<CublasLtMatmulPlan> qkv;
+  std::shared_ptr<CublasLtMatmulPlan> beta;
+  std::shared_ptr<CublasLtMatmulPlan> alpha;
+  std::shared_ptr<CublasLtMatmulPlan> gate;
+  std::shared_ptr<CublasLtMatmulPlan> output;
 };
 
 struct FullPlans {
-  std::unique_ptr<CublasLtMatmulPlan> query_gate;
-  std::unique_ptr<CublasLtMatmulPlan> key;
-  std::unique_ptr<CublasLtMatmulPlan> value;
-  std::unique_ptr<CublasLtMatmulPlan> output;
+  std::shared_ptr<CublasLtMatmulPlan> query_gate;
+  std::shared_ptr<CublasLtMatmulPlan> key;
+  std::shared_ptr<CublasLtMatmulPlan> value;
+  std::shared_ptr<CublasLtMatmulPlan> output;
 };
 
 struct LayerPlans {
-  std::unique_ptr<CublasLtMatmulPlan> ffn_gate;
-  std::unique_ptr<CublasLtMatmulPlan> ffn_up;
-  std::unique_ptr<CublasLtMatmulPlan> ffn_down;
+  std::shared_ptr<CublasLtMatmulPlan> ffn_gate;
+  std::shared_ptr<CublasLtMatmulPlan> ffn_up;
+  std::shared_ptr<CublasLtMatmulPlan> ffn_down;
   std::unique_ptr<LinearPlans> linear;
   std::unique_ptr<FullPlans> full;
 };
@@ -149,8 +149,32 @@ struct LayerPlans {
 struct BucketPlans {
   std::size_t tokens{};
   std::vector<LayerPlans> layers;
-  std::unique_ptr<CublasLtMatmulPlan> lm_head;
+  std::shared_ptr<CublasLtMatmulPlan> lm_head;
 };
+
+struct PlanCacheEntry {
+  CublasLtMatmulConfig config;
+  std::shared_ptr<CublasLtMatmulPlan> plan;
+};
+
+bool same_matmul_config(const CublasLtMatmulConfig &lhs,
+                        const CublasLtMatmulConfig &rhs) {
+  return lhs.shape.m == rhs.shape.m && lhs.shape.n == rhs.shape.n &&
+         lhs.shape.k == rhs.shape.k &&
+         lhs.shape.transpose_input == rhs.shape.transpose_input &&
+         lhs.shape.transpose_weight == rhs.shape.transpose_weight &&
+         lhs.input_dtype == rhs.input_dtype &&
+         lhs.weight_dtype == rhs.weight_dtype &&
+         lhs.output_dtype == rhs.output_dtype &&
+         lhs.input_order == rhs.input_order &&
+         lhs.weight_order == rhs.weight_order &&
+         lhs.output_order == rhs.output_order &&
+         lhs.workspace_budget_bytes == rhs.workspace_budget_bytes;
+}
+
+bool release_tuning_bucket(std::size_t bucket) {
+  return bucket == 1 || bucket == 128 || bucket == 512;
+}
 
 CublasLtMatmulConfig matmul_config(std::size_t m, std::size_t n, std::size_t k,
                                    BrtDataType activation_dtype,
@@ -494,10 +518,17 @@ struct InputCastLaunches {
   std::vector<std::size_t> ffn_gate_up;
 };
 
+struct CublasLtPlanSelections {
+  std::size_t construction_calls{};
+  std::size_t execution_calls{};
+  std::vector<int> algorithm_ids;
+};
+
 namespace {
 
 InputCastLaunches input_cast_launches;
 std::size_t *active_input_cast_group{};
+CublasLtPlanSelections cublaslt_plan_selections;
 
 } // namespace
 
@@ -508,6 +539,14 @@ void reset_qwen35_executor_input_cast_launches() {
 
 InputCastLaunches qwen35_executor_input_cast_launches() {
   return input_cast_launches;
+}
+
+void reset_qwen35_executor_cublaslt_plan_selections() {
+  cublaslt_plan_selections = {};
+}
+
+CublasLtPlanSelections qwen35_executor_cublaslt_plan_selections() {
+  return cublaslt_plan_selections;
 }
 
 } // namespace test
@@ -535,6 +574,11 @@ void record_input_cast_launch() {
   ++test::input_cast_launches.total;
   if (test::active_input_cast_group != nullptr)
     ++*test::active_input_cast_group;
+}
+
+void record_cublaslt_plan_selection(int algorithm_id) {
+  ++test::cublaslt_plan_selections.construction_calls;
+  test::cublaslt_plan_selections.algorithm_ids.push_back(algorithm_id);
 }
 
 } // namespace
@@ -1073,6 +1117,31 @@ private:
   }
 
   void create_plans() {
+    std::vector<PlanCacheEntry> plan_cache;
+    const auto create_plan = [&](const CublasLtMatmulConfig &config,
+                                 const model::CudaTensorView &weight,
+                                 void *output, std::size_t bucket) {
+      for (const auto &entry : plan_cache) {
+        if (same_matmul_config(entry.config, config))
+          return entry.plan;
+      }
+      auto unique = CublasLtMatmulPlan::create(config);
+      std::shared_ptr<CublasLtMatmulPlan> plan{std::move(unique)};
+      if (release_tuning_bucket(bucket)) {
+        check_cuda(cudaMemsetAsync(matmul_input_, 0, plan->input_bytes(),
+                                   context_.stream()),
+                   "Qwen3.5 cuBLASLt tuning input initialization failed");
+        plan->select_fastest(context_.stream(), matmul_input_,
+                             weight.device_data, output, matmul_workspace_,
+                             kMatmulWorkspaceBudget);
+#if defined(BRT_QWEN35_EXECUTOR_TESTING)
+        record_cublaslt_plan_selection(plan->algorithm_id());
+#endif
+      }
+      plan_cache.push_back(PlanCacheEntry{.config = config, .plan = plan});
+      return plan;
+    };
+
     bucket_plans_.reserve(kBuckets.size());
     for (const std::size_t bucket : kBuckets) {
       auto &entry = bucket_plans_.emplace_back();
@@ -1084,15 +1153,18 @@ private:
         require(weights.index == block.index,
                 "Qwen3.5 CUDA layer index does not match config");
         auto &plans = entry.layers.emplace_back();
-        plans.ffn_gate = CublasLtMatmulPlan::create(
+        plans.ffn_gate = create_plan(
             matmul_config(bucket, config_.intermediate_size,
-                          config_.hidden_size, dtype_, weight_dtype_));
-        plans.ffn_up = CublasLtMatmulPlan::create(
+                          config_.hidden_size, dtype_, weight_dtype_),
+            weights.common.ffn_gate, intermediate_a_, bucket);
+        plans.ffn_up = create_plan(
             matmul_config(bucket, config_.intermediate_size,
-                          config_.hidden_size, dtype_, weight_dtype_));
-        plans.ffn_down = CublasLtMatmulPlan::create(
+                          config_.hidden_size, dtype_, weight_dtype_),
+            weights.common.ffn_up, intermediate_b_, bucket);
+        plans.ffn_down = create_plan(
             matmul_config(bucket, config_.hidden_size,
-                          config_.intermediate_size, dtype_, weight_dtype_));
+                          config_.intermediate_size, dtype_, weight_dtype_),
+            weights.common.ffn_down, mixer_projected_, bucket);
         if (block.kind == model::Qwen35BlockKind::full_attention) {
           require(weights.full_attention.has_value(),
                   "full-attention block is missing CUDA weights");
@@ -1101,14 +1173,22 @@ private:
           const std::size_t kv_width = config_.full_attention_kv_head_count *
                                        config_.full_attention_head_dimension;
           plans.full = std::make_unique<FullPlans>();
-          plans.full->query_gate = CublasLtMatmulPlan::create(matmul_config(
-              bucket, q_width * 2, config_.hidden_size, dtype_, weight_dtype_));
-          plans.full->key = CublasLtMatmulPlan::create(matmul_config(
-              bucket, kv_width, config_.hidden_size, dtype_, weight_dtype_));
-          plans.full->value = CublasLtMatmulPlan::create(matmul_config(
-              bucket, kv_width, config_.hidden_size, dtype_, weight_dtype_));
-          plans.full->output = CublasLtMatmulPlan::create(matmul_config(
-              bucket, config_.hidden_size, q_width, dtype_, weight_dtype_));
+          plans.full->query_gate = create_plan(
+              matmul_config(bucket, q_width * 2, config_.hidden_size, dtype_,
+                            weight_dtype_),
+              weights.full_attention->query, full_query_gate_, bucket);
+          plans.full->key =
+              create_plan(matmul_config(bucket, kv_width, config_.hidden_size,
+                                        dtype_, weight_dtype_),
+                          weights.full_attention->key, full_key_, bucket);
+          plans.full->value =
+              create_plan(matmul_config(bucket, kv_width, config_.hidden_size,
+                                        dtype_, weight_dtype_),
+                          weights.full_attention->value, full_value_, bucket);
+          plans.full->output = create_plan(
+              matmul_config(bucket, config_.hidden_size, q_width, dtype_,
+                            weight_dtype_),
+              weights.full_attention->output, mixer_projected_, bucket);
         } else {
           require(weights.linear_attention.has_value(),
                   "linear-attention block is missing CUDA weights");
@@ -1116,25 +1196,32 @@ private:
           const std::size_t linear_gate_width =
               config_.linear_value_head_count * config_.linear_head_dimension;
           plans.linear = std::make_unique<LinearPlans>();
-          plans.linear->qkv = CublasLtMatmulPlan::create(matmul_config(
-              bucket, qkv_width, config_.hidden_size, dtype_, weight_dtype_));
-          plans.linear->beta = CublasLtMatmulPlan::create(
+          plans.linear->qkv =
+              create_plan(matmul_config(bucket, qkv_width, config_.hidden_size,
+                                        dtype_, weight_dtype_),
+                          weights.linear_attention->qkv, linear_qkv_, bucket);
+          plans.linear->beta = create_plan(
               matmul_config(bucket, config_.linear_value_head_count,
-                            config_.hidden_size, dtype_, weight_dtype_));
-          plans.linear->alpha = CublasLtMatmulPlan::create(
+                            config_.hidden_size, dtype_, weight_dtype_),
+              weights.linear_attention->beta, linear_beta_, bucket);
+          plans.linear->alpha = create_plan(
               matmul_config(bucket, config_.linear_value_head_count,
-                            config_.hidden_size, dtype_, weight_dtype_));
-          plans.linear->gate = CublasLtMatmulPlan::create(
+                            config_.hidden_size, dtype_, weight_dtype_),
+              weights.linear_attention->alpha, linear_alpha_, bucket);
+          plans.linear->gate = create_plan(
               matmul_config(bucket, linear_gate_width, config_.hidden_size,
-                            dtype_, weight_dtype_));
-          plans.linear->output = CublasLtMatmulPlan::create(
+                            dtype_, weight_dtype_),
+              weights.linear_attention->gate, linear_gate_, bucket);
+          plans.linear->output = create_plan(
               matmul_config(bucket, config_.hidden_size, linear_gate_width,
-                            dtype_, weight_dtype_));
+                            dtype_, weight_dtype_),
+              weights.linear_attention->output, mixer_projected_, bucket);
         }
       }
-      entry.lm_head = CublasLtMatmulPlan::create(
-          matmul_config(1, config_.vocabulary_size, config_.hidden_size, dtype_,
-                        weight_dtype_));
+      entry.lm_head =
+          create_plan(matmul_config(1, config_.vocabulary_size,
+                                    config_.hidden_size, dtype_, weight_dtype_),
+                      weights_.output(), logits_, 1);
     }
   }
 

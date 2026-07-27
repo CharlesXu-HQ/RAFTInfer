@@ -46,6 +46,15 @@ struct InputCastLaunches {
 void reset_qwen35_executor_input_cast_launches();
 InputCastLaunches qwen35_executor_input_cast_launches();
 
+struct CublasLtPlanSelections {
+  std::size_t construction_calls{};
+  std::size_t execution_calls{};
+  std::vector<int> algorithm_ids;
+};
+
+void reset_qwen35_executor_cublaslt_plan_selections();
+CublasLtPlanSelections qwen35_executor_cublaslt_plan_selections();
+
 } // namespace brt::test
 
 namespace {
@@ -675,6 +684,63 @@ void run_grouped_input_cast_tests() {
          0);
 }
 
+void run_cublaslt_plan_tuning_tests() {
+  assert(cudaSetDevice(0) == cudaSuccess);
+  const auto path =
+      write_fixture(brt::test::make_qwen35_nonzero_bf16_gguf_fixture());
+  brt::model::Model model{path.string()};
+  constexpr std::size_t max_context = 128;
+  auto policy = materialized_policy();
+  policy.decode_graph = true;
+  const std::size_t workspace_bytes = brt::Qwen35Executor::workspace_bytes(
+      model.qwen35_config(), max_context, policy);
+
+  brt::DeviceContext device{0, 256U * 1024U * 1024U};
+  auto weights = device.upload_qwen35_weights(model);
+  auto owner = device.create_execution_owner(workspace_bytes);
+  auto context = owner->execution_context();
+
+  brt::test::reset_qwen35_executor_cublaslt_plan_selections();
+  brt::Qwen35Executor executor{context, model.qwen35_config(), *weights,
+                               max_context, policy};
+  const auto construction =
+      brt::test::qwen35_executor_cublaslt_plan_selections();
+  assert(construction.construction_calls > 0);
+  assert(construction.execution_calls == 0);
+  assert(!construction.algorithm_ids.empty());
+  assert(std::all_of(construction.algorithm_ids.begin(),
+                     construction.algorithm_ids.end(),
+                     [](int id) { return id >= 0; }));
+
+  brt::test::reset_qwen35_executor_cublaslt_plan_selections();
+  const std::vector<std::int32_t> prompt128(128, 1);
+  const auto prefill = executor.prefill(prompt128);
+  assert(prefill.position == prompt128.size() - 1);
+  const auto after_prefill =
+      brt::test::qwen35_executor_cublaslt_plan_selections();
+  assert(after_prefill.construction_calls == 0);
+  assert(after_prefill.execution_calls == 0);
+
+  executor.reset();
+  brt::test::reset_qwen35_executor_cublaslt_plan_selections();
+  const auto decoded = executor.decode(1);
+  assert(decoded.position == 0);
+  const auto after_capture_decode =
+      brt::test::qwen35_executor_cublaslt_plan_selections();
+  assert(after_capture_decode.construction_calls == 0);
+  assert(after_capture_decode.execution_calls == 0);
+  assert(executor.diagnostics().decode_graph_captured);
+
+  brt::test::reset_qwen35_executor_cublaslt_plan_selections();
+  const auto replayed = executor.decode(2);
+  assert(replayed.position == 1);
+  const auto after_replay =
+      brt::test::qwen35_executor_cublaslt_plan_selections();
+  assert(after_replay.construction_calls == 0);
+  assert(after_replay.execution_calls == 0);
+  assert(executor.diagnostics().decode_graph_replayed);
+}
+
 void run_executor_online_materialized_parity_tests() {
   assert(cudaSetDevice(0) == cudaSuccess);
   const auto path = write_fixture(make_release_attention_fixture());
@@ -873,6 +939,7 @@ int main() {
   run_executor_fixture_smoke();
   run_executor_f32_auxiliary_smoke();
   run_grouped_input_cast_tests();
+  run_cublaslt_plan_tuning_tests();
   run_executor_online_materialized_parity_tests();
   run_executor_reference_and_allocation_tests();
 }
