@@ -34,6 +34,7 @@ struct Qwen35ExecutionDiagnostics {
   bool decode_graph_captured{};
   bool decode_graph_replayed{};
   std::size_t attention_workspace_bytes{};
+  std::vector<int> cublaslt_algorithm_ids;
 };
 
 struct Qwen35TraceEntry {

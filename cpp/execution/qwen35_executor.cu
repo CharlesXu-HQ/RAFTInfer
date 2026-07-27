@@ -518,17 +518,10 @@ struct InputCastLaunches {
   std::vector<std::size_t> ffn_gate_up;
 };
 
-struct CublasLtPlanSelections {
-  std::size_t construction_calls{};
-  std::size_t execution_calls{};
-  std::vector<int> algorithm_ids;
-};
-
 namespace {
 
 InputCastLaunches input_cast_launches;
 std::size_t *active_input_cast_group{};
-CublasLtPlanSelections cublaslt_plan_selections;
 
 } // namespace
 
@@ -539,14 +532,6 @@ void reset_qwen35_executor_input_cast_launches() {
 
 InputCastLaunches qwen35_executor_input_cast_launches() {
   return input_cast_launches;
-}
-
-void reset_qwen35_executor_cublaslt_plan_selections() {
-  cublaslt_plan_selections = {};
-}
-
-CublasLtPlanSelections qwen35_executor_cublaslt_plan_selections() {
-  return cublaslt_plan_selections;
 }
 
 } // namespace test
@@ -574,11 +559,6 @@ void record_input_cast_launch() {
   ++test::input_cast_launches.total;
   if (test::active_input_cast_group != nullptr)
     ++*test::active_input_cast_group;
-}
-
-void record_cublaslt_plan_selection(int algorithm_id) {
-  ++test::cublaslt_plan_selections.construction_calls;
-  test::cublaslt_plan_selections.algorithm_ids.push_back(algorithm_id);
 }
 
 } // namespace
@@ -707,6 +687,7 @@ public:
                                  decode_graph_->captured(),
         .decode_graph_replayed = decode_graph_replayed_,
         .attention_workspace_bytes = attention_workspace_bytes_,
+        .cublaslt_algorithm_ids = cublaslt_algorithm_ids_,
     };
   }
 
@@ -1127,17 +1108,15 @@ private:
       }
       auto unique = CublasLtMatmulPlan::create(config);
       std::shared_ptr<CublasLtMatmulPlan> plan{std::move(unique)};
-      if (release_tuning_bucket(bucket)) {
+      if (release_tuning_bucket(bucket) && bucket <= max_context_) {
         check_cuda(cudaMemsetAsync(matmul_input_, 0, plan->input_bytes(),
                                    context_.stream()),
                    "Qwen3.5 cuBLASLt tuning input initialization failed");
         plan->select_fastest(context_.stream(), matmul_input_,
                              weight.device_data, output, matmul_workspace_,
                              kMatmulWorkspaceBudget);
-#if defined(BRT_QWEN35_EXECUTOR_TESTING)
-        record_cublaslt_plan_selection(plan->algorithm_id());
-#endif
       }
+      cublaslt_algorithm_ids_.push_back(plan->algorithm_id());
       plan_cache.push_back(PlanCacheEntry{.config = config, .plan = plan});
       return plan;
     };
@@ -1626,6 +1605,7 @@ private:
   std::vector<std::size_t> full_state_by_layer_;
   std::vector<std::size_t> linear_state_by_layer_;
   std::vector<BucketPlans> bucket_plans_;
+  std::vector<int> cublaslt_algorithm_ids_;
   std::vector<Qwen35TraceEntry> trace_;
   std::unique_ptr<CudaGraphDecode> decode_graph_;
   bool decode_graph_replayed_{};

@@ -154,7 +154,9 @@ void set_minimum_alignment(cublasLtMatmulPreference_t preference,
                "cublasLtMatmulPreferenceSetAttribute");
 }
 
-int algorithm_id(const cublasLtMatmulAlgo_t &algorithm) {
+constexpr std::size_t kMaxCublasLtCandidates = 16;
+
+int cublaslt_algorithm_config_id(const cublasLtMatmulAlgo_t &algorithm) {
   int id = -1;
   std::size_t written = 0;
   check_status(cublasLtMatmulAlgoConfigGetAttribute(&algorithm,
@@ -395,7 +397,7 @@ CublasLtMatmulPlan::create(const CublasLtMatmulConfig &config) {
   check_status(cublasLtMatmulPreferenceDestroy(preference),
                "cublasLtMatmulPreferenceDestroy");
 
-  impl->algorithm_id = algorithm_id(impl->algorithm);
+  impl->algorithm_id = cublaslt_algorithm_config_id(impl->algorithm);
 
   return std::unique_ptr<CublasLtMatmulPlan>(
       new CublasLtMatmulPlan(std::move(impl)));
@@ -430,8 +432,8 @@ enumerate_cublaslt_candidates(const CublasLtMatmulConfig &config,
                           CUBLASLT_MATMUL_PREF_MIN_ALIGNMENT_D_BYTES,
                           kBufferAlignment);
 
-    const std::size_t bounded_maximum = std::min<std::size_t>(
-        maximum, static_cast<std::size_t>(std::numeric_limits<int>::max()));
+    const std::size_t bounded_maximum =
+        std::min<std::size_t>(maximum, kMaxCublasLtCandidates);
     std::vector<cublasLtMatmulHeuristicResult_t> results(bounded_maximum);
     int returned_results = 0;
     check_status(cublasLtMatmulAlgoGetHeuristic(
@@ -451,7 +453,7 @@ enumerate_cublaslt_candidates(const CublasLtMatmulConfig &config,
       }
       candidates.push_back(CublasLtCandidate{
           .algorithm = result.algo,
-          .algorithm_id = algorithm_id(result.algo),
+          .algorithm_id = cublaslt_algorithm_config_id(result.algo),
           .workspace_bytes = result.workspaceSize,
       });
     }

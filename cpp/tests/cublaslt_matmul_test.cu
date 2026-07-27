@@ -421,8 +421,12 @@ template <typename T> void check_candidate_selection_shape() {
   };
   auto config = config_for(shape, DTypeTraits<T>::dtype);
   const auto candidates = brt::enumerate_cublaslt_candidates(config, 16);
+  const auto oversized_request =
+      brt::enumerate_cublaslt_candidates(config, 128);
   assert(!candidates.empty());
   assert(candidates.size() <= 16);
+  assert(!oversized_request.empty());
+  assert(oversized_request.size() <= 16);
   for (const auto &candidate : candidates) {
     assert(candidate.algorithm_id >= 0);
     assert(candidate.workspace_bytes <= config.workspace_budget_bytes);
