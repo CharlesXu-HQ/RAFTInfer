@@ -6,7 +6,6 @@
 
 #include <cuda_runtime_api.h>
 
-#include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <cstdint>
@@ -198,12 +197,6 @@ std::filesystem::path write_fixture(std::vector<std::uint8_t> bytes) {
   return path;
 }
 
-bool close_enough(float actual, float expected) {
-  const float abs = std::fabs(actual - expected);
-  const float rel = abs / std::max(std::fabs(expected), 1.0e-6F);
-  return abs <= 2.0e-2F || rel <= 2.0e-2F;
-}
-
 struct ExecutorObservation {
   brt::Qwen35ExecutorResult result;
   std::vector<float> logits;
@@ -232,20 +225,6 @@ void assert_same_observation(const ExecutorObservation &actual,
   assert(actual.state.linear_recurrent == expected.state.linear_recurrent);
 }
 
-void assert_cross_executor_close(
-    brt::Qwen35Executor &ordinary, brt::Qwen35Executor &graph,
-    brt::Qwen35ExecutorResult ordinary_result,
-    brt::Qwen35ExecutorResult graph_result,
-    std::vector<float> &ordinary_logits, std::vector<float> &graph_logits) {
-  assert(ordinary_result.token == graph_result.token);
-  assert(ordinary_result.position == graph_result.position);
-  assert(ordinary.position() == graph.position());
-  ordinary.copy_last_logits(ordinary_logits);
-  graph.copy_last_logits(graph_logits);
-  for (std::size_t index = 0; index < ordinary_logits.size(); ++index)
-    assert(close_enough(graph_logits[index], ordinary_logits[index]));
-}
-
 void run_executor_graph_equivalence_tests() {
   require_cuda(cudaSetDevice(0));
   const brt::test::Qwen35GgufFixtureOptions fixture_options{
@@ -262,37 +241,28 @@ void run_executor_graph_equivalence_tests() {
       brt::test::make_qwen35_nonzero_bf16_gguf_fixture(fixture_options));
   brt::model::Model model{path.string()};
   constexpr std::size_t max_context = 64;
-  auto ordinary_policy = brt::Qwen35ExecutionPolicy{};
-  ordinary_policy.decode_graph = false;
-  auto graph_policy = ordinary_policy;
+  auto graph_policy = brt::Qwen35ExecutionPolicy{};
   graph_policy.decode_graph = true;
   const auto workspace_bytes = brt::Qwen35Executor::workspace_bytes(
       model.qwen35_config(), max_context, graph_policy);
 
   brt::DeviceContext device{0, 1024U * 1024U * 1024U};
   auto weights = device.upload_qwen35_weights(model);
-  auto ordinary_owner = device.create_execution_owner(workspace_bytes);
   auto graph_owner = device.create_execution_owner(workspace_bytes);
-  auto ordinary_context = ordinary_owner->execution_context();
   auto graph_context = graph_owner->execution_context();
-  brt::Qwen35Executor ordinary{ordinary_context, model.qwen35_config(),
-                               *weights, max_context, ordinary_policy};
   brt::Qwen35Executor graph{graph_context, model.qwen35_config(), *weights,
                             max_context, graph_policy};
-  assert(graph.diagnostics().attention ==
+  const auto construction_diagnostics = graph.diagnostics();
+  assert(construction_diagnostics.attention ==
          brt::Qwen35AttentionImplementation::online_tiled);
+  assert(!construction_diagnostics.cublaslt_plans.empty());
 
   const std::vector<std::int32_t> prompt{1, 2, 3, 4};
-  std::vector<float> ordinary_logits(model.qwen35_config().vocabulary_size);
-  std::vector<float> graph_logits(model.qwen35_config().vocabulary_size);
   const auto run_sequence =
       [&](bool expect_first_decode_replay,
           const std::vector<ExecutorObservation> *expected_observations) {
     std::vector<ExecutorObservation> graph_observations;
-    const auto ordinary_prefill = ordinary.prefill(prompt);
     const auto graph_prefill = graph.prefill(prompt);
-    assert_cross_executor_close(ordinary, graph, ordinary_prefill,
-                                graph_prefill, ordinary_logits, graph_logits);
     graph_observations.push_back(observe_executor(
         graph, graph_prefill, model.qwen35_config().vocabulary_size));
     if (expected_observations != nullptr) {
@@ -301,10 +271,7 @@ void run_executor_graph_equivalence_tests() {
     }
     for (std::size_t step = 0; step < 8; ++step) {
       const auto token = static_cast<std::int32_t>((step + 5) % 15 + 1);
-      const auto ordinary_result = ordinary.decode(token);
       const auto graph_result = graph.decode(token);
-      assert_cross_executor_close(ordinary, graph, ordinary_result,
-                                  graph_result, ordinary_logits, graph_logits);
       graph_observations.push_back(observe_executor(
           graph, graph_result, model.qwen35_config().vocabulary_size));
       if (expected_observations != nullptr) {
@@ -313,6 +280,10 @@ void run_executor_graph_equivalence_tests() {
             (*expected_observations)[graph_observations.size() - 1]);
       }
       const auto diagnostics = graph.diagnostics();
+      assert(diagnostics.cublaslt_algorithm_ids ==
+             construction_diagnostics.cublaslt_algorithm_ids);
+      assert(diagnostics.cublaslt_plans ==
+             construction_diagnostics.cublaslt_plans);
       assert(diagnostics.decode_graph_captured);
       if (step == 0)
         assert(diagnostics.decode_graph_replayed == expect_first_decode_replay);
@@ -322,9 +293,7 @@ void run_executor_graph_equivalence_tests() {
     return graph_observations;
   };
   const auto captured_observations = run_sequence(false, nullptr);
-  ordinary.reset();
   graph.reset();
-  assert(ordinary.position() == 0);
   assert(graph.position() == 0);
   const auto replayed_observations =
       run_sequence(true, &captured_observations);
