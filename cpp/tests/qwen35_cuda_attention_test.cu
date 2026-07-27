@@ -500,7 +500,7 @@ std::vector<float> run_materialized_prefill(
   const auto device_key = upload(context, key);
   const auto device_value = upload(context, value);
   const auto device_gate = upload(context, gate);
-  DeviceBuffer device_output{context, output_elements * sizeof(ActivationT)};
+  DeviceBuffer device_output{context, output_elements * sizeof(T)};
   DeviceBuffer device_workspace{context,
                                 brt::kernels::qwen35_attention_workspace_bytes(
                                     shape, kReferenceAttentionPolicy)};
