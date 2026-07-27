@@ -8,10 +8,13 @@ trap 'rm -rf "${fixture_root}"' EXIT
 fake_bin="${fixture_root}/bin"
 mkdir -p "${fake_bin}"
 touch "${fixture_root}/brt.gguf" "${fixture_root}/llama.gguf"
-cat >"${fixture_root}/parity.jsonl" <<'EOF'
-{"schema_version":1,"name":"one","parity_passed":true,"prompt_token_ids":[10,11],"generated_token_ids":[20]}
-{"schema_version":1,"name":"two","parity_passed":true,"prompt_token_ids":[12,13],"generated_token_ids":[21]}
+cat >"${fixture_root}/provenance.json" <<'EOF'
+{"schema_version":1,"conversion":{"outtype":"bf16"},"llama_cpp":{"reference_revision":"1234567890abcdef1234567890abcdef12345678"},"artifact":{"path":"/models/qwen35-bf16.gguf","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}
 EOF
+jq -nc '{schema_version:1,name:"one",parity_passed:true,prompt_token_ids:[10,11],generated_token_ids:[range(0;32)]}' >"${fixture_root}/parity.jsonl"
+jq -nc '{schema_version:1,name:"two",parity_passed:true,prompt_token_ids:[12,13],generated_token_ids:[range(32;64)]}' >>"${fixture_root}/parity.jsonl"
+jq -nc '{schema_version:1,name:"three",parity_passed:true,prompt_token_ids:[14,15],generated_token_ids:[range(64;96)]}' >>"${fixture_root}/parity.jsonl"
+jq -nc '{schema_version:1,name:"four",parity_passed:true,prompt_token_ids:[16,17],generated_token_ids:[range(96;128)]}' >>"${fixture_root}/parity.jsonl"
 
 cat >"${fake_bin}/gpu-preflight" <<'EOF'
 #!/usr/bin/env bash
@@ -70,14 +73,35 @@ cat >"${fake_bin}/brt-cli" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 prompt_tokens=''
+decode_tokens=''
+kv_cache_dtype=''
+kv_cache_layout=''
 while [[ "$#" -gt 0 ]]; do
-  if [[ "$1" == "--prompt-tokens" ]]; then
-    prompt_tokens="$2"
-    shift 2
-  else
-    shift
-  fi
+  case "$1" in
+    --prompt-tokens)
+      prompt_tokens="$2"
+      shift 2
+      ;;
+    --decode-tokens)
+      decode_tokens="$2"
+      shift 2
+      ;;
+    --kv-cache-dtype)
+      kv_cache_dtype="$2"
+      shift 2
+      ;;
+    --kv-cache-layout)
+      kv_cache_layout="$2"
+      shift 2
+      ;;
+    *)
+      shift
+      ;;
+  esac
 done
+printf 'prompt=%s decode=%s dtype=%s layout=%s\n' \
+  "${prompt_tokens}" "${decode_tokens}" "${kv_cache_dtype}" "${kv_cache_layout}" \
+  >>"${BRT_TEST_BRT_ARG_LOG}"
 if [[ "${BRT_TEST_SLOW:-0}" == "1" ]]; then
   prefill_median=4000
   generation_median=8000
@@ -87,11 +111,13 @@ else
 fi
 prefill_tps=$((prompt_tokens * 1000000 / prefill_median))
 generation_tps=$((128 * 1000000 / generation_median))
-printf '{"schema_version":1,"prompt_tokens":%s,"generated_tokens":128,"warmup_iterations":5,"measured_iterations":20,"peak_allocated_gpu_bytes":18000000000,"prefill":{"min_us":%s,"median_us":%s,"p95_us":%s,"max_us":%s,"tokens_per_second":%s},"generation":{"min_us":%s,"median_us":%s,"p95_us":%s,"max_us":%s,"tokens_per_second":%s}}\n' \
+printf '{"schema_version":1,"prompt_tokens":%s,"generated_tokens":128,"warmup_iterations":5,"measured_iterations":20,"peak_allocated_gpu_bytes":18000000000,"prefill":{"min_us":%s,"median_us":%s,"mean_us":%s,"p95_us":%s,"max_us":%s,"coefficient_of_variation":0.01,"tokens_per_second":%s},"generation":{"min_us":%s,"median_us":%s,"mean_us":%s,"p95_us":%s,"max_us":%s,"coefficient_of_variation":0.01,"tokens_per_second":%s},"execution":{"attention":"online_tiled","kv_cache_dtype":"%s","kv_cache_layout":"%s","decode_graph_captured":true,"decode_graph_replayed":true}}\n' \
   "${prompt_tokens}" "${prefill_median}" "${prefill_median}" \
-  "${prefill_median}" "${prefill_median}" "${prefill_tps}" \
+  "${prefill_median}" "${prefill_median}" "${prefill_median}" \
+  "${prefill_tps}" \
   "${generation_median}" "${generation_median}" "${generation_median}" \
-  "${generation_median}" "${generation_tps}"
+  "${generation_median}" "${generation_median}" "${generation_tps}" \
+  "${kv_cache_dtype}" "${kv_cache_layout}"
 EOF
 
 cat >"${fake_bin}/nvidia-smi" <<'EOF'
@@ -113,31 +139,53 @@ run_benchmark() {
     BRT_TEST_PREFLIGHT_LOG="${fixture_root}/preflight.log" \
     BRT_TEST_PREFLIGHT_FAIL_CALL="${BRT_TEST_PREFLIGHT_FAIL_CALL:-0}" \
     BRT_TEST_COMPLETION_LOG="${fixture_root}/completion.log" \
+    BRT_TEST_BRT_ARG_LOG="${fixture_root}/brt-args.log" \
     BRT_TEST_SLOW="${BRT_TEST_SLOW:-0}" \
+    BRT_KV_CACHE_DTYPE="bf16" \
+    BRT_KV_CACHE_LAYOUT="head-major" \
     PARITY_REPORT="${fixture_root}/parity.jsonl" \
+    PROVENANCE_JSON="${fixture_root}/provenance.json" \
     BENCHMARK_OUTPUT="${fixture_root}/benchmark.jsonl" \
     "${repo_root}/scripts/qwen35-benchmark.sh"
 }
 
 : >"${fixture_root}/preflight.log"
 : >"${fixture_root}/completion.log"
+: >"${fixture_root}/brt-args.log"
 BRT_TEST_PREFLIGHT_FAIL_CALL=2 \
   BRT_PREFLIGHT_RETRY_SECONDS=0 \
   run_benchmark
 
-[[ "$(wc -l <"${fixture_root}/benchmark.jsonl" | tr -d ' ')" -eq 2 ]]
+[[ "$(wc -l <"${fixture_root}/benchmark.jsonl" | tr -d ' ')" -eq 3 ]]
 jq -e -s '
-  length == 2 and
-  ([.[].prompt_tokens] == [128,512]) and
+  length == 3 and
+  ([.[].arm] == ["pp128","pp512","tg128_pp512"]) and
+  ([.[].prompt_tokens] == [128,512,512]) and
   all(.[];
     .warmup_iterations == 5 and
     .measured_iterations == 20 and
+    .provenance.weight_format == "bf16" and
+    .provenance.llama_cpp_revision == "1234567890abcdef1234567890abcdef12345678" and
+    .parity.records == 4 and
+    .parity.generated_tokens_per_record == 32 and
+    .parity.exact_matches == 128 and
+    .parity.passed == true and
+    .execution.attention == "online_tiled" and
+    .execution.kv_cache_dtype == "bf16" and
+    .execution.kv_cache_layout == "head-major" and
+    (.brt.prefill.coefficient_of_variation | type == "number") and
+    (.brt.generation.coefficient_of_variation | type == "number") and
+    (.llama_cpp.prefill.coefficient_of_variation | type == "number") and
+    (.llama_cpp.generation.coefficient_of_variation | type == "number") and
     .performance_floor_passed == true and
     .peak_allocated_gpu_bytes == 18000000000 and
     .peak_memory_status == "measured_by_brt_rmm")
 ' "${fixture_root}/benchmark.jsonl" >/dev/null
-[[ "$(wc -l <"${fixture_root}/preflight.log" | tr -d ' ')" -eq 4 ]]
-[[ "$(wc -l <"${fixture_root}/completion.log" | tr -d ' ')" -eq 50 ]]
+"${repo_root}/scripts/qwen35-bf16-gate.sh" "${fixture_root}/benchmark.jsonl"
+[[ "$(wc -l <"${fixture_root}/preflight.log" | tr -d ' ')" -eq 5 ]]
+[[ "$(wc -l <"${fixture_root}/completion.log" | tr -d ' ')" -eq 75 ]]
+[[ "$(wc -l <"${fixture_root}/brt-args.log" | tr -d ' ')" -eq 3 ]]
+grep -F 'dtype=bf16 layout=head-major' "${fixture_root}/brt-args.log"
 
 set +e
 BRT_TEST_SLOW=1 run_benchmark \
@@ -148,7 +196,7 @@ set -e
 
 [[ "${slow_status}" -eq 42 ]]
 grep -F 'performance floor failed' "${fixture_root}/slow-stderr"
-jq -e -s 'length == 2 and any(.[]; .performance_floor_passed == false)' \
+jq -e -s 'length == 3 and any(.[]; .performance_floor_passed == false)' \
   "${fixture_root}/benchmark.jsonl" >/dev/null
 
 cat >"${fixture_root}/parity.jsonl" <<'EOF'

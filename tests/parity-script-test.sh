@@ -61,6 +61,25 @@ EOF
 cat >"${fake_bin}/brt-cli" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+kv_cache_dtype=''
+kv_cache_layout=''
+while [[ "$#" -gt 0 ]]; do
+  case "$1" in
+    --kv-cache-dtype)
+      kv_cache_dtype="$2"
+      shift 2
+      ;;
+    --kv-cache-layout)
+      kv_cache_layout="$2"
+      shift 2
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+printf 'dtype=%s layout=%s\n' "${kv_cache_dtype}" "${kv_cache_layout}" \
+  >>"${BRT_TEST_BRT_ARG_LOG}"
 case "${BRT_TEST_MISMATCH:-0}" in
   1)
     printf '{"schema_version":1,"prompt_token_ids":[10,11],"generated_token_ids":[20,22],"text":"x"}\n'
@@ -86,18 +105,40 @@ run_parity() {
     BRT_GPU_LOCK="${fixture_root}/gpu.lock" \
     BRT_TEST_PREFLIGHT_LOG="${fixture_root}/preflight.log" \
     BRT_TEST_PREFLIGHT_FAIL_CALL="${BRT_TEST_PREFLIGHT_FAIL_CALL:-0}" \
+    BRT_TEST_BRT_ARG_LOG="${fixture_root}/brt-args.log" \
     BRT_TEST_MISMATCH="${BRT_TEST_MISMATCH:-0}" \
     PARITY_OUTPUT="${fixture_root}/parity.jsonl" \
     "${repo_root}/scripts/qwen35-parity.sh"
 }
 
 : >"${fixture_root}/preflight.log"
+: >"${fixture_root}/brt-args.log"
 run_parity
 
 [[ "$(wc -l <"${fixture_root}/parity.jsonl" | tr -d ' ')" -eq 4 ]]
 jq -e -s 'length == 4 and all(.[]; .parity_passed == true)' \
   "${fixture_root}/parity.jsonl" >/dev/null
 [[ "$(wc -l <"${fixture_root}/preflight.log" | tr -d ' ')" -eq 5 ]]
+[[ "$(wc -l <"${fixture_root}/brt-args.log" | tr -d ' ')" -eq 4 ]]
+grep -Fx 'dtype= layout=' "${fixture_root}/brt-args.log"
+
+: >"${fixture_root}/preflight.log"
+: >"${fixture_root}/brt-args.log"
+BRT_KV_CACHE_DTYPE=bf16 \
+  BRT_KV_CACHE_LAYOUT=head-major \
+  run_parity
+[[ "$(wc -l <"${fixture_root}/brt-args.log" | tr -d ' ')" -eq 4 ]]
+grep -Fx 'dtype=bf16 layout=head-major' "${fixture_root}/brt-args.log"
+
+set +e
+BRT_KV_CACHE_DTYPE=bad run_parity \
+  >"${fixture_root}/bad-kv-stdout" \
+  2>"${fixture_root}/bad-kv-stderr"
+bad_kv_status=$?
+set -e
+[[ "${bad_kv_status}" -eq 2 ]]
+grep -F 'BRT_KV_CACHE_DTYPE must be f32 or bf16' \
+  "${fixture_root}/bad-kv-stderr"
 
 : >"${fixture_root}/preflight.log"
 BRT_TEST_PREFLIGHT_FAIL_CALL=1 \

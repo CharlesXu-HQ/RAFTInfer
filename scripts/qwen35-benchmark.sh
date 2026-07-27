@@ -3,6 +3,7 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 parity_report="${PARITY_REPORT:-${repo_root}/build/evidence/qwen35-parity.jsonl}"
+provenance_json="${PROVENANCE_JSON:-${repo_root}/build/evidence/qwen35-bf16.provenance.json}"
 output="${BENCHMARK_OUTPUT:-${repo_root}/build/evidence/qwen35-benchmark.jsonl}"
 brt_model="${BRT_MODEL:-}"
 llama_model="${LLAMA_MODEL:-${brt_model}}"
@@ -17,6 +18,8 @@ context_tokens="${BRT_CONTEXT_TOKENS:-4096}"
 warmup_iterations=5
 measured_iterations=20
 generated_tokens=128
+kv_cache_dtype="${BRT_KV_CACHE_DTYPE:-bf16}"
+kv_cache_layout="${BRT_KV_CACHE_LAYOUT:-head-major}"
 llama_port="${LLAMA_SERVER_PORT:-18081}"
 llama_url="http://127.0.0.1:${llama_port}"
 preflight_retries="${BRT_PREFLIGHT_RETRIES:-30}"
@@ -37,6 +40,8 @@ fail_usage() {
   fail_usage "GPU_PREFLIGHT is not executable: ${gpu_preflight}"
 [[ -f "${parity_report}" ]] ||
   fail_usage "PARITY_REPORT does not exist: ${parity_report}"
+[[ -f "${provenance_json}" ]] ||
+  fail_usage "PROVENANCE_JSON does not exist: ${provenance_json}"
 command -v "${curl_bin}" >/dev/null ||
   fail_usage "curl command not found: ${curl_bin}"
 command -v "${jq_bin}" >/dev/null ||
@@ -47,6 +52,10 @@ command -v "${nvidia_smi}" >/dev/null ||
   fail_usage "BRT_PREFLIGHT_RETRIES must be a positive integer"
 [[ "${preflight_retry_seconds}" =~ ^[0-9]+$ ]] ||
   fail_usage "BRT_PREFLIGHT_RETRY_SECONDS must be a non-negative integer"
+[[ "${kv_cache_dtype}" == "f32" || "${kv_cache_dtype}" == "bf16" ]] ||
+  fail_usage "BRT_KV_CACHE_DTYPE must be f32 or bf16"
+[[ "${kv_cache_layout}" == "token-major" || "${kv_cache_layout}" == "head-major" ]] ||
+  fail_usage "BRT_KV_CACHE_LAYOUT must be token-major or head-major"
 
 wait_for_gpu_preflight() {
   local attempt=1
@@ -67,13 +76,55 @@ wait_for_gpu_preflight() {
 }
 
 if ! "${jq_bin}" -e -s '
-  length > 0 and all(.[]; .parity_passed == true) and
+  length == 4 and
+  all(.[]; .parity_passed == true and
+           (.generated_token_ids | type == "array" and length == 32)) and
   ([.[].prompt_token_ids[]] | length > 0)
 ' "${parity_report}" >/dev/null; then
   printf 'qwen35-benchmark: parity report is not fully passing\n' >&2
   exit 41
 fi
 
+if ! "${jq_bin}" -e '
+  .schema_version == 1 and
+  .conversion.outtype == "bf16" and
+  (.llama_cpp.reference_revision | type == "string" and
+    test("^[0-9a-fA-F]{40}$")) and
+  (.artifact.sha256 | type == "string" and
+    test("^[0-9a-fA-F]{64}$"))
+' "${provenance_json}" >/dev/null; then
+  printf 'qwen35-benchmark: provenance JSON is not a pinned BF16 artifact\n' >&2
+  exit 43
+fi
+
+provenance_sha="$(
+  if command -v shasum >/dev/null; then
+    shasum -a 256 "${provenance_json}" | awk '{print $1}'
+  else
+    sha256sum "${provenance_json}" | awk '{print $1}'
+  fi
+)"
+provenance_payload="$("${jq_bin}" -c \
+  --arg path "${provenance_json}" \
+  --arg sha "${provenance_sha}" '
+    {
+      path:$path,
+      sha256:$sha,
+      weight_format:.conversion.outtype,
+      llama_cpp_revision:.llama_cpp.reference_revision,
+      model_revision:.model.revision,
+      artifact_sha256:.artifact.sha256
+    }
+  ' "${provenance_json}")"
+parity_payload="$("${jq_bin}" -cs '
+  {
+    records:length,
+    generated_tokens_per_record:32,
+    exact_matches:([.[].generated_token_ids | length] | add),
+    passed:(length == 4 and all(.[]; .parity_passed == true and
+      (.generated_token_ids | length == 32)))
+  }
+' "${parity_report}")"
 base_tokens="$("${jq_bin}" -cs '[.[].prompt_token_ids[]]' "${parity_report}")"
 mkdir -p "$(dirname "${output}")"
 brt_results="$(mktemp "${TMPDIR:-/tmp}/brt-qwen35-benchmark-brt.XXXXXX")"
@@ -106,7 +157,9 @@ make_prompt_tokens() {
 }
 
 : >"${brt_results}"
-for prompt_count in 128 512; do
+for arm_spec in pp128:128 pp512:512 tg128_pp512:512; do
+  arm="${arm_spec%%:*}"
+  prompt_count="${arm_spec##*:}"
   prompt_tokens="$(make_prompt_tokens "${prompt_count}")"
   prompt_csv="$("${jq_bin}" -jr 'join(",")' <<<"${prompt_tokens}")"
   wait_for_gpu_preflight
@@ -116,9 +169,12 @@ for prompt_count in 128 512; do
     --prompt-tokens "${prompt_count}" \
     --decode-tokens "${generated_tokens}" \
     --context "${context_tokens}" \
+    --kv-cache-dtype "${kv_cache_dtype}" \
+    --kv-cache-layout "${kv_cache_layout}" \
     --warmups "${warmup_iterations}" \
     --iterations "${measured_iterations}")"
   if ! "${jq_bin}" -e \
+    --arg arm "${arm}" \
     --argjson prompt_count "${prompt_count}" \
     --argjson generated_tokens "${generated_tokens}" \
     --argjson warmups "${warmup_iterations}" \
@@ -131,13 +187,22 @@ for prompt_count in 128 512; do
       (.peak_allocated_gpu_bytes |
         type == "number" and . > 0 and floor == .) and
       (.prefill.median_us | type == "number" and . > 0) and
-      (.generation.median_us | type == "number" and . > 0)
+      (.prefill.coefficient_of_variation | type == "number" and isfinite and . >= 0) and
+      (.generation.median_us | type == "number" and . > 0) and
+      (.generation.coefficient_of_variation | type == "number" and isfinite and . >= 0) and
+      .execution.attention == "online_tiled" and
+      (.execution.kv_cache_dtype | type == "string" and length > 0) and
+      (.execution.kv_cache_layout | type == "string" and length > 0) and
+      (if $arm == "tg128_pp512" then
+         .execution.decode_graph_replayed == true
+       else true end)
     ' <<<"${brt_result}" >/dev/null; then
-    printf 'qwen35-benchmark: malformed BRT benchmark output for PP%s\n' \
-      "${prompt_count}" >&2
+    printf 'qwen35-benchmark: malformed BRT benchmark output for %s\n' \
+      "${arm}" >&2
     exit 32
   fi
-  "${jq_bin}" -c . <<<"${brt_result}" >>"${brt_results}"
+  "${jq_bin}" -c --arg arm "${arm}" '. + {arm:$arm}' <<<"${brt_result}" \
+    >>"${brt_results}"
 done
 
 gpu_row="$("${nvidia_smi}" \
@@ -191,7 +256,9 @@ if [[ "${server_ready}" -ne 1 ]]; then
 fi
 
 : >"${llama_results}"
-for prompt_count in 128 512; do
+for arm_spec in pp128:128 pp512:512 tg128_pp512:512; do
+  arm="${arm_spec%%:*}"
+  prompt_count="${arm_spec##*:}"
   prompt_tokens="$(make_prompt_tokens "${prompt_count}")"
   completion_request="$("${jq_bin}" -nc \
     --argjson prompt "${prompt_tokens}" \
@@ -236,10 +303,13 @@ for prompt_count in 128 512; do
     --argjson prompt_tokens "${prompt_count}" \
     --argjson generated_tokens "${generated_tokens}" \
     --argjson warmups "${warmup_iterations}" \
-    --argjson iterations "${measured_iterations}" '
+    --argjson iterations "${measured_iterations}" \
+    --arg arm "${arm}" \
+    --argjson provenance "${provenance_payload}" '
       def stats:
         sort as $values |
         ($values | length) as $count |
+        (($values | add) / $count) as $mean |
         {
           min_us:$values[0],
           median_us:(
@@ -249,15 +319,22 @@ for prompt_count in 128 512; do
               $values[($count / 2) | floor]
             end
           ),
+          mean_us:$mean,
           p95_us:$values[((($count * 95 + 99) / 100) | floor) - 1],
-          max_us:$values[-1]
+          max_us:$values[-1],
+          coefficient_of_variation:(
+            ((($values | map((. - $mean) * (. - $mean)) | add) / $count)
+              | sqrt) / $mean
+          )
         };
       {
         schema_version:1,
+        arm:$arm,
         prompt_tokens:$prompt_tokens,
         generated_tokens:$generated_tokens,
         warmup_iterations:$warmups,
         measured_iterations:$iterations,
+        revision:$provenance.llama_cpp_revision,
         prefill:(map(.prompt_ms * 1000) | stats),
         generation:(map(.predicted_ms * 1000) | stats)
       } |
@@ -274,20 +351,22 @@ server_pid=''
 
 : >"${output}"
 floor_failed=0
-for prompt_count in 128 512; do
+for arm in pp128 pp512 tg128_pp512; do
   brt_result="$("${jq_bin}" -ec \
-    --argjson prompt_count "${prompt_count}" \
-    'select(.prompt_tokens == $prompt_count)' "${brt_results}")"
+    --arg arm "${arm}" \
+    'select(.arm == $arm)' "${brt_results}")"
   llama_result="$("${jq_bin}" -ec \
-    --argjson prompt_count "${prompt_count}" \
-    'select(.prompt_tokens == $prompt_count)' "${llama_results}")"
+    --arg arm "${arm}" \
+    'select(.arm == $arm)' "${llama_results}")"
   record="$("${jq_bin}" -nc \
-    --argjson prompt_tokens "${prompt_count}" \
     --argjson generated_tokens "${generated_tokens}" \
     --argjson warmups "${warmup_iterations}" \
     --argjson iterations "${measured_iterations}" \
     --argjson brt "${brt_result}" \
     --argjson llama "${llama_result}" \
+    --arg arm "${arm}" \
+    --argjson provenance "${provenance_payload}" \
+    --argjson parity "${parity_payload}" \
     --arg gpu_name "${gpu_name}" \
     --arg driver_version "${driver_version}" \
     --arg cuda_version "${CUDA_VERSION:-13.2}" \
@@ -301,10 +380,14 @@ for prompt_count in 128 512; do
         $llama.generation.tokens_per_second) as $generation_ratio |
       {
         schema_version:1,
-        prompt_tokens:$prompt_tokens,
+        arm:$arm,
+        prompt_tokens:$brt.prompt_tokens,
         generated_tokens:$generated_tokens,
         warmup_iterations:$warmups,
         measured_iterations:$iterations,
+        provenance:$provenance,
+        parity:$parity,
+        execution:$brt.execution,
         gpu:{
           name:$gpu_name,
           driver_version:$driver_version,
@@ -322,9 +405,13 @@ for prompt_count in 128 512; do
           prefill:$prefill_ratio,
           generation:$generation_ratio
         },
-        performance_floor:0.8,
+        performance_floor:1.0,
         performance_floor_passed:
-          ($prefill_ratio >= 0.8 and $generation_ratio >= 0.8),
+          (if $arm == "tg128_pp512" then
+             $generation_ratio >= 1.0
+           else
+             $prefill_ratio >= 1.0
+           end),
         peak_allocated_gpu_bytes:$brt.peak_allocated_gpu_bytes,
         peak_memory_status:"measured_by_brt_rmm"
       }
@@ -342,4 +429,4 @@ if [[ "${floor_failed}" -ne 0 ]]; then
   exit 42
 fi
 
-printf 'qwen35-benchmark: pass records=2 output=%s\n' "${output}"
+printf 'qwen35-benchmark: pass records=3 output=%s\n' "${output}"

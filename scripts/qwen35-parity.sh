@@ -14,6 +14,8 @@ curl_bin="${CURL_BIN:-curl}"
 jq_bin="${JQ_BIN:-jq}"
 context_tokens="${BRT_CONTEXT_TOKENS:-4096}"
 max_new_tokens="${BRT_MAX_NEW_TOKENS:-32}"
+kv_cache_dtype="${BRT_KV_CACHE_DTYPE:-}"
+kv_cache_layout="${BRT_KV_CACHE_LAYOUT:-}"
 llama_port="${LLAMA_SERVER_PORT:-18080}"
 llama_url="http://127.0.0.1:${llama_port}"
 preflight_retries="${BRT_PREFLIGHT_RETRIES:-30}"
@@ -47,6 +49,24 @@ command -v "${jq_bin}" >/dev/null ||
   fail_usage "BRT_PREFLIGHT_RETRIES must be a positive integer"
 [[ "${preflight_retry_seconds}" =~ ^[0-9]+$ ]] ||
   fail_usage "BRT_PREFLIGHT_RETRY_SECONDS must be a non-negative integer"
+if [[ -n "${kv_cache_dtype}" &&
+      "${kv_cache_dtype}" != "f32" &&
+      "${kv_cache_dtype}" != "bf16" ]]; then
+  fail_usage "BRT_KV_CACHE_DTYPE must be f32 or bf16"
+fi
+if [[ -n "${kv_cache_layout}" &&
+      "${kv_cache_layout}" != "token-major" &&
+      "${kv_cache_layout}" != "head-major" ]]; then
+  fail_usage "BRT_KV_CACHE_LAYOUT must be token-major or head-major"
+fi
+
+brt_policy_args=()
+if [[ -n "${kv_cache_dtype}" ]]; then
+  brt_policy_args+=(--kv-cache-dtype "${kv_cache_dtype}")
+fi
+if [[ -n "${kv_cache_layout}" ]]; then
+  brt_policy_args+=(--kv-cache-layout "${kv_cache_layout}")
+fi
 
 wait_for_gpu_preflight() {
   local attempt=1
@@ -227,6 +247,7 @@ while IFS= read -r reference_line || [[ -n "${reference_line}" ]]; do
     --prompt "${prompt}" \
     --max-new-tokens "${max_new_tokens}" \
     --context "${context_tokens}" \
+    ${brt_policy_args[@]+"${brt_policy_args[@]}"} \
     --output-format json)"
   actual_prompt="$("${jq_bin}" -ec '
     .prompt_token_ids | select(type == "array" and all(.[]; type == "number"))
