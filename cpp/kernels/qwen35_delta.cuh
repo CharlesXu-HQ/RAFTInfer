@@ -44,10 +44,16 @@ struct GatedDeltaScheduleDiagnostic {
   std::size_t bucket_tokens{};
   std::size_t key_dim{};
   std::size_t value_dim{};
+  GatedDeltaSchedule candidate_schedule{
+      GatedDeltaSchedule::register_resident_current};
   GatedDeltaSchedule schedule{GatedDeltaSchedule::register_resident_current};
   std::uint32_t warps_per_block{};
   bool transposed_boundary_state{};
   bool candidate_accepted{};
+  bool correctness_passed{};
+  float current_median_ms{};
+  float candidate_median_ms{};
+  std::string rejection_reason;
 
   bool operator==(const GatedDeltaScheduleDiagnostic &) const = default;
 };

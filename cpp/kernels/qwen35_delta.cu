@@ -195,16 +195,25 @@ void validate_policy(const GatedDeltaLaunchPolicy &policy,
           "gated-delta schedule requires four warps per block");
   require(!policy.transposed_boundary_state,
           "gated-delta transposed boundary state is not initialized");
-  if (policy.schedule == GatedDeltaSchedule::register_resident_prefill_sm120 ||
-      policy.schedule == GatedDeltaSchedule::register_resident_decode_sm120) {
+  switch (policy.schedule) {
+  case GatedDeltaSchedule::register_resident_current:
+    break;
+  case GatedDeltaSchedule::register_resident_prefill_sm120:
     require(shape.key_dim == 64 || shape.key_dim == 128,
             "gated-delta sm120 schedule requires key dimension 64 or 128");
     require(shape.value_dim == shape.key_dim,
             "gated-delta sm120 schedule requires matching value dimension");
-  }
-  if (policy.schedule == GatedDeltaSchedule::register_resident_decode_sm120) {
+    break;
+  case GatedDeltaSchedule::register_resident_decode_sm120:
+    require(shape.key_dim == 64 || shape.key_dim == 128,
+            "gated-delta sm120 schedule requires key dimension 64 or 128");
+    require(shape.value_dim == shape.key_dim,
+            "gated-delta sm120 schedule requires matching value dimension");
     require(shape.tokens == 1,
             "gated-delta decode schedule requires exactly one token");
+    break;
+  default:
+    throw Qwen35DeltaError("unknown gated-delta schedule");
   }
 }
 
@@ -769,11 +778,19 @@ qwen35_gated_delta_schedule_diagnostic(const GatedDeltaShape &shape,
       .bucket_tokens = bucket_tokens,
       .key_dim = shape.key_dim,
       .value_dim = shape.value_dim,
+      .candidate_schedule =
+          bucket_tokens == 1
+              ? GatedDeltaSchedule::register_resident_decode_sm120
+              : GatedDeltaSchedule::register_resident_prefill_sm120,
       .schedule = policy.schedule,
       .warps_per_block = policy.warps_per_block,
       .transposed_boundary_state = policy.transposed_boundary_state,
       .candidate_accepted =
           policy.schedule != GatedDeltaSchedule::register_resident_current,
+      .correctness_passed = false,
+      .current_median_ms = 0.0F,
+      .candidate_median_ms = 0.0F,
+      .rejection_reason = "not_tuned",
   };
 }
 

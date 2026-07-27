@@ -833,6 +833,17 @@ void check_invalid_shapes(cudaStream_t stream) {
         &dummy, brt::kernels::qwen35_gated_delta_workspace_bytes(shape), shape,
         BRT_DTYPE_Q4_K, BRT_DTYPE_Q4_K, stream);
   });
+  expect_delta_error([&] {
+    brt::kernels::qwen35_gated_delta(
+        &dummy, &dummy, &dummy, &dummy, &dummy, &dummy,
+        reinterpret_cast<float *>(&dummy), reinterpret_cast<float *>(&dummy),
+        &dummy, brt::kernels::qwen35_gated_delta_workspace_bytes(shape), shape,
+        brt::kernels::GatedDeltaLaunchPolicy{
+            .schedule = static_cast<brt::kernels::GatedDeltaSchedule>(99),
+            .warps_per_block = 4,
+            .transposed_boundary_state = false},
+        BRT_DTYPE_F16, BRT_DTYPE_F16, stream);
+  });
 }
 
 void check_misaligned_pointers(cudaStream_t stream) {

@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -34,6 +35,23 @@ constexpr std::size_t kMatmulWorkspaceBudget = 4U * 1024U * 1024U;
 
 __global__ void increment_decode_position(std::uint32_t *position) {
   ++*position;
+}
+
+__global__ void fill_delta_tuning_input(void *input, std::size_t elements,
+                                        BrtDataType dtype) {
+  const std::size_t index =
+      static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (index >= elements)
+    return;
+  const int lane = static_cast<int>((index * 17U) % 37U) - 18;
+  const float value = 0.0075F * static_cast<float>(lane);
+  if (dtype == BRT_DTYPE_F32) {
+    static_cast<float *>(input)[index] = value;
+  } else if (dtype == BRT_DTYPE_F16) {
+    static_cast<__half *>(input)[index] = __float2half_rn(value);
+  } else if (dtype == BRT_DTYPE_BF16) {
+    static_cast<__nv_bfloat16 *>(input)[index] = __float2bfloat16_rn(value);
+  }
 }
 
 void require(bool condition, const char *message) {
@@ -118,6 +136,26 @@ private:
   bool changed_{};
 };
 
+class CudaEvent {
+public:
+  explicit CudaEvent(const char *message) {
+    check_cuda(cudaEventCreate(&event_), message);
+  }
+
+  ~CudaEvent() noexcept {
+    if (event_ != nullptr)
+      (void)cudaEventDestroy(event_);
+  }
+
+  CudaEvent(const CudaEvent &) = delete;
+  CudaEvent &operator=(const CudaEvent &) = delete;
+
+  cudaEvent_t get() const noexcept { return event_; }
+
+private:
+  cudaEvent_t event_{};
+};
+
 void *allocate(WorkspaceArena &arena, std::size_t bytes,
                std::size_t alignment) {
   return arena.allocate(bytes == 0 ? 1 : align_up(bytes, alignment), alignment);
@@ -174,6 +212,18 @@ bool same_matmul_config(const CublasLtMatmulConfig &lhs,
 
 bool release_tuning_bucket(std::size_t bucket) {
   return bucket == 1 || bucket == 128 || bucket == 512;
+}
+
+float median_ms(std::vector<float> values) {
+  require(!values.empty(), "median requires at least one value");
+  std::sort(values.begin(), values.end());
+  return values[values.size() / 2];
+}
+
+bool close_enough(float actual, float expected) {
+  const float absolute = std::fabs(actual - expected);
+  const float relative = absolute / std::max(std::fabs(expected), 1.0e-6F);
+  return absolute <= 2.0e-2F || relative <= 2.0e-2F;
 }
 
 CublasLtMatmulConfig matmul_config(std::size_t m, std::size_t n, std::size_t k,
@@ -1229,13 +1279,248 @@ private:
         .conv_width = config_.linear_convolution_width,
         .epsilon = config_.rms_norm_epsilon,
     };
+    const model::Qwen35CudaLinearAttentionWeights *linear_weights = nullptr;
+    for (std::size_t layer = 0; layer < weights_.layer_count(); ++layer) {
+      const auto &weights = weights_.layer(layer);
+      if (weights.linear_attention.has_value()) {
+        linear_weights = &*weights.linear_attention;
+        break;
+      }
+    }
     for (const std::size_t bucket :
          {std::size_t{1}, std::size_t{128}, std::size_t{512}}) {
       if (bucket <= max_context_) {
-        gated_delta_schedule_diagnostics_.push_back(
-            kernels::qwen35_gated_delta_schedule_diagnostic(shape, bucket));
+        if (linear_weights == nullptr || linear_states_.empty()) {
+          auto diagnostic =
+              kernels::qwen35_gated_delta_schedule_diagnostic(shape, bucket);
+          diagnostic.rejection_reason = "no_linear_attention_layer";
+          gated_delta_schedule_diagnostics_.push_back(std::move(diagnostic));
+        } else {
+          gated_delta_schedule_diagnostics_.push_back(
+              tune_delta_schedule(shape, bucket, *linear_weights));
+        }
       }
     }
+  }
+
+  void reset_delta_tuning_buffers(const kernels::GatedDeltaShape &shape,
+                                  std::size_t tokens) {
+    const std::size_t key_width = checked_mul(
+        shape.key_heads, shape.key_dim, "delta tuning key width overflow");
+    const std::size_t value_width =
+        checked_mul(shape.value_heads, shape.value_dim,
+                    "delta tuning value width overflow");
+    const std::size_t qkv_width =
+        checked_add(checked_mul(key_width, std::size_t{2},
+                                "delta tuning qkv width overflow"),
+                    value_width, "delta tuning qkv width overflow");
+    const std::size_t scalar_width =
+        checked_mul(shape.value_heads, std::size_t{2},
+                    "delta tuning scalar width overflow");
+    const std::size_t packed_width =
+        checked_add(checked_add(qkv_width, scalar_width,
+                                "delta tuning packed width overflow"),
+                    shape.hidden_size, "delta tuning packed width overflow");
+    const std::size_t input_elements =
+        checked_mul(tokens, packed_width, "delta tuning input overflow");
+    const int block = 256;
+    const std::size_t grid_size =
+        (input_elements + static_cast<std::size_t>(block) - 1) /
+        static_cast<std::size_t>(block);
+    require(grid_size <=
+                static_cast<std::size_t>(std::numeric_limits<int>::max()),
+            "delta tuning input fill grid overflow");
+    const int grid = static_cast<int>(grid_size);
+    fill_delta_tuning_input<<<grid, block, 0, context_.stream()>>>(
+        linear_pack_, input_elements, dtype_);
+    check_cuda(cudaGetLastError(), "Qwen3.5 delta tuning input fill failed");
+    auto &state = linear_states_.front();
+    check_cuda(cudaMemsetAsync(state.convolution, 0, state.convolution_bytes,
+                               context_.stream()),
+               "Qwen3.5 delta tuning convolution reset failed");
+    check_cuda(cudaMemsetAsync(state.recurrent, 0, state.recurrent_bytes,
+                               context_.stream()),
+               "Qwen3.5 delta tuning recurrent reset failed");
+  }
+
+  void
+  run_delta_tuning_once(const kernels::GatedDeltaShape &shape,
+                        const model::Qwen35CudaLinearAttentionWeights &linear,
+                        kernels::GatedDeltaLaunchPolicy policy, void *output) {
+    auto &state = linear_states_.front();
+    kernels::qwen35_gated_delta(
+        linear_pack_, linear.convolution.device_data,
+        linear.recurrent_a.device_data, linear.time_step_bias.device_data,
+        linear.output_norm.device_data, output, state.convolution,
+        state.recurrent, delta_workspace_,
+        kernels::qwen35_gated_delta_workspace_bytes(shape), shape, policy,
+        dtype_, dtype_from_weight(linear.convolution.type), context_.stream());
+  }
+
+  std::vector<float> download_activation_f32(const void *device,
+                                             std::size_t elements,
+                                             const char *message) {
+    std::vector<float> host(elements);
+    if (dtype_ == BRT_DTYPE_F32) {
+      check_cuda(cudaMemcpyAsync(host.data(), device, elements * sizeof(float),
+                                 cudaMemcpyDeviceToHost, context_.stream()),
+                 message);
+    } else if (dtype_ == BRT_DTYPE_F16) {
+      std::vector<__half> raw(elements);
+      check_cuda(cudaMemcpyAsync(raw.data(), device, elements * sizeof(__half),
+                                 cudaMemcpyDeviceToHost, context_.stream()),
+                 message);
+      check_cuda(cudaStreamSynchronize(context_.stream()), message);
+      for (std::size_t index = 0; index < elements; ++index)
+        host[index] = __half2float(raw[index]);
+      return host;
+    } else if (dtype_ == BRT_DTYPE_BF16) {
+      std::vector<__nv_bfloat16> raw(elements);
+      check_cuda(cudaMemcpyAsync(raw.data(), device,
+                                 elements * sizeof(__nv_bfloat16),
+                                 cudaMemcpyDeviceToHost, context_.stream()),
+                 message);
+      check_cuda(cudaStreamSynchronize(context_.stream()), message);
+      for (std::size_t index = 0; index < elements; ++index)
+        host[index] = __bfloat162float(raw[index]);
+      return host;
+    } else {
+      throw Qwen35ExecutorError("unsupported Qwen3.5 delta tuning dtype");
+    }
+    check_cuda(cudaStreamSynchronize(context_.stream()), message);
+    return host;
+  }
+
+  std::vector<float> download_state_f32(const float *device,
+                                        std::size_t elements,
+                                        const char *message) {
+    std::vector<float> host(elements);
+    check_cuda(cudaMemcpyAsync(host.data(), device, elements * sizeof(float),
+                               cudaMemcpyDeviceToHost, context_.stream()),
+               message);
+    check_cuda(cudaStreamSynchronize(context_.stream()), message);
+    return host;
+  }
+
+  bool compare_f32(std::span<const float> lhs, std::span<const float> rhs) {
+    if (lhs.size() != rhs.size())
+      return false;
+    for (std::size_t index = 0; index < lhs.size(); ++index) {
+      if (!close_enough(lhs[index], rhs[index]))
+        return false;
+    }
+    return true;
+  }
+
+  bool
+  delta_candidate_correct(const kernels::GatedDeltaShape &shape,
+                          const model::Qwen35CudaLinearAttentionWeights &linear,
+                          kernels::GatedDeltaLaunchPolicy candidate) {
+    constexpr kernels::GatedDeltaLaunchPolicy current{};
+    reset_delta_tuning_buffers(shape, shape.tokens);
+    run_delta_tuning_once(shape, linear, current, attention_out_);
+    auto &state = linear_states_.front();
+    const auto current_output = download_activation_f32(
+        attention_out_, shape.tokens * shape.hidden_size,
+        "Qwen3.5 delta tuning output download failed");
+    const auto current_convolution = download_state_f32(
+        state.convolution, state.convolution_bytes / sizeof(float),
+        "Qwen3.5 delta tuning convolution download failed");
+    const auto current_recurrent = download_state_f32(
+        state.recurrent, state.recurrent_bytes / sizeof(float),
+        "Qwen3.5 delta tuning recurrent download failed");
+
+    reset_delta_tuning_buffers(shape, shape.tokens);
+    run_delta_tuning_once(shape, linear, candidate, mixer_projected_);
+    const auto candidate_output = download_activation_f32(
+        mixer_projected_, shape.tokens * shape.hidden_size,
+        "Qwen3.5 delta tuning output download failed");
+    const auto candidate_convolution = download_state_f32(
+        state.convolution, state.convolution_bytes / sizeof(float),
+        "Qwen3.5 delta tuning convolution download failed");
+    const auto candidate_recurrent = download_state_f32(
+        state.recurrent, state.recurrent_bytes / sizeof(float),
+        "Qwen3.5 delta tuning recurrent download failed");
+
+    return compare_f32(candidate_output, current_output) &&
+           compare_f32(candidate_convolution, current_convolution) &&
+           compare_f32(candidate_recurrent, current_recurrent);
+  }
+
+  float time_delta_policy(const kernels::GatedDeltaShape &shape,
+                          const model::Qwen35CudaLinearAttentionWeights &linear,
+                          kernels::GatedDeltaLaunchPolicy policy) {
+    constexpr int kWarmups = 2;
+    constexpr int kMeasurements = 5;
+    CudaEvent start{"Qwen3.5 delta tuning start event creation failed"};
+    CudaEvent stop{"Qwen3.5 delta tuning stop event creation failed"};
+    std::vector<float> measurements;
+    measurements.reserve(kMeasurements);
+    for (int iteration = 0; iteration < kWarmups + kMeasurements; ++iteration) {
+      reset_delta_tuning_buffers(shape, shape.tokens);
+      check_cuda(cudaEventRecord(start.get(), context_.stream()),
+                 "Qwen3.5 delta tuning start event record failed");
+      run_delta_tuning_once(shape, linear, policy, attention_out_);
+      check_cuda(cudaEventRecord(stop.get(), context_.stream()),
+                 "Qwen3.5 delta tuning stop event record failed");
+      check_cuda(cudaEventSynchronize(stop.get()),
+                 "Qwen3.5 delta tuning event synchronization failed");
+      if (iteration >= kWarmups) {
+        float elapsed_ms = 0.0F;
+        check_cuda(cudaEventElapsedTime(&elapsed_ms, start.get(), stop.get()),
+                   "Qwen3.5 delta tuning event timing failed");
+        measurements.push_back(elapsed_ms);
+      }
+    }
+    return median_ms(std::move(measurements));
+  }
+
+  kernels::GatedDeltaScheduleDiagnostic
+  tune_delta_schedule(kernels::GatedDeltaShape shape, std::size_t bucket,
+                      const model::Qwen35CudaLinearAttentionWeights &linear) {
+    shape.tokens = bucket;
+    auto diagnostic =
+        kernels::qwen35_gated_delta_schedule_diagnostic(shape, bucket);
+    const auto candidate_schedule =
+        bucket == 1
+            ? kernels::GatedDeltaSchedule::register_resident_decode_sm120
+            : kernels::GatedDeltaSchedule::register_resident_prefill_sm120;
+    diagnostic.candidate_schedule = candidate_schedule;
+    const auto candidate = kernels::GatedDeltaLaunchPolicy{
+        .schedule = candidate_schedule,
+        .warps_per_block = 4,
+        .transposed_boundary_state = false,
+    };
+    if (!((shape.key_dim == 64 || shape.key_dim == 128) &&
+          shape.value_dim == shape.key_dim)) {
+      diagnostic.rejection_reason = "unsupported_shape";
+      return diagnostic;
+    }
+
+    diagnostic.correctness_passed =
+        delta_candidate_correct(shape, linear, candidate);
+    diagnostic.current_median_ms = time_delta_policy(shape, linear, {});
+    if (diagnostic.correctness_passed) {
+      diagnostic.candidate_median_ms =
+          time_delta_policy(shape, linear, candidate);
+    }
+    if (!diagnostic.correctness_passed) {
+      diagnostic.rejection_reason = "correctness_failed";
+      return diagnostic;
+    }
+    constexpr float kMeaningfulSpeedup = 0.98F;
+    if (diagnostic.candidate_median_ms <
+        diagnostic.current_median_ms * kMeaningfulSpeedup) {
+      diagnostic.schedule = candidate_schedule;
+      diagnostic.candidate_accepted = true;
+      diagnostic.rejection_reason.clear();
+    } else {
+      diagnostic.schedule =
+          kernels::GatedDeltaSchedule::register_resident_current;
+      diagnostic.candidate_accepted = false;
+      diagnostic.rejection_reason = "candidate_not_faster";
+    }
+    return diagnostic;
   }
 
   kernels::GatedDeltaLaunchPolicy delta_policy_for_bucket(

@@ -659,7 +659,7 @@ decode variant removes loop setup that is invariant for one token. A transposed
 boundary-state layout is eligible only when conversion occurs during session
 initialization/reset, not during measured decode.
 
-- [ ] **Step 4: Select only a faster passing schedule**
+- [x] **Step 4: Select only a faster passing schedule**
 
 At immutable plan construction, benchmark current and candidate schedules for
 the exact model dimensions and token buckets `1,128,512`. Reject any candidate
@@ -667,13 +667,22 @@ whose output/state comparison fails. Keep
 `register_resident_current` when no candidate improves the median; do not
 replace it merely because the new schedule is structurally closer to llama.cpp.
 
-- [ ] **Step 5: Run executor parity and real-model parity**
+- [x] **Step 5: Run executor parity and real-model parity**
 
 Expected: operator/state tests pass, selected schedule metadata is stable, no
 decode allocation is introduced, and all four prompts retain exact generated
 token IDs.
 
-- [ ] **Step 6: Commit**
+Fix Round1 adds construction-time gated-delta schedule tuning in the executor:
+current and candidate schedules are correctness-gated on output, convolution
+state, and recurrent state before median timing can promote a candidate. The
+selected bucket policies and tuning diagnostics are immutable after
+construction, and executor tests assert the diagnostics remain unchanged after
+prefill, decode capture, and graph replay. Local host checks passed on
+2026-07-27; target CUDA 13.2/sm_120a revalidation remains the required final
+evidence for this fix commit.
+
+- [x] **Step 6: Commit**
 
 ```bash
 git add cpp/kernels/qwen35_delta.cuh cpp/kernels/qwen35_delta.cu \

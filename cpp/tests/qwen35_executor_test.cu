@@ -204,6 +204,25 @@ std::filesystem::path write_fixture(std::vector<std::uint8_t> bytes) {
   return path;
 }
 
+std::filesystem::path write_linear_delta_fixture(std::uint32_t head_dim) {
+  return write_fixture(
+      brt::test::make_qwen35_gguf_fixture(30, true,
+                                          brt::test::Qwen35GgufFixtureOptions{
+                                              .vocabulary_size = 16,
+                                              .hidden_size = 4U * head_dim,
+                                              .intermediate_size = 16,
+                                              .context_length = 512,
+                                              .full_head_count = 2,
+                                              .full_kv_head_count = 1,
+                                              .full_head_dimension = 4,
+                                              .linear_key_head_count = 2,
+                                              .linear_value_head_count = 4,
+                                              .linear_head_dimension = head_dim,
+                                              .rotary_dimension = 4,
+                                              .block_count = 2,
+                                          }));
+}
+
 void expect_executor_error(auto &&fn) {
   bool thrown = false;
   try {
@@ -763,6 +782,103 @@ void run_cublaslt_plan_tuning_tests() {
   assert(after_replay.decode_graph_replayed);
 }
 
+void maybe_write_delta_microbenchmark_evidence(
+    const brt::Qwen35ExecutionDiagnostics &diagnostics) {
+  const char *path = std::getenv("BRT_QWEN35_DELTA_MICROBENCHMARK_OUTPUT");
+  if (path == nullptr || std::string{path}.empty())
+    return;
+
+  std::ofstream output{path};
+  assert(output);
+  for (const auto &schedule : diagnostics.gated_delta_schedules) {
+    output << "{\"bucket_tokens\":" << schedule.bucket_tokens
+           << ",\"key_dim\":" << schedule.key_dim
+           << ",\"value_dim\":" << schedule.value_dim
+           << ",\"selected_schedule\":" << static_cast<int>(schedule.schedule)
+           << ",\"candidate_schedule\":"
+           << static_cast<int>(schedule.candidate_schedule)
+           << ",\"candidate_accepted\":"
+           << (schedule.candidate_accepted ? "true" : "false")
+           << ",\"correctness_passed\":"
+           << (schedule.correctness_passed ? "true" : "false")
+           << ",\"current_median_ms\":" << schedule.current_median_ms
+           << ",\"candidate_median_ms\":" << schedule.candidate_median_ms
+           << ",\"rejection_reason\":\"" << schedule.rejection_reason
+           << "\"}\n";
+  }
+  assert(output);
+}
+
+void run_gated_delta_schedule_tuning_tests() {
+  assert(cudaSetDevice(0) == cudaSuccess);
+  const auto path = write_linear_delta_fixture(64);
+  brt::model::Model model{path.string()};
+  constexpr std::size_t max_context = 512;
+  auto policy = brt::Qwen35ExecutionPolicy{};
+  policy.decode_graph = true;
+  const std::size_t workspace_bytes = brt::Qwen35Executor::workspace_bytes(
+      model.qwen35_config(), max_context, policy);
+
+  brt::DeviceContext device{0, 512U * 1024U * 1024U};
+  auto weights = device.upload_qwen35_weights(model);
+  auto owner = device.create_execution_owner(workspace_bytes);
+  auto context = owner->execution_context();
+
+  brt::Qwen35Executor executor{context, model.qwen35_config(), *weights,
+                               max_context, policy};
+  const auto construction = executor.diagnostics();
+  assert(construction.gated_delta_schedules.size() == 3);
+  for (const std::size_t bucket :
+       {std::size_t{1}, std::size_t{128}, std::size_t{512}}) {
+    const auto iter = std::find_if(construction.gated_delta_schedules.begin(),
+                                   construction.gated_delta_schedules.end(),
+                                   [bucket](const auto &schedule) {
+                                     return schedule.bucket_tokens == bucket;
+                                   });
+    assert(iter != construction.gated_delta_schedules.end());
+    const auto &schedule = *iter;
+    assert(schedule.key_dim == 64);
+    assert(schedule.value_dim == 64);
+    assert(schedule.warps_per_block == 4);
+    assert(!schedule.transposed_boundary_state);
+    assert(schedule.correctness_passed);
+    assert(schedule.current_median_ms > 0.0F);
+    assert(schedule.candidate_median_ms > 0.0F);
+    const auto expected_candidate =
+        bucket == 1
+            ? brt::kernels::GatedDeltaSchedule::register_resident_decode_sm120
+            : brt::kernels::GatedDeltaSchedule::register_resident_prefill_sm120;
+    assert(schedule.candidate_schedule == expected_candidate);
+    if (schedule.candidate_accepted) {
+      assert(schedule.schedule == expected_candidate);
+      assert(schedule.rejection_reason.empty());
+    } else {
+      assert(schedule.schedule ==
+             brt::kernels::GatedDeltaSchedule::register_resident_current);
+      assert(!schedule.rejection_reason.empty());
+    }
+  }
+
+  const std::vector<std::int32_t> prompt128(128, 1);
+  const auto prefill = executor.prefill(prompt128);
+  assert(prefill.position == prompt128.size() - 1);
+  assert(executor.diagnostics().gated_delta_schedules ==
+         construction.gated_delta_schedules);
+
+  executor.reset();
+  const auto decoded = executor.decode(1);
+  assert(decoded.position == 0);
+  assert(executor.diagnostics().gated_delta_schedules ==
+         construction.gated_delta_schedules);
+
+  const auto replayed = executor.decode(2);
+  assert(replayed.position == 1);
+  assert(executor.diagnostics().gated_delta_schedules ==
+         construction.gated_delta_schedules);
+
+  maybe_write_delta_microbenchmark_evidence(construction);
+}
+
 void run_executor_online_materialized_parity_tests() {
   assert(cudaSetDevice(0) == cudaSuccess);
   const auto path = write_fixture(make_release_attention_fixture());
@@ -962,6 +1078,7 @@ int main() {
   run_executor_f32_auxiliary_smoke();
   run_grouped_input_cast_tests();
   run_cublaslt_plan_tuning_tests();
+  run_gated_delta_schedule_tuning_tests();
   run_executor_online_materialized_parity_tests();
   run_executor_reference_and_allocation_tests();
 }
