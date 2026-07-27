@@ -581,6 +581,7 @@ public:
     validate_weight_dtypes(weights_);
     allocate_buffers();
     create_plans();
+    create_delta_schedule_diagnostics();
     reset();
   }
 
@@ -683,12 +684,13 @@ public:
         .attention = policy_.attention,
         .kv_cache_dtype = policy_.kv_cache,
         .kv_cache_layout = policy_.kv_cache_layout,
-        .decode_graph_captured = decode_graph_ != nullptr &&
-                                 decode_graph_->captured(),
+        .decode_graph_captured =
+            decode_graph_ != nullptr && decode_graph_->captured(),
         .decode_graph_replayed = decode_graph_replayed_,
         .attention_workspace_bytes = attention_workspace_bytes_,
         .cublaslt_algorithm_ids = cublaslt_algorithm_ids_,
         .cublaslt_plans = cublaslt_plan_diagnostics_,
+        .gated_delta_schedules = gated_delta_schedule_diagnostics_,
     };
   }
 
@@ -722,8 +724,7 @@ public:
     for (const auto &state : linear_states_) {
       append(snapshot.linear_convolution, state.convolution,
              state.convolution_bytes);
-      append(snapshot.linear_recurrent, state.recurrent,
-             state.recurrent_bytes);
+      append(snapshot.linear_recurrent, state.recurrent, state.recurrent_bytes);
     }
     check_cuda(cudaStreamSynchronize(context_.stream()),
                "Qwen3.5 test state synchronization failed");
@@ -847,7 +848,7 @@ private:
     sync_device_decode_position();
     if (decode_graph_ == nullptr) {
       decode_graph_ = std::make_unique<CudaGraphDecode>(context_.device_id(),
-                                                         context_.stream());
+                                                        context_.stream());
     }
     decode_graph_->capture([this] {
       check_cuda(cudaMemcpyAsync(device_decode_token_, host_decode_token_.get(),
@@ -860,7 +861,8 @@ private:
           host_decode_result_.get(), false);
       increment_decode_position<<<1, 1, 0, context_.stream()>>>(
           device_decode_position_);
-      check_cuda(cudaGetLastError(), "Qwen3.5 decode position increment failed");
+      check_cuda(cudaGetLastError(),
+                 "Qwen3.5 decode position increment failed");
     });
   }
 
@@ -1109,7 +1111,8 @@ private:
       }
       auto unique = CublasLtMatmulPlan::create(config);
       std::shared_ptr<CublasLtMatmulPlan> plan{std::move(unique)};
-      const bool tuned = release_tuning_bucket(bucket) && bucket <= max_context_;
+      const bool tuned =
+          release_tuning_bucket(bucket) && bucket <= max_context_;
       if (tuned) {
         check_cuda(cudaMemsetAsync(matmul_input_, 0, plan->input_bytes(),
                                    context_.stream()),
@@ -1215,6 +1218,43 @@ private:
     }
   }
 
+  void create_delta_schedule_diagnostics() {
+    const kernels::GatedDeltaShape shape{
+        .tokens = 1,
+        .hidden_size = config_.hidden_size,
+        .key_heads = config_.linear_key_head_count,
+        .value_heads = config_.linear_value_head_count,
+        .key_dim = config_.linear_head_dimension,
+        .value_dim = config_.linear_head_dimension,
+        .conv_width = config_.linear_convolution_width,
+        .epsilon = config_.rms_norm_epsilon,
+    };
+    for (const std::size_t bucket :
+         {std::size_t{1}, std::size_t{128}, std::size_t{512}}) {
+      if (bucket <= max_context_) {
+        gated_delta_schedule_diagnostics_.push_back(
+            kernels::qwen35_gated_delta_schedule_diagnostic(shape, bucket));
+      }
+    }
+  }
+
+  kernels::GatedDeltaLaunchPolicy delta_policy_for_bucket(
+      std::size_t tokens,
+      const kernels::GatedDeltaShape &shape) const noexcept {
+    for (const auto &diagnostic : gated_delta_schedule_diagnostics_) {
+      if (diagnostic.bucket_tokens == tokens &&
+          diagnostic.key_dim == shape.key_dim &&
+          diagnostic.value_dim == shape.value_dim) {
+        return kernels::GatedDeltaLaunchPolicy{
+            .schedule = diagnostic.schedule,
+            .warps_per_block = diagnostic.warps_per_block,
+            .transposed_boundary_state = diagnostic.transposed_boundary_state,
+        };
+      }
+    }
+    return kernels::qwen35_gated_delta_select_policy(shape, tokens);
+  }
+
   BucketPlans &bucket_for(std::size_t tokens) {
     for (auto &bucket : bucket_plans_) {
       if (bucket.tokens == tokens)
@@ -1270,25 +1310,25 @@ private:
                      std::span<const MatmulBinding>{&binding, std::size_t{1}});
   }
 
-  Qwen35ExecutorResult run_chunk(std::span<const std::int32_t> tokens,
-                                 bool produce_logits,
-                                 std::size_t chunk_position,
-                                 const std::int32_t *fixed_device_token = nullptr,
-                                 const std::uint32_t *device_position = nullptr,
-                                 std::int32_t *fixed_host_result = nullptr,
-                                 bool synchronize = true) {
+  Qwen35ExecutorResult
+  run_chunk(std::span<const std::int32_t> tokens, bool produce_logits,
+            std::size_t chunk_position,
+            const std::int32_t *fixed_device_token = nullptr,
+            const std::uint32_t *device_position = nullptr,
+            std::int32_t *fixed_host_result = nullptr,
+            bool synchronize = true) {
     BucketPlans &bucket = bucket_for(tokens.size());
     std::int32_t *device_tokens =
         const_cast<std::int32_t *>(fixed_device_token);
     if (device_tokens == nullptr) {
       device_tokens = device_tokens_ + chunk_position;
-      check_cuda(cudaMemcpyAsync(device_tokens, tokens.data(), tokens.size_bytes(),
-                                 cudaMemcpyHostToDevice, context_.stream()),
+      check_cuda(cudaMemcpyAsync(device_tokens, tokens.data(),
+                                 tokens.size_bytes(), cudaMemcpyHostToDevice,
+                                 context_.stream()),
                  "Qwen3.5 token upload failed");
     }
     kernels::qwen35_embedding(
-        device_tokens, weights_.token_embedding().device_data,
-        hidden_a_,
+        device_tokens, weights_.token_embedding().device_data, hidden_a_,
         kernels::EmbeddingShape{.tokens = tokens.size(),
                                 .embedding_dim = config_.hidden_size,
                                 .vocab_size = config_.vocabulary_size},
@@ -1394,8 +1434,7 @@ private:
             "Qwen3.5 unsynchronized result download requires fixed host "
             "storage");
     check_cuda(cudaMemcpyAsync(result, device_result_, sizeof(*result),
-                               cudaMemcpyDeviceToHost,
-                               context_.stream()),
+                               cudaMemcpyDeviceToHost, context_.stream()),
                "Qwen3.5 result download failed");
     if (synchronize) {
       check_cuda(cudaStreamSynchronize(context_.stream()),
@@ -1561,7 +1600,8 @@ private:
         linear_states_[state_index].convolution,
         linear_states_[state_index].recurrent, delta_workspace_,
         kernels::qwen35_gated_delta_workspace_bytes(delta_shape), delta_shape,
-        dtype_, dtype_from_weight(linear.convolution.type), context_.stream());
+        delta_policy_for_bucket(tokens, delta_shape), dtype_,
+        dtype_from_weight(linear.convolution.type), context_.stream());
     record_trace("final_output-" + std::to_string(layer), attention_out_,
                  tokens * config_.hidden_size);
     run_matmul(*plans.output, attention_out_, linear.output, output);
@@ -1618,6 +1658,8 @@ private:
   std::vector<BucketPlans> bucket_plans_;
   std::vector<int> cublaslt_algorithm_ids_;
   std::vector<Qwen35CublasLtPlanDiagnostic> cublaslt_plan_diagnostics_;
+  std::vector<kernels::GatedDeltaScheduleDiagnostic>
+      gated_delta_schedule_diagnostics_;
   std::vector<Qwen35TraceEntry> trace_;
   std::unique_ptr<CudaGraphDecode> decode_graph_;
   bool decode_graph_replayed_{};

@@ -698,18 +698,36 @@ void run_cublaslt_plan_tuning_tests() {
          brt::Qwen35AttentionImplementation::online_tiled);
   assert(!construction.cublaslt_algorithm_ids.empty());
   assert(!construction.cublaslt_plans.empty());
+  assert(construction.gated_delta_schedules.size() == 3);
+  for (const std::size_t bucket :
+       {std::size_t{1}, std::size_t{128}, std::size_t{512}}) {
+    assert(std::any_of(construction.gated_delta_schedules.begin(),
+                       construction.gated_delta_schedules.end(),
+                       [bucket](const auto &schedule) {
+                         return schedule.bucket_tokens == bucket &&
+                                schedule.key_dim == 256 &&
+                                schedule.value_dim == 256 &&
+                                schedule.schedule ==
+                                    brt::kernels::GatedDeltaSchedule::
+                                        register_resident_current &&
+                                schedule.warps_per_block == 4 &&
+                                !schedule.transposed_boundary_state &&
+                                !schedule.candidate_accepted;
+                       }));
+  }
   assert(construction.cublaslt_algorithm_ids.size() ==
          construction.cublaslt_plans.size());
   assert(std::all_of(construction.cublaslt_algorithm_ids.begin(),
                      construction.cublaslt_algorithm_ids.end(),
                      [](int id) { return id >= 0; }));
-  for (const std::size_t bucket : {std::size_t{1}, std::size_t{128},
-                                   std::size_t{512}}) {
+  for (const std::size_t bucket :
+       {std::size_t{1}, std::size_t{128}, std::size_t{512}}) {
     assert(std::any_of(construction.cublaslt_plans.begin(),
                        construction.cublaslt_plans.end(),
                        [bucket](const auto &plan) {
-                         return plan.bucket_tokens == bucket && plan.m == bucket &&
-                                plan.tuned && plan.algorithm_id >= 0;
+                         return plan.bucket_tokens == bucket &&
+                                plan.m == bucket && plan.tuned &&
+                                plan.algorithm_id >= 0;
                        }));
   }
 
@@ -720,6 +738,8 @@ void run_cublaslt_plan_tuning_tests() {
   assert(after_prefill.cublaslt_algorithm_ids ==
          construction.cublaslt_algorithm_ids);
   assert(after_prefill.cublaslt_plans == construction.cublaslt_plans);
+  assert(after_prefill.gated_delta_schedules ==
+         construction.gated_delta_schedules);
 
   executor.reset();
   const auto decoded = executor.decode(1);
@@ -728,6 +748,8 @@ void run_cublaslt_plan_tuning_tests() {
   assert(after_capture_decode.cublaslt_algorithm_ids ==
          construction.cublaslt_algorithm_ids);
   assert(after_capture_decode.cublaslt_plans == construction.cublaslt_plans);
+  assert(after_capture_decode.gated_delta_schedules ==
+         construction.gated_delta_schedules);
   assert(after_capture_decode.decode_graph_captured);
 
   const auto replayed = executor.decode(2);
@@ -736,6 +758,8 @@ void run_cublaslt_plan_tuning_tests() {
   assert(after_replay.cublaslt_algorithm_ids ==
          construction.cublaslt_algorithm_ids);
   assert(after_replay.cublaslt_plans == construction.cublaslt_plans);
+  assert(after_replay.gated_delta_schedules ==
+         construction.gated_delta_schedules);
   assert(after_replay.decode_graph_replayed);
 }
 

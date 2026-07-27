@@ -189,6 +189,39 @@ __device__ float softplus(float value) {
   return log1pf(expf(value));
 }
 
+void validate_policy(const GatedDeltaLaunchPolicy &policy,
+                     const GatedDeltaShape &shape) {
+  require(policy.warps_per_block == 4,
+          "gated-delta schedule requires four warps per block");
+  require(!policy.transposed_boundary_state,
+          "gated-delta transposed boundary state is not initialized");
+  if (policy.schedule == GatedDeltaSchedule::register_resident_prefill_sm120 ||
+      policy.schedule == GatedDeltaSchedule::register_resident_decode_sm120) {
+    require(shape.key_dim == 64 || shape.key_dim == 128,
+            "gated-delta sm120 schedule requires key dimension 64 or 128");
+    require(shape.value_dim == shape.key_dim,
+            "gated-delta sm120 schedule requires matching value dimension");
+  }
+  if (policy.schedule == GatedDeltaSchedule::register_resident_decode_sm120) {
+    require(shape.tokens == 1,
+            "gated-delta decode schedule requires exactly one token");
+  }
+}
+
+struct GatedDeltaKernelArgs {
+  const void *input{};
+  const void *recurrent_a{};
+  const void *dt_bias{};
+  const float *convolved{};
+  float *recurrent_state{};
+  float *raw_output{};
+  std::size_t tokens{};
+  std::size_t token_stride{};
+  std::size_t conv_dim{};
+  std::size_t key_heads{};
+  std::size_t value_heads{};
+};
+
 template <typename T, typename Weight>
 __global__ void
 batched_convolution_kernel(const void *input, const void *conv_weight,
@@ -230,6 +263,103 @@ batched_convolution_kernel(const void *input, const void *conv_weight,
             : load_as_float<T>(input,
                                (source_offset - history_count) * token_stride +
                                    channel);
+  }
+}
+
+template <int KeyDim, int ValueDim, bool Decode, typename T, typename Weight>
+__global__ __launch_bounds__(128, 2) void gated_delta_register_kernel(
+    GatedDeltaKernelArgs args) {
+  constexpr int kWarpSize = 32;
+  constexpr int kRowsPerLane = KeyDim / kWarpSize;
+  constexpr int kColumnsPerBlock = 4;
+  static_assert(KeyDim == 64 || KeyDim == 128);
+  static_assert(ValueDim == 64 || ValueDim == 128);
+  static_assert(KeyDim % kWarpSize == 0);
+
+  const std::size_t value_head = blockIdx.x;
+  const std::size_t value_index =
+      static_cast<std::size_t>(blockIdx.y) * kColumnsPerBlock + threadIdx.y;
+  if (value_head >= args.value_heads || value_index >= ValueDim)
+    return;
+
+  const int lane = threadIdx.x;
+  const std::size_t key_head = value_head % args.key_heads;
+  const std::size_t q_offset = key_head * KeyDim;
+  const std::size_t k_offset = args.key_heads * KeyDim + key_head * KeyDim;
+  const std::size_t v_offset =
+      2 * args.key_heads * KeyDim + value_head * ValueDim;
+  const std::size_t value_size = args.value_heads * ValueDim;
+  const std::size_t state_head_base = value_head * KeyDim * ValueDim;
+
+  float state_shard[kRowsPerLane];
+#pragma unroll
+  for (int row = 0; row < kRowsPerLane; ++row) {
+    const std::size_t key_index =
+        static_cast<std::size_t>(row * kWarpSize + lane);
+    state_shard[row] = args.recurrent_state[state_head_base +
+                                            key_index * ValueDim + value_index];
+  }
+
+  const std::size_t token_count = Decode ? std::size_t{1} : args.tokens;
+  for (std::size_t token = 0; token < token_count; ++token) {
+    const std::size_t input_base = token * args.token_stride;
+    const std::size_t convolved_base = token * args.conv_dim;
+    float beta = 0.0F;
+    float decay = 0.0F;
+    if (lane == 0) {
+      beta = sigmoid(load_as_float<T>(args.input,
+                                      input_base + args.conv_dim + value_head));
+      const float dt = softplus(
+          load_as_float<T>(args.input, input_base + args.conv_dim +
+                                           args.value_heads + value_head) +
+          load_as_float<Weight>(args.dt_bias, value_head));
+      decay = expf(load_as_float<Weight>(args.recurrent_a, value_head) * dt);
+    }
+    beta = __shfl_sync(0xFFFFFFFFU, beta, 0);
+    decay = __shfl_sync(0xFFFFFFFFU, decay, 0);
+
+    float q_shard[kRowsPerLane];
+    float k_shard[kRowsPerLane];
+    float memory_projection = 0.0F;
+#pragma unroll
+    for (int row = 0; row < kRowsPerLane; ++row) {
+      const std::size_t key_index =
+          static_cast<std::size_t>(row * kWarpSize + lane);
+      q_shard[row] = args.convolved[convolved_base + q_offset + key_index];
+      k_shard[row] = args.convolved[convolved_base + k_offset + key_index];
+      memory_projection += state_shard[row] * decay * k_shard[row];
+    }
+    for (int offset = kWarpSize / 2; offset > 0; offset >>= 1) {
+      memory_projection +=
+          __shfl_down_sync(0xFFFFFFFFU, memory_projection, offset);
+    }
+    memory_projection = __shfl_sync(0xFFFFFFFFU, memory_projection, 0);
+
+    const float delta =
+        (args.convolved[convolved_base + v_offset + value_index] -
+         memory_projection) *
+        beta;
+    float output_value = 0.0F;
+#pragma unroll
+    for (int row = 0; row < kRowsPerLane; ++row) {
+      state_shard[row] = state_shard[row] * decay + k_shard[row] * delta;
+      output_value += state_shard[row] * q_shard[row];
+    }
+    for (int offset = kWarpSize / 2; offset > 0; offset >>= 1) {
+      output_value += __shfl_down_sync(0xFFFFFFFFU, output_value, offset);
+    }
+    if (lane == 0) {
+      args.raw_output[token * value_size + value_head * ValueDim +
+                      value_index] = output_value;
+    }
+  }
+
+#pragma unroll
+  for (int row = 0; row < kRowsPerLane; ++row) {
+    const std::size_t key_index =
+        static_cast<std::size_t>(row * kWarpSize + lane);
+    args.recurrent_state[state_head_base + key_index * ValueDim + value_index] =
+        state_shard[row];
   }
 }
 
@@ -482,13 +612,65 @@ __global__ void batched_output_norm_gate_kernel(
 }
 
 template <typename T, typename Weight>
+void launch_register_candidate(const void *input, const void *recurrent_a,
+                               const void *dt_bias, const float *convolved,
+                               float *recurrent_state, float *raw_output,
+                               const GatedDeltaShape &shape,
+                               const CheckedShape &checked,
+                               GatedDeltaSchedule schedule,
+                               cudaStream_t stream) {
+  constexpr int kWarpSize = 32;
+  constexpr int kColumnsPerBlock = 4;
+  const int register_column_blocks =
+      checked_block_count(shape.value_dim / kColumnsPerBlock +
+                              (shape.value_dim % kColumnsPerBlock == 0 ? 0 : 1),
+                          "gated-delta register recurrent grid overflow");
+  const dim3 register_grid{static_cast<unsigned int>(shape.value_heads),
+                           static_cast<unsigned int>(register_column_blocks),
+                           1};
+  const dim3 register_block{kWarpSize, kColumnsPerBlock, 1};
+  const bool decode =
+      schedule == GatedDeltaSchedule::register_resident_decode_sm120;
+  const GatedDeltaKernelArgs args{
+      .input = input,
+      .recurrent_a = recurrent_a,
+      .dt_bias = dt_bias,
+      .convolved = convolved,
+      .recurrent_state = recurrent_state,
+      .raw_output = raw_output,
+      .tokens = shape.tokens,
+      .token_stride = checked.token_stride,
+      .conv_dim = checked.conv_dim,
+      .key_heads = shape.key_heads,
+      .value_heads = shape.value_heads,
+  };
+  if (shape.key_dim == 64 && shape.value_dim == 64) {
+    if (decode) {
+      gated_delta_register_kernel<64, 64, true, T, Weight>
+          <<<register_grid, register_block, 0, stream>>>(args);
+    } else {
+      gated_delta_register_kernel<64, 64, false, T, Weight>
+          <<<register_grid, register_block, 0, stream>>>(args);
+    }
+  } else if (shape.key_dim == 128 && shape.value_dim == 128) {
+    if (decode) {
+      gated_delta_register_kernel<128, 128, true, T, Weight>
+          <<<register_grid, register_block, 0, stream>>>(args);
+    } else {
+      gated_delta_register_kernel<128, 128, false, T, Weight>
+          <<<register_grid, register_block, 0, stream>>>(args);
+    }
+  }
+}
+
+template <typename T, typename Weight>
 void launch_typed(const void *input, const void *conv_weight,
                   const void *recurrent_a, const void *dt_bias,
                   const void *output_norm_weight, void *output,
                   float *convolution_state, float *recurrent_state,
                   float *convolved, float *raw_output,
                   const GatedDeltaShape &shape, const CheckedShape &checked,
-                  cudaStream_t stream) {
+                  GatedDeltaLaunchPolicy policy, cudaStream_t stream) {
   constexpr std::size_t kValueTile = 16;
   const int convolution_grid = checked_block_count(
       checked.conv_dim / static_cast<std::size_t>(kBlockSize) +
@@ -521,7 +703,13 @@ void launch_typed(const void *input, const void *conv_weight,
       convolved, shape.tokens, checked.conv_dim, shape.key_heads,
       shape.key_dim);
   check_launch("qwen35_gated_delta batched Q/K normalization");
-  if (shape.key_dim == 128) {
+  if (policy.schedule == GatedDeltaSchedule::register_resident_prefill_sm120 ||
+      policy.schedule == GatedDeltaSchedule::register_resident_decode_sm120) {
+    launch_register_candidate<T, Weight>(input, recurrent_a, dt_bias, convolved,
+                                         recurrent_state, raw_output, shape,
+                                         checked, policy.schedule, stream);
+    check_launch("qwen35_gated_delta sm120 register recurrent update");
+  } else if (shape.key_dim == 128) {
     constexpr int kWarpSize = 32;
     constexpr int kColumnsPerBlock = 4;
     const int register_column_blocks = checked_block_count(
@@ -561,6 +749,34 @@ std::size_t qwen35_gated_delta_workspace_bytes(const GatedDeltaShape &shape) {
   return validate_shape(shape).workspace_bytes;
 }
 
+GatedDeltaLaunchPolicy
+qwen35_gated_delta_select_policy(const GatedDeltaShape &shape,
+                                 std::size_t bucket_tokens) noexcept {
+  (void)shape;
+  (void)bucket_tokens;
+  return GatedDeltaLaunchPolicy{
+      .schedule = GatedDeltaSchedule::register_resident_current,
+      .warps_per_block = 4,
+      .transposed_boundary_state = false,
+  };
+}
+
+GatedDeltaScheduleDiagnostic
+qwen35_gated_delta_schedule_diagnostic(const GatedDeltaShape &shape,
+                                       std::size_t bucket_tokens) noexcept {
+  const auto policy = qwen35_gated_delta_select_policy(shape, bucket_tokens);
+  return GatedDeltaScheduleDiagnostic{
+      .bucket_tokens = bucket_tokens,
+      .key_dim = shape.key_dim,
+      .value_dim = shape.value_dim,
+      .schedule = policy.schedule,
+      .warps_per_block = policy.warps_per_block,
+      .transposed_boundary_state = policy.transposed_boundary_state,
+      .candidate_accepted =
+          policy.schedule != GatedDeltaSchedule::register_resident_current,
+  };
+}
+
 void qwen35_gated_delta(const void *input, const void *conv_weight,
                         const void *recurrent_a, const void *dt_bias,
                         const void *output_norm_weight, void *output,
@@ -568,7 +784,23 @@ void qwen35_gated_delta(const void *input, const void *conv_weight,
                         void *workspace, std::size_t workspace_bytes,
                         GatedDeltaShape shape, BrtDataType dtype,
                         BrtDataType weight_dtype, cudaStream_t stream) {
+  qwen35_gated_delta(input, conv_weight, recurrent_a, dt_bias,
+                     output_norm_weight, output, convolution_state,
+                     recurrent_state, workspace, workspace_bytes, shape,
+                     qwen35_gated_delta_select_policy(shape, shape.tokens),
+                     dtype, weight_dtype, stream);
+}
+
+void qwen35_gated_delta(const void *input, const void *conv_weight,
+                        const void *recurrent_a, const void *dt_bias,
+                        const void *output_norm_weight, void *output,
+                        float *convolution_state, float *recurrent_state,
+                        void *workspace, std::size_t workspace_bytes,
+                        GatedDeltaShape shape, GatedDeltaLaunchPolicy policy,
+                        BrtDataType dtype, BrtDataType weight_dtype,
+                        cudaStream_t stream) {
   const CheckedShape checked = validate_shape(shape);
+  validate_policy(policy, shape);
   require_dtype(dtype);
   require_weight_dtype(dtype, weight_dtype);
   require(input != nullptr, "gated-delta input pointer is null");
@@ -625,17 +857,17 @@ void qwen35_gated_delta(const void *input, const void *conv_weight,
       launch_typed<T, float>(input, conv_weight, recurrent_a, dt_bias,
                              output_norm_weight, output, convolution_state,
                              recurrent_state, convolved, raw_output, shape,
-                             checked, stream);
+                             checked, policy, stream);
     } else if (weight_dtype == BRT_DTYPE_F16) {
       launch_typed<T, __half>(input, conv_weight, recurrent_a, dt_bias,
                               output_norm_weight, output, convolution_state,
                               recurrent_state, convolved, raw_output, shape,
-                              checked, stream);
+                              checked, policy, stream);
     } else {
       launch_typed<T, __nv_bfloat16>(
           input, conv_weight, recurrent_a, dt_bias, output_norm_weight, output,
           convolution_state, recurrent_state, convolved, raw_output, shape,
-          checked, stream);
+          checked, policy, stream);
     }
   };
   if (dtype == BRT_DTYPE_F32) {

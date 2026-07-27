@@ -280,7 +280,8 @@ DeviceRun<T> run_cuda(brt::ExecutionContext &context,
                       const brt::kernels::GatedDeltaShape &shape,
                       const Fixture &fixture,
                       std::span<const float> initial_convolution = {},
-                      std::span<const float> initial_recurrent = {}) {
+                      std::span<const float> initial_recurrent = {},
+                      brt::kernels::GatedDeltaLaunchPolicy policy = {}) {
   const auto input = encode<T>(fixture.input);
   const auto conv_weight = encode<Weight>(fixture.conv_weight);
   const auto recurrent_a = encode<Weight>(fixture.recurrent_a);
@@ -330,8 +331,8 @@ DeviceRun<T> run_cuda(brt::ExecutionContext &context,
       dt_bias_device.data(), output_norm_weight_device.data(),
       output_device.data(), static_cast<float *>(convolution_device.data()),
       static_cast<float *>(recurrent_device.data()), workspace_device.data(),
-      workspace_bytes, shape, DTypeTraits<T>::dtype, DTypeTraits<Weight>::dtype,
-      context.stream());
+      workspace_bytes, shape, policy, DTypeTraits<T>::dtype,
+      DTypeTraits<Weight>::dtype, context.stream());
 
   return DeviceRun<T>{
       .output = decode<T>(download<T>(context, output_device.data(),
@@ -648,6 +649,129 @@ void check_model_shape_register_path(brt::ExecutionContext &context) {
   assert_matches(actual.recurrent, expected_state.recurrent);
 }
 
+brt::kernels::GatedDeltaShape make_schedule_shape(std::size_t tokens,
+                                                  std::size_t dim) {
+  return brt::kernels::GatedDeltaShape{
+      .tokens = tokens,
+      .hidden_size = 4 * dim,
+      .key_heads = 2,
+      .value_heads = 4,
+      .key_dim = dim,
+      .value_dim = dim,
+      .conv_width = 3,
+      .epsilon = 1.0e-6F,
+  };
+}
+
+void assert_schedule_policy(const brt::kernels::GatedDeltaLaunchPolicy &policy,
+                            brt::kernels::GatedDeltaSchedule schedule) {
+  assert(policy.schedule == schedule);
+  assert(policy.warps_per_block == 4);
+  assert(!policy.transposed_boundary_state);
+}
+
+template <typename T>
+void check_candidate_prefill_bucket(brt::ExecutionContext &context,
+                                    std::size_t dim, std::size_t tokens,
+                                    brt::kernels::GatedDeltaSchedule schedule) {
+  const auto shape = make_schedule_shape(tokens, dim);
+  const auto fixture = make_fixture(shape);
+  std::vector<float> expected_output(tokens * shape.hidden_size);
+  const auto expected_state = run_reference<T>(shape, fixture, expected_output);
+  const auto policy =
+      brt::kernels::GatedDeltaLaunchPolicy{.schedule = schedule,
+                                           .warps_per_block = 4,
+                                           .transposed_boundary_state = false};
+  const auto actual = run_cuda<T>(context, shape, fixture, {}, {}, policy);
+  assert_matches(actual.output, expected_output);
+  assert_matches(actual.convolution, expected_state.convolution);
+  assert_matches(actual.recurrent, expected_state.recurrent);
+}
+
+template <typename T>
+void check_candidate_continued_prefill_and_decode(
+    brt::ExecutionContext &context, std::size_t dim,
+    brt::kernels::GatedDeltaSchedule prefill_schedule,
+    brt::kernels::GatedDeltaSchedule decode_schedule) {
+  const auto first_shape = make_schedule_shape(17, dim);
+  const auto first_fixture = make_fixture(first_shape);
+  std::vector<float> first_expected(first_shape.tokens *
+                                    first_shape.hidden_size);
+  const auto first_reference_state =
+      run_reference<T>(first_shape, first_fixture, first_expected);
+  const auto first_policy =
+      brt::kernels::GatedDeltaLaunchPolicy{.schedule = prefill_schedule,
+                                           .warps_per_block = 4,
+                                           .transposed_boundary_state = false};
+  const auto first_actual =
+      run_cuda<T>(context, first_shape, first_fixture, {}, {}, first_policy);
+  assert_matches(first_actual.output, first_expected);
+  assert_matches(first_actual.convolution, first_reference_state.convolution);
+  assert_matches(first_actual.recurrent, first_reference_state.recurrent);
+
+  const auto continued_shape = make_schedule_shape(128, dim);
+  auto continued_fixture = make_fixture(continued_shape);
+  for (float &value : continued_fixture.input) {
+    value += 0.021F;
+  }
+  std::vector<float> continued_expected(continued_shape.tokens *
+                                        continued_shape.hidden_size);
+  auto reference_state =
+      run_reference<T>(continued_shape, continued_fixture, continued_expected,
+                       &first_reference_state);
+  const auto continued_actual = run_cuda<T>(
+      context, continued_shape, continued_fixture, first_actual.convolution,
+      first_actual.recurrent, first_policy);
+  assert_matches(continued_actual.output, continued_expected);
+  assert_matches(continued_actual.convolution, reference_state.convolution);
+  assert_matches(continued_actual.recurrent, reference_state.recurrent);
+
+  auto convolution = continued_actual.convolution;
+  auto recurrent = continued_actual.recurrent;
+  for (std::size_t step = 0; step < 8; ++step) {
+    const auto decode_shape = make_schedule_shape(1, dim);
+    auto decode_fixture = make_fixture(decode_shape);
+    for (float &value : decode_fixture.input) {
+      value += 0.013F * static_cast<float>(step + 1);
+    }
+    std::vector<float> decode_expected(decode_shape.hidden_size);
+    reference_state = run_reference<T>(decode_shape, decode_fixture,
+                                       decode_expected, &reference_state);
+    const auto decode_policy = brt::kernels::GatedDeltaLaunchPolicy{
+        .schedule = decode_schedule,
+        .warps_per_block = 4,
+        .transposed_boundary_state = false};
+    const auto decode_actual =
+        run_cuda<T>(context, decode_shape, decode_fixture, convolution,
+                    recurrent, decode_policy);
+    assert_matches(decode_actual.output, decode_expected);
+    assert_matches(decode_actual.convolution, reference_state.convolution);
+    assert_matches(decode_actual.recurrent, reference_state.recurrent);
+    convolution = decode_actual.convolution;
+    recurrent = decode_actual.recurrent;
+  }
+}
+
+template <typename T>
+void check_sm120_candidate_schedules(brt::ExecutionContext &context) {
+  for (const std::size_t dim : {std::size_t{64}, std::size_t{128}}) {
+    const auto current = brt::kernels::qwen35_gated_delta_select_policy(
+        make_schedule_shape(128, dim), 128);
+    assert_schedule_policy(
+        current, brt::kernels::GatedDeltaSchedule::register_resident_current);
+    for (const std::size_t tokens :
+         {std::size_t{17}, std::size_t{128}, std::size_t{512}}) {
+      check_candidate_prefill_bucket<T>(
+          context, dim, tokens,
+          brt::kernels::GatedDeltaSchedule::register_resident_prefill_sm120);
+    }
+    check_candidate_continued_prefill_and_decode<T>(
+        context, dim,
+        brt::kernels::GatedDeltaSchedule::register_resident_prefill_sm120,
+        brt::kernels::GatedDeltaSchedule::register_resident_decode_sm120);
+  }
+}
+
 void expect_delta_error(auto &&fn) {
   bool thrown = false;
   try {
@@ -795,6 +919,8 @@ int main() {
   check_f32_activations<__half>(resources.context());
   check_f32_activations<__nv_bfloat16>(resources.context());
   check_model_shape_register_path(resources.context());
+  check_sm120_candidate_schedules<__nv_bfloat16>(resources.context());
+  check_sm120_candidate_schedules<float>(resources.context());
   check_invalid_shapes(resources.context().stream());
   check_misaligned_pointers(resources.context().stream());
 }

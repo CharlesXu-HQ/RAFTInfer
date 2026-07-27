@@ -5,6 +5,7 @@
 #include <cuda_runtime_api.h>
 
 #include <cstddef>
+#include <cstdint>
 #include <stdexcept>
 #include <string>
 
@@ -27,10 +28,45 @@ struct GatedDeltaShape {
   float epsilon;
 };
 
+enum class GatedDeltaSchedule : std::uint8_t {
+  register_resident_current,
+  register_resident_prefill_sm120,
+  register_resident_decode_sm120,
+};
+
+struct GatedDeltaLaunchPolicy {
+  GatedDeltaSchedule schedule{GatedDeltaSchedule::register_resident_current};
+  std::uint32_t warps_per_block{4};
+  bool transposed_boundary_state{false};
+};
+
+struct GatedDeltaScheduleDiagnostic {
+  std::size_t bucket_tokens{};
+  std::size_t key_dim{};
+  std::size_t value_dim{};
+  GatedDeltaSchedule schedule{GatedDeltaSchedule::register_resident_current};
+  std::uint32_t warps_per_block{};
+  bool transposed_boundary_state{};
+  bool candidate_accepted{};
+
+  bool operator==(const GatedDeltaScheduleDiagnostic &) const = default;
+};
+
 // Returns the caller-owned FP32 scratch size needed by
 // `qwen35_gated_delta`. The workspace holds one convolved q/k/v token and one
 // recurrent output token, and may be reused across calls on the same stream.
 std::size_t qwen35_gated_delta_workspace_bytes(const GatedDeltaShape &shape);
+
+// Construction-time policy selection hook. Until target-side benchmarking
+// proves an sm_120 candidate is both correct and meaningfully faster, the
+// project-native register-resident current path remains selected.
+GatedDeltaLaunchPolicy
+qwen35_gated_delta_select_policy(const GatedDeltaShape &shape,
+                                 std::size_t bucket_tokens) noexcept;
+
+GatedDeltaScheduleDiagnostic
+qwen35_gated_delta_schedule_diagnostic(const GatedDeltaShape &shape,
+                                       std::size_t bucket_tokens) noexcept;
 
 // Input token layout is `[q, k, v, beta, dt, gate]`, matching the FP32
 // reference. Input and output use `dtype`; auxiliary weights use
@@ -49,5 +85,14 @@ void qwen35_gated_delta(const void *input, const void *conv_weight,
                         void *workspace, std::size_t workspace_bytes,
                         GatedDeltaShape shape, BrtDataType dtype,
                         BrtDataType weight_dtype, cudaStream_t stream);
+
+void qwen35_gated_delta(const void *input, const void *conv_weight,
+                        const void *recurrent_a, const void *dt_bias,
+                        const void *output_norm_weight, void *output,
+                        float *convolution_state, float *recurrent_state,
+                        void *workspace, std::size_t workspace_bytes,
+                        GatedDeltaShape shape, GatedDeltaLaunchPolicy policy,
+                        BrtDataType dtype, BrtDataType weight_dtype,
+                        cudaStream_t stream);
 
 } // namespace brt::kernels

@@ -3,6 +3,7 @@
 #include "execution_context.hpp"
 #include "qwen35_execution_policy.hpp"
 
+#include "../kernels/qwen35_delta.cuh"
 #include "../model/cuda_weights.hpp"
 #include "../model/qwen35_config.hpp"
 
@@ -48,6 +49,7 @@ struct Qwen35ExecutionDiagnostics {
   std::size_t attention_workspace_bytes{};
   std::vector<int> cublaslt_algorithm_ids;
   std::vector<Qwen35CublasLtPlanDiagnostic> cublaslt_plans;
+  std::vector<kernels::GatedDeltaScheduleDiagnostic> gated_delta_schedules;
 };
 
 struct Qwen35TraceEntry {
