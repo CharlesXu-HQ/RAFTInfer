@@ -846,6 +846,15 @@ void run_gated_delta_schedule_tuning_tests() {
   brt::Qwen35Executor executor{context, model.qwen35_config(), *weights,
                                max_context, policy};
   const auto construction = executor.diagnostics();
+  // The 64-dim tuned gated-delta fixture is intentionally not a decode-graph
+  // fixture: executor graph capture is only enabled for the release
+  // full-attention shape. This test owns the zero runtime allocation contract
+  // for tuned gated-delta schedules; graph capture/replay is covered by the
+  // release-shape executor and CUDA graph tests.
+  assert(construction.attention ==
+         brt::Qwen35AttentionImplementation::materialized_reference);
+  assert(!construction.decode_graph_captured);
+  assert(!construction.decode_graph_replayed);
   assert(construction.gated_delta_schedules.size() == 3);
   for (const std::size_t bucket :
        {std::size_t{1}, std::size_t{128}, std::size_t{512}}) {
@@ -888,17 +897,19 @@ void run_gated_delta_schedule_tuning_tests() {
 
   const auto decoded = executor.decode(1);
   assert(decoded.position == prompt128.size());
-  const auto after_capture = executor.diagnostics();
-  assert(after_capture.gated_delta_schedules ==
+  const auto after_decode = executor.diagnostics();
+  assert(after_decode.gated_delta_schedules ==
          construction.gated_delta_schedules);
-  assert(after_capture.decode_graph_captured);
+  assert(!after_decode.decode_graph_captured);
+  assert(!after_decode.decode_graph_replayed);
 
-  const auto replayed = executor.decode(2);
-  assert(replayed.position == prompt128.size() + 1);
-  const auto after_replay = executor.diagnostics();
-  assert(after_replay.gated_delta_schedules ==
+  const auto second_decode = executor.decode(2);
+  assert(second_decode.position == prompt128.size() + 1);
+  const auto after_second_decode = executor.diagnostics();
+  assert(after_second_decode.gated_delta_schedules ==
          construction.gated_delta_schedules);
-  assert(after_replay.decode_graph_replayed);
+  assert(!after_second_decode.decode_graph_captured);
+  assert(!after_second_decode.decode_graph_replayed);
   const auto [bytes, allocations] = statistics.pop_counters();
   assert(bytes.value == 0);
   assert(bytes.peak == 0);
