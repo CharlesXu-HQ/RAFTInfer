@@ -203,6 +203,41 @@ make_release_attention_fixture(std::uint32_t context_length = 4) {
   return bytes;
 }
 
+std::vector<std::uint8_t>
+make_nonzero_release_attention_fixture(std::uint32_t context_length) {
+  auto bytes = make_release_attention_fixture(context_length);
+  const auto catalog = brt::gguf::read_catalog(bytes);
+  for (std::size_t tensor_index = 0;
+       tensor_index < catalog.tensors.size(); ++tensor_index) {
+    const auto &tensor = catalog.tensors[tensor_index];
+    assert(tensor.byte_size % sizeof(std::uint16_t) == 0);
+    const std::size_t elements =
+        static_cast<std::size_t>(tensor.byte_size / sizeof(std::uint16_t));
+    const std::size_t payload_offset =
+        static_cast<std::size_t>(catalog.tensor_data_offset + tensor.offset);
+    assert(payload_offset + static_cast<std::size_t>(tensor.byte_size) <=
+           bytes.size());
+    const bool is_norm = tensor.name.find("norm.weight") != std::string::npos;
+    for (std::size_t element = 0; element < elements; ++element) {
+      int numerator =
+          static_cast<int>((tensor_index * 17 + element * 13) % 31) - 15;
+      if (numerator == 0)
+        numerator = 1;
+      const float value =
+          is_norm ? 1.0F + static_cast<float>(numerator) / 1024.0F
+                  : static_cast<float>(numerator) / 256.0F;
+      const std::uint16_t encoded =
+          brt::reference::float_to_bf16(value).bits;
+      const std::size_t offset =
+          payload_offset + element * sizeof(std::uint16_t);
+      bytes[offset] = static_cast<std::uint8_t>(encoded & 0xffU);
+      bytes[offset + 1] =
+          static_cast<std::uint8_t>((encoded >> 8U) & 0xffU);
+    }
+  }
+  return bytes;
+}
+
 std::filesystem::path write_fixture(std::vector<std::uint8_t> bytes) {
   const auto path =
       std::filesystem::temp_directory_path() / "brt_qwen35_executor.gguf";
@@ -1067,7 +1102,13 @@ void run_executor_online_materialized_parity_tests() {
   }
 
   {
-    const auto graph_path = write_fixture(make_release_attention_fixture(16));
+    auto graph_fixture = make_nonzero_release_attention_fixture(16);
+    const auto graph_catalog = brt::gguf::read_catalog(graph_fixture);
+    assert(std::any_of(
+        graph_fixture.begin() +
+            static_cast<std::ptrdiff_t>(graph_catalog.tensor_data_offset),
+        graph_fixture.end(), [](std::uint8_t byte) { return byte != 0; }));
+    const auto graph_path = write_fixture(std::move(graph_fixture));
     brt::model::Model graph_model{graph_path.string()};
     auto graph_weights = device.upload_qwen35_weights(graph_model);
     constexpr std::size_t graph_max_context = 16;
