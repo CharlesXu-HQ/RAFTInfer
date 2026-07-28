@@ -132,6 +132,13 @@ unsafe extern "C" {
         token_id: i32,
         out_result: *mut BrtTokenResult,
     ) -> BrtStatus;
+    pub fn brt_session_decode_greedy(
+        session: *mut BrtSessionHandle,
+        first_token_id: i32,
+        out_token_ids: *mut i32,
+        token_count: usize,
+        out_result: *mut BrtTokenResult,
+    ) -> BrtStatus;
     pub fn brt_session_diagnostics(
         session: *mut BrtSessionHandle,
         out_diagnostics: *mut BrtSessionDiagnostics,

@@ -33,8 +33,15 @@ constexpr std::size_t kMaxPrefillTokens = 512;
 constexpr std::array<std::size_t, 6> kBuckets{1, 2, 4, 17, 128, 512};
 constexpr std::size_t kMatmulWorkspaceBudget = 4U * 1024U * 1024U;
 
-__global__ void increment_decode_position(std::uint32_t *position) {
-  ++*position;
+__global__ void commit_decode_result(std::int32_t *next_token,
+                                     const std::int32_t *result,
+                                     std::int32_t *results,
+                                     std::uint32_t *position) {
+  const std::uint32_t current_position = *position;
+  const std::int32_t token = *result;
+  results[current_position] = token;
+  *next_token = token;
+  *position = current_position + 1;
 }
 
 __global__ void fill_delta_tuning_input(void *input, std::size_t elements,
@@ -489,6 +496,8 @@ std::size_t workspace_estimate(const model::Qwen35Config &config,
   add(sizeof(std::int32_t));
   add(sizeof(std::int32_t));
   add(sizeof(std::uint32_t));
+  add(checked_mul(max_context, sizeof(std::int32_t),
+                  "decode result buffer byte size overflow"));
   add(checked_mul(max_tokens, hidden * element,
                   "hidden activation byte size overflow"));
   add(checked_mul(max_tokens, hidden * element,
@@ -683,8 +692,12 @@ public:
     const std::size_t start_position = position_;
     try {
       if (can_replay_decode_graph()) {
-        *host_decode_token_ = token;
+        upload_decode_token(token);
         decode_graph_->replay_on_current_device();
+        check_cuda(cudaMemcpyAsync(host_decode_result_.get(), device_result_,
+                                   sizeof(*host_decode_result_),
+                                   cudaMemcpyDeviceToHost, context_.stream()),
+                   "Qwen3.5 decode graph result download failed");
         check_cuda(cudaStreamSynchronize(context_.stream()),
                    "Qwen3.5 decode graph synchronization failed");
         decode_graph_replayed_ = true;
@@ -703,6 +716,32 @@ public:
         sync_device_decode_position();
       }
       return result;
+    } catch (...) {
+      poisoned_ = true;
+      throw;
+    }
+  }
+
+  Qwen35ExecutorResult decode_greedy(std::int32_t first_token,
+                                     std::span<std::int32_t> output_tokens) {
+    DeviceGuard guard{context_.device_id()};
+    validate_decode_greedy_request(first_token, output_tokens.size());
+    ensure_healthy();
+    const std::size_t start_position = position_;
+    try {
+      if (!can_replay_decode_graph()) {
+        const auto first = decode(first_token);
+        output_tokens.front() = first.token;
+        if (output_tokens.size() == 1) {
+          return first;
+        }
+        if (!can_replay_decode_graph()) {
+          return decode_greedy_sequential(first.token, output_tokens.subspan(1));
+        }
+        return replay_decode_greedy(first.token, output_tokens.subspan(1),
+                                    start_position + 1);
+      }
+      return replay_decode_greedy(first_token, output_tokens, start_position);
     } catch (...) {
       poisoned_ = true;
       throw;
@@ -902,6 +941,59 @@ private:
                "Qwen3.5 decode position synchronization failed");
   }
 
+  void upload_decode_token(std::int32_t token) {
+    *host_decode_token_ = token;
+    check_cuda(cudaMemcpyAsync(device_decode_token_, host_decode_token_.get(),
+                               sizeof(*host_decode_token_),
+                               cudaMemcpyHostToDevice, context_.stream()),
+               "Qwen3.5 decode graph token upload failed");
+  }
+
+  void validate_decode_greedy_request(std::int32_t first_token,
+                                      std::size_t token_count) const {
+    require(token_count != 0,
+            "Qwen3.5 greedy decode output span must not be empty");
+    require(token_count <= max_context_ - position_,
+            "Qwen3.5 request exceeds session context");
+    const std::array<std::int32_t, 1> one{first_token};
+    validate_request(config_, position_, one);
+  }
+
+  Qwen35ExecutorResult replay_decode_greedy(
+      std::int32_t first_token, std::span<std::int32_t> output_tokens,
+      std::size_t start_position) {
+    upload_decode_token(first_token);
+    for (std::size_t step = 0; step < output_tokens.size(); ++step) {
+      decode_graph_->replay_on_current_device();
+    }
+    check_cuda(cudaMemcpyAsync(output_tokens.data(),
+                               device_decode_results_ + start_position,
+                               output_tokens.size_bytes(),
+                               cudaMemcpyDeviceToHost, context_.stream()),
+               "Qwen3.5 greedy decode result download failed");
+    check_cuda(cudaStreamSynchronize(context_.stream()),
+               "Qwen3.5 greedy decode graph synchronization failed");
+    decode_graph_replayed_ = true;
+    position_ = start_position + output_tokens.size();
+    return Qwen35ExecutorResult{
+        .token = output_tokens.back(),
+        .position = static_cast<std::uint32_t>(position_ - 1),
+    };
+  }
+
+  Qwen35ExecutorResult
+  decode_greedy_sequential(std::int32_t first_token,
+                           std::span<std::int32_t> output_tokens) {
+    auto token = first_token;
+    Qwen35ExecutorResult result{};
+    for (auto &output : output_tokens) {
+      result = decode(token);
+      output = result.token;
+      token = result.token;
+    }
+    return result;
+  }
+
   void capture_decode_graph() {
     sync_device_decode_position();
     if (decode_graph_ == nullptr) {
@@ -909,18 +1001,15 @@ private:
                                                         context_.stream());
     }
     decode_graph_->capture([this] {
-      check_cuda(cudaMemcpyAsync(device_decode_token_, host_decode_token_.get(),
-                                 sizeof(*host_decode_token_),
-                                 cudaMemcpyHostToDevice, context_.stream()),
-                 "Qwen3.5 decode graph token upload failed");
       (void)run_chunk(
           std::span<const std::int32_t>{host_decode_token_.get(), 1}, true, 0,
           device_decode_token_, device_decode_position_,
-          host_decode_result_.get(), false);
-      increment_decode_position<<<1, 1, 0, context_.stream()>>>(
+          nullptr, false, device_result_);
+      commit_decode_result<<<1, 1, 0, context_.stream()>>>(
+          device_decode_token_, device_result_, device_decode_results_,
           device_decode_position_);
       check_cuda(cudaGetLastError(),
-                 "Qwen3.5 decode position increment failed");
+                 "Qwen3.5 decode graph result commit failed");
     });
   }
 
@@ -985,6 +1074,11 @@ private:
         allocate(arena, sizeof(std::int32_t), alignof(std::int32_t)));
     device_decode_position_ = static_cast<std::uint32_t *>(
         allocate(arena, sizeof(std::uint32_t), alignof(std::uint32_t)));
+    device_decode_results_ = static_cast<std::int32_t *>(
+        allocate(arena,
+                 checked_mul(max_context_, sizeof(std::int32_t),
+                             "decode result buffer byte size overflow"),
+                 alignof(std::int32_t)));
     std::int32_t *host_decode_token{};
     check_cuda(cudaHostAlloc(&host_decode_token, sizeof(*host_decode_token),
                              cudaHostAllocDefault),
@@ -1609,7 +1703,8 @@ private:
             const std::int32_t *fixed_device_token = nullptr,
             const std::uint32_t *device_position = nullptr,
             std::int32_t *fixed_host_result = nullptr,
-            bool synchronize = true) {
+            bool synchronize = true,
+            std::int32_t *fixed_device_result = nullptr) {
     BucketPlans &bucket = bucket_for(tokens.size());
     std::int32_t *device_tokens =
         const_cast<std::int32_t *>(fixed_device_token);
@@ -1717,16 +1812,25 @@ private:
         config_.rms_norm_epsilon, dtype_,
         dtype_from_weight(weights_.output_norm().type), context_.stream());
     run_matmul(*bucket.lm_head, scratch, weights_.output(), logits_);
-    kernels::qwen35_argmax_typed(logits_, device_result_,
+    std::int32_t *device_result =
+        fixed_device_result == nullptr ? device_result_ : fixed_device_result;
+    kernels::qwen35_argmax_typed(logits_, device_result,
                                  config_.vocabulary_size, dtype_,
                                  context_.stream());
+    if (fixed_host_result == nullptr && !synchronize) {
+      return Qwen35ExecutorResult{
+          .token = 0,
+          .position =
+              static_cast<std::uint32_t>(chunk_position + tokens.size() - 1),
+      };
+    }
     std::int32_t host_result = 0;
     std::int32_t *result =
         fixed_host_result == nullptr ? &host_result : fixed_host_result;
     require(synchronize || fixed_host_result != nullptr,
             "Qwen3.5 unsynchronized result download requires fixed host "
             "storage");
-    check_cuda(cudaMemcpyAsync(result, device_result_, sizeof(*result),
+    check_cuda(cudaMemcpyAsync(result, device_result, sizeof(*result),
                                cudaMemcpyDeviceToHost, context_.stream()),
                "Qwen3.5 result download failed");
     if (synchronize) {
@@ -1919,6 +2023,7 @@ private:
   std::int32_t *device_result_{};
   std::int32_t *device_decode_token_{};
   std::uint32_t *device_decode_position_{};
+  std::int32_t *device_decode_results_{};
   CudaHostInt32 host_decode_token_;
   CudaHostInt32 host_decode_result_;
   void *hidden_a_{};
@@ -2003,6 +2108,12 @@ Qwen35Executor::prefill(std::span<const std::int32_t> tokens) {
 
 Qwen35ExecutorResult Qwen35Executor::decode(std::int32_t token) {
   return impl_->decode(token);
+}
+
+Qwen35ExecutorResult
+Qwen35Executor::decode_greedy(std::int32_t first_token,
+                              std::span<std::int32_t> output_tokens) {
+  return impl_->decode_greedy(first_token, output_tokens);
 }
 
 void Qwen35Executor::copy_last_logits(std::span<float> output) const {

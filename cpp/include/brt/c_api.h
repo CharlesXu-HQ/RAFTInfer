@@ -99,6 +99,11 @@ BrtStatus brt_session_prefill(BrtSessionHandle *session, const int32_t *tokens,
                               BrtTokenResult *out_result);
 BrtStatus brt_session_decode(BrtSessionHandle *session, int32_t token_id,
                              BrtTokenResult *out_result);
+BrtStatus brt_session_decode_greedy(BrtSessionHandle *session,
+                                    int32_t first_token_id,
+                                    int32_t *out_token_ids,
+                                    size_t token_count,
+                                    BrtTokenResult *out_result);
 BrtStatus brt_session_diagnostics(BrtSessionHandle *session,
                                   BrtSessionDiagnostics *out_diagnostics);
 BrtStatus brt_session_reset(BrtSessionHandle *session);

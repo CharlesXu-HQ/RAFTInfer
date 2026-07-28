@@ -439,6 +439,43 @@ extern "C" BrtStatus brt_session_decode(BrtSessionHandle *session,
 }
 
 extern "C" BrtStatus
+brt_session_decode_greedy(BrtSessionHandle *session, int32_t first_token_id,
+                          int32_t *out_token_ids, size_t token_count,
+                          BrtTokenResult *out_result) {
+  try {
+    clear_last_error();
+    if (session == nullptr || out_token_ids == nullptr ||
+        out_result == nullptr) {
+      return fail(BRT_STATUS_INVALID_ARGUMENT,
+                  "session, out_token_ids, and out_result are required");
+    }
+    if (token_count == 0) {
+      return fail(BRT_STATUS_INVALID_ARGUMENT,
+                  "decode token_count must be non-zero");
+    }
+    const auto result =
+        session->session->decode_greedy(first_token_id,
+                                        {out_token_ids, token_count});
+    out_result->token_id = result.token_id;
+    out_result->position = result.position;
+    return BrtStatus{BRT_STATUS_OK, nullptr};
+  } catch (const std::invalid_argument &error) {
+    return fail(BRT_STATUS_INVALID_ARGUMENT, error.what());
+  } catch (const brt::SessionUnavailableError &error) {
+    return fail(BRT_STATUS_UNAVAILABLE, error.what());
+  } catch (const brt::SessionCudaError &error) {
+    return fail(BRT_STATUS_CUDA_ERROR, error.what());
+  } catch (const std::bad_alloc &) {
+    return fail(BRT_STATUS_RESOURCE_EXHAUSTED,
+                "decode exhausted host memory");
+  } catch (const std::exception &error) {
+    return fail(BRT_STATUS_INTERNAL, error.what());
+  } catch (...) {
+    return fail(BRT_STATUS_INTERNAL, "internal error");
+  }
+}
+
+extern "C" BrtStatus
 brt_session_diagnostics(BrtSessionHandle *session,
                         BrtSessionDiagnostics *out_diagnostics) {
   try {

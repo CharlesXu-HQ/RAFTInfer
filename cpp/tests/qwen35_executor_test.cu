@@ -1065,6 +1065,74 @@ void run_executor_online_materialized_parity_tests() {
       assert(allocations.total == 0);
     }
   }
+
+  {
+    const auto graph_path = write_fixture(make_release_attention_fixture(16));
+    brt::model::Model graph_model{graph_path.string()};
+    auto graph_weights = device.upload_qwen35_weights(graph_model);
+    constexpr std::size_t graph_max_context = 16;
+    const auto graph_policy = online_policy(brt::Qwen35KvCacheDType::bf16,
+                                            brt::Qwen35KvCacheLayout::head_major,
+                                            true);
+    const std::size_t graph_workspace_bytes =
+        brt::Qwen35Executor::workspace_bytes(graph_model.qwen35_config(),
+                                             graph_max_context, graph_policy);
+    brt::WorkspaceArena repeated_workspace{
+        rmm::device_async_resource_ref{statistics}, cuda::stream_ref{stream},
+        stream, graph_workspace_bytes};
+    brt::WorkspaceArena batched_workspace{
+        rmm::device_async_resource_ref{statistics}, cuda::stream_ref{stream},
+        stream, graph_workspace_bytes};
+    auto repeated_context = context_for(repeated_workspace);
+    auto batched_context = context_for(batched_workspace);
+    brt::Qwen35Executor repeated{repeated_context,
+                                 graph_model.qwen35_config(), *graph_weights,
+                                 graph_max_context, graph_policy};
+    brt::Qwen35Executor batched{batched_context,
+                                graph_model.qwen35_config(), *graph_weights,
+                                graph_max_context, graph_policy};
+
+    const auto repeated_prefill = repeated.prefill(prompt);
+    const auto batched_prefill = batched.prefill(prompt);
+    assert(repeated_prefill.token == batched_prefill.token);
+    assert(repeated_prefill.position == batched_prefill.position);
+
+    std::array<std::int32_t, 8> repeated_tokens{};
+    auto repeated_result = brt::Qwen35ExecutorResult{};
+    auto token = std::int32_t{3};
+    for (auto &output : repeated_tokens) {
+      repeated_result = repeated.decode(token);
+      output = repeated_result.token;
+      token = repeated_result.token;
+    }
+    std::array<std::int32_t, 8> batched_tokens{};
+    const auto batched_result = batched.decode_greedy(3, batched_tokens);
+    assert(batched_tokens == repeated_tokens);
+    assert(batched_result.token == repeated_result.token);
+    assert(batched_result.position == repeated_result.position);
+    assert(batched.position() == repeated.position());
+
+    std::vector<float> repeated_last_logits(
+        graph_model.qwen35_config().vocabulary_size);
+    std::vector<float> batched_last_logits(
+        graph_model.qwen35_config().vocabulary_size);
+    repeated.copy_last_logits(repeated_last_logits);
+    batched.copy_last_logits(batched_last_logits);
+    assert_reference_close("decode-greedy-logits", batched_last_logits,
+                           repeated_last_logits);
+
+#if defined(BRT_QWEN35_EXECUTOR_TESTING)
+    const auto repeated_state = repeated.state_snapshot_for_tests();
+    const auto batched_state = batched.state_snapshot_for_tests();
+    assert(batched_state.full_kv_cache == repeated_state.full_kv_cache);
+    assert(batched_state.linear_convolution ==
+           repeated_state.linear_convolution);
+    assert(batched_state.linear_recurrent == repeated_state.linear_recurrent);
+#endif
+    const auto diagnostics = batched.diagnostics();
+    assert(diagnostics.decode_graph_captured);
+    assert(diagnostics.decode_graph_replayed);
+  }
 }
 
 void run_executor_reference_and_allocation_tests() {

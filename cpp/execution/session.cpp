@@ -131,6 +131,36 @@ SessionTokenResult Session::decode(std::int32_t token) {
       "Qwen3.5 decode backend requires a CUDA-loaded model");
 }
 
+SessionTokenResult
+Session::decode_greedy(std::int32_t first_token,
+                       std::span<std::int32_t> output_tokens) {
+  if (output_tokens.empty()) {
+    throw std::invalid_argument("Qwen3.5 greedy decode output span is empty");
+  }
+  if (output_tokens.size() > state_.layout().max_context_tokens -
+                                 state_.position()) {
+    throw std::invalid_argument("Qwen3.5 request exceeds session context");
+  }
+  const std::span<const std::int32_t> tokens{&first_token, 1};
+  validate_request(model_->qwen35_config(), state_, tokens);
+#if BRT_ENABLE_CUDA
+  if (executor_) {
+    try {
+      const auto result = executor_->decode_greedy(first_token, output_tokens);
+      state_.commit_tokens(static_cast<std::uint32_t>(output_tokens.size()));
+      return SessionTokenResult{.token_id = result.token,
+                                .position = result.position};
+    } catch (const std::bad_alloc &) {
+      throw;
+    } catch (const std::exception &error) {
+      throw SessionCudaError(error.what());
+    }
+  }
+#endif
+  throw SessionUnavailableError(
+      "Qwen3.5 decode backend requires a CUDA-loaded model");
+}
+
 SessionDiagnostics Session::diagnostics() const {
 #if BRT_ENABLE_CUDA
   if (executor_) {

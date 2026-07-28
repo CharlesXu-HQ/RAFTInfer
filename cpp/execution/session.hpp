@@ -59,6 +59,8 @@ public:
   const Qwen35HostState &host_state() const noexcept;
   SessionTokenResult prefill(std::span<const std::int32_t> tokens);
   SessionTokenResult decode(std::int32_t token);
+  SessionTokenResult decode_greedy(std::int32_t first_token,
+                                   std::span<std::int32_t> output_tokens);
   SessionDiagnostics diagnostics() const;
   void reset();
 

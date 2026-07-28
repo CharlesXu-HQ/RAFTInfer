@@ -96,6 +96,8 @@ public:
 
   Qwen35ExecutorResult prefill(std::span<const std::int32_t> tokens);
   Qwen35ExecutorResult decode(std::int32_t token);
+  Qwen35ExecutorResult decode_greedy(std::int32_t first_token,
+                                     std::span<std::int32_t> output_tokens);
   void copy_last_logits(std::span<float> output) const;
   void enable_trace(bool enabled);
   const std::vector<Qwen35TraceEntry> &trace() const noexcept;

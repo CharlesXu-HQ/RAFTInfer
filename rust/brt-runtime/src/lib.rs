@@ -245,6 +245,21 @@ pub trait GenerationSession {
     fn reset(&mut self) -> Result<(), Self::Error>;
     fn prefill(&mut self, tokens: &[i32]) -> Result<TokenResult, Self::Error>;
     fn decode(&mut self, token_id: i32) -> Result<TokenResult, Self::Error>;
+    fn decode_greedy(
+        &mut self,
+        first_token_id: i32,
+        output_tokens: &mut [i32],
+    ) -> Result<TokenResult, Self::Error> {
+        let mut result = TokenResult {
+            token_id: first_token_id,
+            position: 0,
+        };
+        for token in output_tokens {
+            result = self.decode(result.token_id)?;
+            *token = result.token_id;
+        }
+        Ok(result)
+    }
 }
 
 #[derive(Debug)]
@@ -395,21 +410,20 @@ where
         generation_microseconds: Vec::with_capacity(config.measured_iterations),
     };
 
+    let mut decode_tokens = vec![0; config.generated_tokens];
     for iteration in 0..total_iterations {
         session.reset().map_err(GenerationError::Backend)?;
 
         let prefill_start = Instant::now();
-        let mut result = session
+        let result = session
             .prefill(prompt_tokens)
             .map_err(GenerationError::Backend)?;
         let prefill_microseconds = elapsed_microseconds(prefill_start);
 
         let generation_start = Instant::now();
-        for _ in 0..config.generated_tokens {
-            result = session
-                .decode(result.token_id)
-                .map_err(GenerationError::Backend)?;
-        }
+        session
+            .decode_greedy(result.token_id, &mut decode_tokens)
+            .map_err(GenerationError::Backend)?;
         let generation_microseconds = elapsed_microseconds(generation_start);
 
         if iteration >= config.warmup_iterations {
@@ -636,6 +650,27 @@ impl Session<'_, '_> {
         })
     }
 
+    pub fn decode_greedy(
+        &mut self,
+        first_token_id: i32,
+        output_tokens: &mut [i32],
+    ) -> Result<TokenResult, Error> {
+        let mut native = brt_sys::BrtTokenResult::default();
+        let status = unsafe {
+            brt_sys::brt_session_decode_greedy(
+                self.raw.as_ptr(),
+                first_token_id,
+                output_tokens.as_mut_ptr(),
+                output_tokens.len(),
+                &mut native,
+            )
+        };
+        status_to_result(status).map(|()| TokenResult {
+            token_id: native.token_id,
+            position: native.position,
+        })
+    }
+
     pub fn reset(&mut self) -> Result<(), Error> {
         let status = unsafe { brt_sys::brt_session_reset(self.raw.as_ptr()) };
         status_to_result(status)
@@ -655,6 +690,14 @@ impl GenerationSession for Session<'_, '_> {
 
     fn decode(&mut self, token_id: i32) -> Result<TokenResult, Self::Error> {
         Session::decode(self, token_id)
+    }
+
+    fn decode_greedy(
+        &mut self,
+        first_token_id: i32,
+        output_tokens: &mut [i32],
+    ) -> Result<TokenResult, Self::Error> {
+        Session::decode_greedy(self, first_token_id, output_tokens)
     }
 }
 

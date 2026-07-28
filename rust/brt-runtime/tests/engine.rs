@@ -307,6 +307,42 @@ fn benchmark_warms_up_then_measures_prefill_and_generated_tokens_in_one_session(
     );
 }
 
+#[test]
+fn benchmark_uses_one_batched_decode_per_iteration_when_available() {
+    let mut session = BatchedScriptedSession::new(
+        [
+            Ok(token_result(20)),
+            Ok(token_result(30)),
+            Ok(token_result(40)),
+        ],
+        [
+            Ok((vec![21, 22, 23], token_result(23))),
+            Ok((vec![31, 32, 33], token_result(33))),
+            Ok((vec![41, 42, 43], token_result(43))),
+        ],
+    );
+
+    let timings = benchmark_session(
+        &mut session,
+        &[10, 11],
+        BenchmarkConfig {
+            warmup_iterations: 2,
+            measured_iterations: 1,
+            generated_tokens: 3,
+        },
+    )
+    .expect("benchmark");
+
+    assert_eq!(timings.prefill_microseconds.len(), 1);
+    assert_eq!(timings.generation_microseconds.len(), 1);
+    assert_eq!(session.reset_calls, 3);
+    assert_eq!(
+        session.batched_decode_inputs,
+        vec![(20, 3), (30, 3), (40, 3)]
+    );
+    assert!(session.decode_inputs.is_empty());
+}
+
 #[allow(dead_code)]
 fn session_lifetime_is_tied_to_model<'engine, 'model>(
     model: &'model Model<'engine>,
@@ -332,6 +368,31 @@ struct ScriptedSession {
     decode_inputs: Vec<i32>,
     prefill_results: VecDeque<Result<TokenResult, &'static str>>,
     decode_results: VecDeque<Result<TokenResult, &'static str>>,
+}
+
+struct BatchedScriptedSession {
+    reset_calls: usize,
+    prefill_inputs: Vec<Vec<i32>>,
+    decode_inputs: Vec<i32>,
+    batched_decode_inputs: Vec<(i32, usize)>,
+    prefill_results: VecDeque<Result<TokenResult, &'static str>>,
+    batched_decode_results: VecDeque<Result<(Vec<i32>, TokenResult), &'static str>>,
+}
+
+impl BatchedScriptedSession {
+    fn new(
+        prefill_results: impl IntoIterator<Item = Result<TokenResult, &'static str>>,
+        batched_decode_results: impl IntoIterator<Item = Result<(Vec<i32>, TokenResult), &'static str>>,
+    ) -> Self {
+        Self {
+            reset_calls: 0,
+            prefill_inputs: Vec::new(),
+            decode_inputs: Vec::new(),
+            batched_decode_inputs: Vec::new(),
+            prefill_results: prefill_results.into_iter().collect(),
+            batched_decode_results: batched_decode_results.into_iter().collect(),
+        }
+    }
 }
 
 impl ScriptedSession {
@@ -369,6 +430,43 @@ impl GenerationSession for ScriptedSession {
         self.decode_results
             .pop_front()
             .expect("scripted decode result")
+    }
+}
+
+impl GenerationSession for BatchedScriptedSession {
+    type Error = &'static str;
+
+    fn reset(&mut self) -> Result<(), Self::Error> {
+        self.reset_calls += 1;
+        Ok(())
+    }
+
+    fn prefill(&mut self, tokens: &[i32]) -> Result<TokenResult, Self::Error> {
+        self.prefill_inputs.push(tokens.to_vec());
+        self.prefill_results
+            .pop_front()
+            .expect("scripted prefill result")
+    }
+
+    fn decode(&mut self, token_id: i32) -> Result<TokenResult, Self::Error> {
+        self.decode_inputs.push(token_id);
+        Err("single decode should not be used")
+    }
+
+    fn decode_greedy(
+        &mut self,
+        first_token_id: i32,
+        output_tokens: &mut [i32],
+    ) -> Result<TokenResult, Self::Error> {
+        self.batched_decode_inputs
+            .push((first_token_id, output_tokens.len()));
+        let (tokens, result) = self
+            .batched_decode_results
+            .pop_front()
+            .expect("scripted batched decode result")?;
+        assert_eq!(tokens.len(), output_tokens.len());
+        output_tokens.copy_from_slice(&tokens);
+        Ok(result)
     }
 }
 

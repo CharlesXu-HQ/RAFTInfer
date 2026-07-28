@@ -259,6 +259,34 @@ int main() {
   status = brt_session_decode(session, 7, nullptr);
   assert(status.code == BRT_STATUS_INVALID_ARGUMENT);
 
+  std::int32_t greedy_tokens[] = {777, 888};
+  BrtTokenResult greedy_result{.token_id = 123, .position = 456};
+  status =
+      brt_session_decode_greedy(nullptr, 7, greedy_tokens, 2, &greedy_result);
+  assert(status.code == BRT_STATUS_INVALID_ARGUMENT);
+  assert(greedy_tokens[0] == 777);
+  assert(greedy_tokens[1] == 888);
+  assert(greedy_result.token_id == 123);
+  assert(greedy_result.position == 456);
+
+  status = brt_session_decode_greedy(session, 7, nullptr, 2, &greedy_result);
+  assert(status.code == BRT_STATUS_INVALID_ARGUMENT);
+  assert(greedy_result.token_id == 123);
+  assert(greedy_result.position == 456);
+
+  status = brt_session_decode_greedy(session, 7, greedy_tokens, 0,
+                                     &greedy_result);
+  assert(status.code == BRT_STATUS_INVALID_ARGUMENT);
+  assert(greedy_tokens[0] == 777);
+  assert(greedy_tokens[1] == 888);
+  assert(greedy_result.token_id == 123);
+  assert(greedy_result.position == 456);
+
+  status = brt_session_decode_greedy(session, 7, greedy_tokens, 2, nullptr);
+  assert(status.code == BRT_STATUS_INVALID_ARGUMENT);
+  assert(greedy_tokens[0] == 777);
+  assert(greedy_tokens[1] == 888);
+
   status = brt_session_prefill(session, nullptr, 1, &result);
   assert(status.code == BRT_STATUS_INVALID_ARGUMENT);
   assert(result.token_id == 123);
