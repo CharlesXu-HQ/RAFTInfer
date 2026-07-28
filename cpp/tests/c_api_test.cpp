@@ -282,23 +282,32 @@ int main() {
   status = brt_session_diagnostics(session, nullptr);
   assert(status.code == BRT_STATUS_INVALID_ARGUMENT);
 #if BRT_TEST_CUDA_ENABLED
+  // The tiny ABI fixture is intentionally unsupported by the release online
+  // kernel shape; release-shape executor tests cover policy preservation.
   status = brt_session_diagnostics(session, &diagnostics);
   assert(status.code == BRT_STATUS_OK);
-  assert(diagnostics.attention == BRT_QWEN35_ATTENTION_ONLINE_TILED);
+  assert(diagnostics.attention ==
+         BRT_QWEN35_ATTENTION_MATERIALIZED_REFERENCE);
   assert(diagnostics.kv_cache_dtype == BRT_QWEN35_KV_CACHE_F32);
   assert(diagnostics.kv_cache_layout == BRT_QWEN35_KV_CACHE_LAYOUT_TOKEN_MAJOR);
-  assert(diagnostics.decode_graph_enabled == 1);
+  assert(diagnostics.decode_graph_enabled == 0);
   assert(diagnostics.decode_graph_captured == 0);
   assert(diagnostics.decode_graph_replayed == 0);
-  assert(diagnostics.attention_workspace_bytes == 0);
+  assert(diagnostics.attention_workspace_bytes > 0);
 
   BrtSessionDiagnostics explicit_diagnostics{};
   explicit_diagnostics.struct_size = sizeof(BrtSessionDiagnostics);
   status = brt_session_diagnostics(explicit_session, &explicit_diagnostics);
   assert(status.code == BRT_STATUS_OK);
-  assert(explicit_diagnostics.kv_cache_dtype == BRT_QWEN35_KV_CACHE_BF16);
+  assert(explicit_diagnostics.attention ==
+         BRT_QWEN35_ATTENTION_MATERIALIZED_REFERENCE);
+  assert(explicit_diagnostics.kv_cache_dtype == BRT_QWEN35_KV_CACHE_F32);
   assert(explicit_diagnostics.kv_cache_layout ==
-         BRT_QWEN35_KV_CACHE_LAYOUT_HEAD_MAJOR);
+         BRT_QWEN35_KV_CACHE_LAYOUT_TOKEN_MAJOR);
+  assert(explicit_diagnostics.decode_graph_enabled == 0);
+  assert(explicit_diagnostics.decode_graph_captured == 0);
+  assert(explicit_diagnostics.decode_graph_replayed == 0);
+  assert(explicit_diagnostics.attention_workspace_bytes > 0);
 
   status = brt_session_decode(session, token, &result);
   assert(status.code == BRT_STATUS_OK);
