@@ -7,14 +7,60 @@ trap 'rm -rf "${fixture_root}"' EXIT
 
 fake_bin="${fixture_root}/bin"
 mkdir -p "${fake_bin}"
-touch "${fixture_root}/brt.gguf" "${fixture_root}/llama.gguf"
-cat >"${fixture_root}/provenance.json" <<'EOF'
-{"schema_version":1,"conversion":{"outtype":"bf16"},"llama_cpp":{"reference_revision":"1234567890abcdef1234567890abcdef12345678"},"artifact":{"path":"/models/qwen35-bf16.gguf","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}
-EOF
-jq -nc '{schema_version:1,name:"one",parity_passed:true,prompt_token_ids:[10,11],generated_token_ids:[range(0;32)]}' >"${fixture_root}/parity.jsonl"
-jq -nc '{schema_version:1,name:"two",parity_passed:true,prompt_token_ids:[12,13],generated_token_ids:[range(32;64)]}' >>"${fixture_root}/parity.jsonl"
-jq -nc '{schema_version:1,name:"three",parity_passed:true,prompt_token_ids:[14,15],generated_token_ids:[range(64;96)]}' >>"${fixture_root}/parity.jsonl"
-jq -nc '{schema_version:1,name:"four",parity_passed:true,prompt_token_ids:[16,17],generated_token_ids:[range(96;128)]}' >>"${fixture_root}/parity.jsonl"
+printf 'same bf16 model bytes\n' >"${fixture_root}/brt.gguf"
+cp "${fixture_root}/brt.gguf" "${fixture_root}/llama.gguf"
+model_sha="$(shasum -a 256 "${fixture_root}/brt.gguf" | awk '{print $1}')"
+llama_revision="1234567890abcdef1234567890abcdef12345678"
+
+write_provenance() {
+  local artifact_sha="${1:-${model_sha}}"
+  local revision="${2:-${llama_revision}}"
+  jq -nc \
+    --arg artifact_sha "${artifact_sha}" \
+    --arg revision "${revision}" \
+    '{schema_version:1,conversion:{outtype:"bf16"},
+      llama_cpp:{reference_revision:$revision},
+      artifact:{path:"/models/qwen35-bf16.gguf",sha256:$artifact_sha}}' \
+    >"${fixture_root}/provenance.json"
+}
+
+write_parity() {
+  local attention="${1:-online_tiled}"
+  local dtype="${2:-bf16}"
+  local layout="${3:-head-major}"
+  local include_execution="${4:-1}"
+  : >"${fixture_root}/parity.jsonl"
+  for index in 0 1 2 3; do
+    start=$((index * 32))
+    end=$((start + 32))
+    if [[ "${include_execution}" -eq 1 ]]; then
+      jq -nc \
+        --arg name "case-${index}" \
+        --arg attention "${attention}" \
+        --arg dtype "${dtype}" \
+        --arg layout "${layout}" \
+        --argjson start "${start}" \
+        --argjson end "${end}" \
+        '{schema_version:1,name:$name,parity_passed:true,
+          prompt_token_ids:[10,11],generated_token_ids:[range($start;$end)],
+          execution:{attention:$attention,kv_cache_dtype:$dtype,
+            kv_cache_layout:$layout,decode_graph_enabled:true,
+            decode_graph_captured:false,decode_graph_replayed:false,
+            attention_workspace_bytes:0}}' >>"${fixture_root}/parity.jsonl"
+    else
+      jq -nc \
+        --arg name "case-${index}" \
+        --argjson start "${start}" \
+        --argjson end "${end}" \
+        '{schema_version:1,name:$name,parity_passed:true,
+          prompt_token_ids:[10,11],generated_token_ids:[range($start;$end)]}' \
+        >>"${fixture_root}/parity.jsonl"
+    fi
+  done
+}
+
+write_provenance
+write_parity
 
 cat >"${fake_bin}/gpu-preflight" <<'EOF'
 #!/usr/bin/env bash
@@ -35,6 +81,20 @@ EOF
 cat >"${fake_bin}/llama-server" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+if [[ "${1:-}" == "--version" ]]; then
+  case "${BRT_TEST_LLAMA_VERSION:-ok}" in
+    ok)
+      printf 'version: 1 (1234567)\n'
+      ;;
+    unknown)
+      printf 'llama.cpp build unknown\n'
+      ;;
+    wrong)
+      printf 'llama.cpp build ffffffffffff\n'
+      ;;
+  esac
+  exit 0
+fi
 trap 'exit 0' TERM INT
 while :; do
   sleep 1
@@ -111,13 +171,12 @@ else
 fi
 prefill_tps=$((prompt_tokens * 1000000 / prefill_median))
 generation_tps=$((128 * 1000000 / generation_median))
-printf '{"schema_version":1,"prompt_tokens":%s,"generated_tokens":128,"warmup_iterations":5,"measured_iterations":20,"peak_allocated_gpu_bytes":18000000000,"prefill":{"min_us":%s,"median_us":%s,"mean_us":%s,"p95_us":%s,"max_us":%s,"coefficient_of_variation":0.01,"tokens_per_second":%s},"generation":{"min_us":%s,"median_us":%s,"mean_us":%s,"p95_us":%s,"max_us":%s,"coefficient_of_variation":0.01,"tokens_per_second":%s},"execution":{"attention":"online_tiled","kv_cache_dtype":"%s","kv_cache_layout":"%s","decode_graph_captured":true,"decode_graph_replayed":true}}\n' \
-  "${prompt_tokens}" "${prefill_median}" "${prefill_median}" \
+printf '{"schema_version":1,"prompt_tokens":%s,"generated_tokens":128,"warmup_iterations":5,"measured_iterations":20,"peak_allocated_gpu_bytes":18000000000,"execution":{"attention":"online_tiled","kv_cache_dtype":"%s","kv_cache_layout":"%s","decode_graph_enabled":true,"decode_graph_captured":true,"decode_graph_replayed":true,"attention_workspace_bytes":0},"prefill":{"min_us":%s,"mean_us":%s,"median_us":%s,"p95_us":%s,"max_us":%s,"coefficient_of_variation":0.01,"tokens_per_second":%s},"generation":{"min_us":%s,"mean_us":%s,"median_us":%s,"p95_us":%s,"max_us":%s,"coefficient_of_variation":0.01,"tokens_per_second":%s}}\n' \
+  "${prompt_tokens}" "${kv_cache_dtype}" "${kv_cache_layout}" \
   "${prefill_median}" "${prefill_median}" "${prefill_median}" \
-  "${prefill_tps}" \
+  "${prefill_median}" "${prefill_median}" "${prefill_tps}" \
   "${generation_median}" "${generation_median}" "${generation_median}" \
-  "${generation_median}" "${generation_median}" "${generation_tps}" \
-  "${kv_cache_dtype}" "${kv_cache_layout}"
+  "${generation_median}" "${generation_median}" "${generation_tps}"
 EOF
 
 cat >"${fake_bin}/nvidia-smi" <<'EOF'
@@ -141,6 +200,7 @@ run_benchmark() {
     BRT_TEST_COMPLETION_LOG="${fixture_root}/completion.log" \
     BRT_TEST_BRT_ARG_LOG="${fixture_root}/brt-args.log" \
     BRT_TEST_SLOW="${BRT_TEST_SLOW:-0}" \
+    BRT_TEST_LLAMA_VERSION="${BRT_TEST_LLAMA_VERSION:-ok}" \
     BRT_KV_CACHE_DTYPE="bf16" \
     BRT_KV_CACHE_LAYOUT="head-major" \
     PARITY_REPORT="${fixture_root}/parity.jsonl" \
@@ -157,7 +217,7 @@ BRT_TEST_PREFLIGHT_FAIL_CALL=2 \
   run_benchmark
 
 [[ "$(wc -l <"${fixture_root}/benchmark.jsonl" | tr -d ' ')" -eq 3 ]]
-jq -e -s '
+jq -e -s --arg model_sha "${model_sha}" '
   length == 3 and
   ([.[].arm] == ["pp128","pp512","tg128_pp512"]) and
   ([.[].prompt_tokens] == [128,512,512]) and
@@ -166,10 +226,19 @@ jq -e -s '
     .measured_iterations == 20 and
     .provenance.weight_format == "bf16" and
     .provenance.llama_cpp_revision == "1234567890abcdef1234567890abcdef12345678" and
+    .provenance.artifact_sha256 == $model_sha and
+    .provenance.brt_model_sha256 == $model_sha and
+    .provenance.llama_model_sha256 == $model_sha and
+    (.provenance.llama_server_sha256 | type == "string" and length == 64) and
+    .provenance.llama_server_version == "version: 1 (1234567)" and
+    .provenance.llama_cpp_revision_verified == true and
     .parity.records == 4 and
     .parity.generated_tokens_per_record == 32 and
     .parity.exact_matches == 128 and
     .parity.passed == true and
+    .parity.execution.attention == "online_tiled" and
+    .parity.execution.kv_cache_dtype == "bf16" and
+    .parity.execution.kv_cache_layout == "head-major" and
     .execution.attention == "online_tiled" and
     .execution.kv_cache_dtype == "bf16" and
     .execution.kv_cache_layout == "head-major" and
@@ -186,6 +255,57 @@ jq -e -s '
 [[ "$(wc -l <"${fixture_root}/completion.log" | tr -d ' ')" -eq 75 ]]
 [[ "$(wc -l <"${fixture_root}/brt-args.log" | tr -d ' ')" -eq 3 ]]
 grep -F 'dtype=bf16 layout=head-major' "${fixture_root}/brt-args.log"
+
+printf 'different bytes\n' >"${fixture_root}/llama.gguf"
+set +e
+run_benchmark >"${fixture_root}/model-hash-stdout" \
+  2>"${fixture_root}/model-hash-stderr"
+model_hash_status=$?
+set -e
+[[ "${model_hash_status}" -eq 43 ]]
+grep -F 'model SHA256 does not match provenance artifact' \
+  "${fixture_root}/model-hash-stderr"
+cp "${fixture_root}/brt.gguf" "${fixture_root}/llama.gguf"
+
+write_parity online_tiled bf16 token-major
+set +e
+run_benchmark >"${fixture_root}/parity-policy-stdout" \
+  2>"${fixture_root}/parity-policy-stderr"
+parity_policy_status=$?
+set -e
+[[ "${parity_policy_status}" -eq 41 ]]
+grep -F 'parity execution does not match benchmark policy' \
+  "${fixture_root}/parity-policy-stderr"
+write_parity online_tiled bf16 head-major 0
+set +e
+run_benchmark >"${fixture_root}/parity-missing-stdout" \
+  2>"${fixture_root}/parity-missing-stderr"
+parity_missing_status=$?
+set -e
+[[ "${parity_missing_status}" -eq 41 ]]
+grep -F 'parity execution diagnostics are missing' \
+  "${fixture_root}/parity-missing-stderr"
+write_parity
+
+set +e
+BRT_TEST_LLAMA_VERSION=unknown run_benchmark \
+  >"${fixture_root}/llama-version-unknown-stdout" \
+  2>"${fixture_root}/llama-version-unknown-stderr"
+llama_unknown_status=$?
+set -e
+[[ "${llama_unknown_status}" -eq 43 ]]
+grep -F 'llama-server --version did not verify pinned revision' \
+  "${fixture_root}/llama-version-unknown-stderr"
+
+set +e
+BRT_TEST_LLAMA_VERSION=wrong run_benchmark \
+  >"${fixture_root}/llama-version-wrong-stdout" \
+  2>"${fixture_root}/llama-version-wrong-stderr"
+llama_wrong_status=$?
+set -e
+[[ "${llama_wrong_status}" -eq 43 ]]
+grep -F 'llama-server --version did not verify pinned revision' \
+  "${fixture_root}/llama-version-wrong-stderr"
 
 set +e
 BRT_TEST_SLOW=1 run_benchmark \

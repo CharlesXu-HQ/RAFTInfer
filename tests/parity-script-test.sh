@@ -80,15 +80,34 @@ while [[ "$#" -gt 0 ]]; do
 done
 printf 'dtype=%s layout=%s\n' "${kv_cache_dtype}" "${kv_cache_layout}" \
   >>"${BRT_TEST_BRT_ARG_LOG}"
+resolved_dtype="${BRT_TEST_RESOLVED_DTYPE:-${kv_cache_dtype:-f32}}"
+resolved_layout="${BRT_TEST_RESOLVED_LAYOUT:-${kv_cache_layout:-token-major}}"
+resolved_attention="${BRT_TEST_RESOLVED_ATTENTION:-online_tiled}"
+execution_json="$(jq -nc \
+  --arg attention "${resolved_attention}" \
+  --arg dtype "${resolved_dtype}" \
+  --arg layout "${resolved_layout}" \
+  '{attention:$attention,kv_cache_dtype:$dtype,kv_cache_layout:$layout,
+    decode_graph_enabled:true,decode_graph_captured:false,
+    decode_graph_replayed:false,attention_workspace_bytes:0}')"
 case "${BRT_TEST_MISMATCH:-0}" in
+  missing_execution)
+    printf '{"schema_version":1,"prompt_token_ids":[10,11],"generated_token_ids":[20,21],"text":"x"}\n'
+    ;;
   1)
-    printf '{"schema_version":1,"prompt_token_ids":[10,11],"generated_token_ids":[20,22],"text":"x"}\n'
+    jq -nc --argjson execution "${execution_json}" \
+      '{schema_version:1,prompt_token_ids:[10,11],generated_token_ids:[20,22],
+        text:"x",execution:$execution}'
     ;;
   short)
-    printf '{"schema_version":1,"prompt_token_ids":[10,11],"generated_token_ids":[20],"text":"x"}\n'
+    jq -nc --argjson execution "${execution_json}" \
+      '{schema_version:1,prompt_token_ids:[10,11],generated_token_ids:[20],
+        text:"x",execution:$execution}'
     ;;
   *)
-    printf '{"schema_version":1,"prompt_token_ids":[10,11],"generated_token_ids":[20,21],"text":"x"}\n'
+    jq -nc --argjson execution "${execution_json}" \
+      '{schema_version:1,prompt_token_ids:[10,11],generated_token_ids:[20,21],
+        text:"x",execution:$execution}'
     ;;
 esac
 EOF
@@ -107,6 +126,9 @@ run_parity() {
     BRT_TEST_PREFLIGHT_FAIL_CALL="${BRT_TEST_PREFLIGHT_FAIL_CALL:-0}" \
     BRT_TEST_BRT_ARG_LOG="${fixture_root}/brt-args.log" \
     BRT_TEST_MISMATCH="${BRT_TEST_MISMATCH:-0}" \
+    BRT_TEST_RESOLVED_DTYPE="${BRT_TEST_RESOLVED_DTYPE:-}" \
+    BRT_TEST_RESOLVED_LAYOUT="${BRT_TEST_RESOLVED_LAYOUT:-}" \
+    BRT_TEST_RESOLVED_ATTENTION="${BRT_TEST_RESOLVED_ATTENTION:-}" \
     PARITY_OUTPUT="${fixture_root}/parity.jsonl" \
     "${repo_root}/scripts/qwen35-parity.sh"
 }
@@ -117,6 +139,10 @@ run_parity
 
 [[ "$(wc -l <"${fixture_root}/parity.jsonl" | tr -d ' ')" -eq 4 ]]
 jq -e -s 'length == 4 and all(.[]; .parity_passed == true)' \
+  "${fixture_root}/parity.jsonl" >/dev/null
+jq -e -s 'all(.[]; .execution.attention == "online_tiled" and
+  .execution.kv_cache_dtype == "f32" and
+  .execution.kv_cache_layout == "token-major")' \
   "${fixture_root}/parity.jsonl" >/dev/null
 [[ "$(wc -l <"${fixture_root}/preflight.log" | tr -d ' ')" -eq 5 ]]
 [[ "$(wc -l <"${fixture_root}/brt-args.log" | tr -d ' ')" -eq 4 ]]
@@ -129,6 +155,34 @@ BRT_KV_CACHE_DTYPE=bf16 \
   run_parity
 [[ "$(wc -l <"${fixture_root}/brt-args.log" | tr -d ' ')" -eq 4 ]]
 grep -Fx 'dtype=bf16 layout=head-major' "${fixture_root}/brt-args.log"
+jq -e -s 'all(.[]; .execution.attention == "online_tiled" and
+  .execution.kv_cache_dtype == "bf16" and
+  .execution.kv_cache_layout == "head-major")' \
+  "${fixture_root}/parity.jsonl" >/dev/null
+
+set +e
+BRT_KV_CACHE_DTYPE=bf16 \
+  BRT_KV_CACHE_LAYOUT=head-major \
+  BRT_TEST_RESOLVED_LAYOUT=token-major \
+  run_parity >"${fixture_root}/resolved-mismatch-stdout" \
+  2>"${fixture_root}/resolved-mismatch-stderr"
+resolved_mismatch_status=$?
+set -e
+[[ "${resolved_mismatch_status}" -eq 44 ]]
+grep -F 'resolved execution policy does not match requested policy' \
+  "${fixture_root}/resolved-mismatch-stderr"
+
+set +e
+BRT_KV_CACHE_DTYPE=bf16 \
+  BRT_KV_CACHE_LAYOUT=head-major \
+  BRT_TEST_MISMATCH=missing_execution \
+  run_parity >"${fixture_root}/missing-execution-stdout" \
+  2>"${fixture_root}/missing-execution-stderr"
+missing_execution_status=$?
+set -e
+[[ "${missing_execution_status}" -eq 44 ]]
+grep -F 'resolved execution diagnostics are missing' \
+  "${fixture_root}/missing-execution-stderr"
 
 set +e
 BRT_KV_CACHE_DTYPE=bad run_parity \
@@ -165,7 +219,8 @@ grep -F 'generated token mismatch at index 1: expected=21 actual=22' \
   "${fixture_root}/mismatch-stderr"
 jq -e -s 'length == 1 and .[0].parity_passed == false and
   .[0].mismatch.kind == "generated" and .[0].mismatch.index == 1 and
-  .[0].mismatch.expected == 21 and .[0].mismatch.actual == 22' \
+  .[0].mismatch.expected == 21 and .[0].mismatch.actual == 22 and
+  .[0].execution.attention == "online_tiled"' \
   "${fixture_root}/parity.jsonl" >/dev/null
 
 set +e

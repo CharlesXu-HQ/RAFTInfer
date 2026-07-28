@@ -232,6 +232,22 @@ display_token() {
   fi
 }
 
+validate_resolved_execution() {
+  local execution="$1"
+  if [[ -n "${kv_cache_dtype}" ]] &&
+    ! "${jq_bin}" -e --arg dtype "${kv_cache_dtype}" \
+      '.kv_cache_dtype == $dtype' <<<"${execution}" >/dev/null; then
+    printf 'qwen35-parity: resolved execution policy does not match requested policy\n' >&2
+    exit 44
+  fi
+  if [[ -n "${kv_cache_layout}" ]] &&
+    ! "${jq_bin}" -e --arg layout "${kv_cache_layout}" \
+      '.kv_cache_layout == $layout' <<<"${execution}" >/dev/null; then
+    printf 'qwen35-parity: resolved execution policy does not match requested policy\n' >&2
+    exit 44
+  fi
+}
+
 while IFS= read -r reference_line || [[ -n "${reference_line}" ]]; do
   [[ -n "${reference_line}" ]] || continue
   name="$("${jq_bin}" -r '.name' <<<"${reference_line}")"
@@ -249,6 +265,17 @@ while IFS= read -r reference_line || [[ -n "${reference_line}" ]]; do
     --context "${context_tokens}" \
     ${brt_policy_args[@]+"${brt_policy_args[@]}"} \
     --output-format json)"
+  if ! brt_execution="$("${jq_bin}" -ec '
+    .execution |
+    select(type == "object" and
+      .attention == "online_tiled" and
+      (.kv_cache_dtype | type == "string" and length > 0) and
+      (.kv_cache_layout | type == "string" and length > 0))
+  ' <<<"${brt_response}")"; then
+    printf 'qwen35-parity: resolved execution diagnostics are missing\n' >&2
+    exit 44
+  fi
+  validate_resolved_execution "${brt_execution}"
   actual_prompt="$("${jq_bin}" -ec '
     .prompt_token_ids | select(type == "array" and all(.[]; type == "number"))
   ' <<<"${brt_response}")"
@@ -287,6 +314,7 @@ while IFS= read -r reference_line || [[ -n "${reference_line}" ]]; do
       --argjson index "${mismatch_index}" \
       --argjson expected "${expected_token_json}" \
       --argjson actual "${actual_token_json}" \
+      --argjson execution "${brt_execution}" \
       '{
         schema_version:1,
         name:$name,
@@ -296,6 +324,7 @@ while IFS= read -r reference_line || [[ -n "${reference_line}" ]]; do
         brt_prompt_token_ids:$brt_prompt_token_ids,
         reference_generated_token_ids:$reference_generated_token_ids,
         brt_generated_token_ids:$brt_generated_token_ids,
+        execution:$execution,
         mismatch:{kind:$kind,index:$index,expected:$expected,actual:$actual},
         diagnostic:"token-id mismatch; block/logit diagnostics unavailable through the stable C ABI"
       }' >>"${output}"
@@ -310,6 +339,7 @@ while IFS= read -r reference_line || [[ -n "${reference_line}" ]]; do
     --arg prompt "${prompt}" \
     --argjson prompt_token_ids "${actual_prompt}" \
     --argjson generated_token_ids "${actual_generated}" \
+    --argjson execution "${brt_execution}" \
     '{
       schema_version:1,
       name:$name,
@@ -317,6 +347,7 @@ while IFS= read -r reference_line || [[ -n "${reference_line}" ]]; do
       parity_passed:true,
       prompt_token_ids:$prompt_token_ids,
       generated_token_ids:$generated_token_ids,
+      execution:$execution,
       mismatch:null
     }' >>"${output}"
 done <"${reference_file}"

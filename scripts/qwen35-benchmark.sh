@@ -30,6 +30,14 @@ fail_usage() {
   exit 2
 }
 
+sha256_file() {
+  if command -v shasum >/dev/null; then
+    shasum -a 256 "$1" | awk '{print $1}'
+  else
+    sha256sum "$1" | awk '{print $1}'
+  fi
+}
+
 [[ -n "${brt_model}" ]] || fail_usage "BRT_MODEL is required"
 [[ -f "${brt_model}" ]] || fail_usage "BRT_MODEL does not exist: ${brt_model}"
 [[ -f "${llama_model}" ]] || fail_usage "LLAMA_MODEL does not exist: ${llama_model}"
@@ -84,6 +92,36 @@ if ! "${jq_bin}" -e -s '
   printf 'qwen35-benchmark: parity report is not fully passing\n' >&2
   exit 41
 fi
+if ! "${jq_bin}" -e -s '
+  all(.[]; .execution | type == "object" and
+    (.attention | type == "string" and length > 0) and
+    (.kv_cache_dtype | type == "string" and length > 0) and
+    (.kv_cache_layout | type == "string" and length > 0))
+' "${parity_report}" >/dev/null; then
+  printf 'qwen35-benchmark: parity execution diagnostics are missing\n' >&2
+  exit 41
+fi
+if ! parity_execution="$("${jq_bin}" -ecs '
+  [.[].execution] as $executions |
+  if (($executions | unique | length) == 1) then
+    $executions[0]
+  else
+    empty
+  end
+' "${parity_report}")"; then
+  printf 'qwen35-benchmark: parity execution diagnostics are inconsistent\n' >&2
+  exit 41
+fi
+if ! "${jq_bin}" -e \
+  --arg dtype "${kv_cache_dtype}" \
+  --arg layout "${kv_cache_layout}" '
+    .attention == "online_tiled" and
+    .kv_cache_dtype == $dtype and
+    .kv_cache_layout == $layout
+  ' <<<"${parity_execution}" >/dev/null; then
+  printf 'qwen35-benchmark: parity execution does not match benchmark policy\n' >&2
+  exit 41
+fi
 
 if ! "${jq_bin}" -e '
   .schema_version == 1 and
@@ -97,23 +135,54 @@ if ! "${jq_bin}" -e '
   exit 43
 fi
 
-provenance_sha="$(
-  if command -v shasum >/dev/null; then
-    shasum -a 256 "${provenance_json}" | awk '{print $1}'
-  else
-    sha256sum "${provenance_json}" | awk '{print $1}'
-  fi
-)"
+artifact_sha="$("${jq_bin}" -er '.artifact.sha256' "${provenance_json}")"
+brt_model_sha="$(sha256_file "${brt_model}")"
+llama_model_sha="$(sha256_file "${llama_model}")"
+llama_server_sha="$(sha256_file "${llama_server}")"
+if [[ "${brt_model_sha}" != "${artifact_sha}" ||
+      "${llama_model_sha}" != "${artifact_sha}" ]]; then
+  printf 'qwen35-benchmark: model SHA256 does not match provenance artifact\n' >&2
+  exit 43
+fi
+llama_revision="$("${jq_bin}" -er '.llama_cpp.reference_revision' \
+  "${provenance_json}")"
+llama_revision_short="${llama_revision:0:7}"
+llama_server_dir="$(dirname "${llama_server}")"
+if ! llama_server_version="$(
+  LD_LIBRARY_PATH="${llama_server_dir}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" \
+    "${llama_server}" --version 2>&1
+)"; then
+  printf 'qwen35-benchmark: llama-server --version failed\n' >&2
+  exit 43
+fi
+llama_server_version="${llama_server_version//$'\r'/}"
+llama_server_version="${llama_server_version%$'\n'}"
+if [[ -z "${llama_server_version}" ||
+      "${llama_server_version}" == *unknown* ||
+      "${llama_server_version}" != *"${llama_revision_short}"* ]]; then
+  printf 'qwen35-benchmark: llama-server --version did not verify pinned revision\n' >&2
+  exit 43
+fi
+provenance_sha="$(sha256_file "${provenance_json}")"
 provenance_payload="$("${jq_bin}" -c \
   --arg path "${provenance_json}" \
-  --arg sha "${provenance_sha}" '
+  --arg sha "${provenance_sha}" \
+  --arg brt_model_sha "${brt_model_sha}" \
+  --arg llama_model_sha "${llama_model_sha}" \
+  --arg llama_server_sha "${llama_server_sha}" \
+  --arg llama_server_version "${llama_server_version}" '
     {
       path:$path,
       sha256:$sha,
       weight_format:.conversion.outtype,
       llama_cpp_revision:.llama_cpp.reference_revision,
       model_revision:.model.revision,
-      artifact_sha256:.artifact.sha256
+      artifact_sha256:.artifact.sha256,
+      brt_model_sha256:$brt_model_sha,
+      llama_model_sha256:$llama_model_sha,
+      llama_server_sha256:$llama_server_sha,
+      llama_server_version:$llama_server_version,
+      llama_cpp_revision_verified:true
     }
   ' "${provenance_json}")"
 parity_payload="$("${jq_bin}" -cs '
@@ -122,7 +191,8 @@ parity_payload="$("${jq_bin}" -cs '
     generated_tokens_per_record:32,
     exact_matches:([.[].generated_token_ids | length] | add),
     passed:(length == 4 and all(.[]; .parity_passed == true and
-      (.generated_token_ids | length == 32)))
+      (.generated_token_ids | length == 32))),
+    execution:.[0].execution
   }
 ' "${parity_report}")"
 base_tokens="$("${jq_bin}" -cs '[.[].prompt_token_ids[]]' "${parity_report}")"
@@ -175,6 +245,8 @@ for arm_spec in pp128:128 pp512:512 tg128_pp512:512; do
     --iterations "${measured_iterations}")"
   if ! "${jq_bin}" -e \
     --arg arm "${arm}" \
+    --arg dtype "${kv_cache_dtype}" \
+    --arg layout "${kv_cache_layout}" \
     --argjson prompt_count "${prompt_count}" \
     --argjson generated_tokens "${generated_tokens}" \
     --argjson warmups "${warmup_iterations}" \
@@ -187,12 +259,14 @@ for arm_spec in pp128:128 pp512:512 tg128_pp512:512; do
       (.peak_allocated_gpu_bytes |
         type == "number" and . > 0 and floor == .) and
       (.prefill.median_us | type == "number" and . > 0) and
+      (.prefill.mean_us | type == "number" and isfinite and . > 0) and
       (.prefill.coefficient_of_variation | type == "number" and isfinite and . >= 0) and
       (.generation.median_us | type == "number" and . > 0) and
+      (.generation.mean_us | type == "number" and isfinite and . > 0) and
       (.generation.coefficient_of_variation | type == "number" and isfinite and . >= 0) and
       .execution.attention == "online_tiled" and
-      (.execution.kv_cache_dtype | type == "string" and length > 0) and
-      (.execution.kv_cache_layout | type == "string" and length > 0) and
+      .execution.kv_cache_dtype == $dtype and
+      .execution.kv_cache_layout == $layout and
       (if $arm == "tg128_pp512" then
          .execution.decode_graph_replayed == true
        else true end)
@@ -355,6 +429,15 @@ for arm in pp128 pp512 tg128_pp512; do
   brt_result="$("${jq_bin}" -ec \
     --arg arm "${arm}" \
     'select(.arm == $arm)' "${brt_results}")"
+  if ! "${jq_bin}" -e \
+    --argjson parity_execution "${parity_execution}" \
+    '.execution.attention == $parity_execution.attention and
+     .execution.kv_cache_dtype == $parity_execution.kv_cache_dtype and
+     .execution.kv_cache_layout == $parity_execution.kv_cache_layout' \
+    <<<"${brt_result}" >/dev/null; then
+    printf 'qwen35-benchmark: BRT benchmark execution does not match parity execution\n' >&2
+    exit 32
+  fi
   llama_result="$("${jq_bin}" -ec \
     --arg arm "${arm}" \
     'select(.arm == $arm)' "${llama_results}")"

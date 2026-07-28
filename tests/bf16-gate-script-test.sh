@@ -48,13 +48,28 @@ write_pass_fixture() {
             path:"/evidence/qwen35-bf16.provenance.json",
             sha256:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             weight_format:"bf16",
-            llama_cpp_revision:"1234567890abcdef1234567890abcdef12345678"
+            llama_cpp_revision:"1234567890abcdef1234567890abcdef12345678",
+            artifact_sha256:"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            brt_model_sha256:"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            llama_model_sha256:"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            llama_server_sha256:"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            llama_server_version:"llama.cpp build 1234567890ab",
+            llama_cpp_revision_verified:true
           },
           parity:{
             records:4,
             generated_tokens_per_record:32,
             exact_matches:128,
-            passed:true
+            passed:true,
+            execution:{
+              attention:"online_tiled",
+              kv_cache_dtype:"bf16",
+              kv_cache_layout:"head-major",
+              decode_graph_enabled:true,
+              decode_graph_captured:false,
+              decode_graph_replayed:false,
+              attention_workspace_bytes:0
+            }
           },
           execution:{
             attention:"online_tiled",
@@ -204,9 +219,21 @@ expect_fail missing_graph_replay \
 expect_fail bad_parity \
   'if .arm == "pp128" then .parity.exact_matches = 127 else . end' \
   'exact parity'
+expect_fail missing_parity_execution \
+  'if .arm == "pp128" then del(.parity.execution) else . end' \
+  'parity execution'
+expect_fail parity_execution_mismatch \
+  'if .arm == "pp128" then .parity.execution.kv_cache_layout = "token-major" else . end' \
+  'parity execution'
 expect_fail missing_llama_revision \
   'if .arm == "pp128" then .provenance.llama_cpp_revision = "" else . end' \
   'llama.cpp revision'
+expect_fail model_hash_mismatch \
+  'if .arm == "pp128" then .provenance.llama_model_sha256 = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd" else . end' \
+  'model SHA256'
+expect_fail llama_version_unverified \
+  'if .arm == "pp128" then .provenance.llama_cpp_revision_verified = false else . end' \
+  'llama-server version'
 expect_fail few_warmups \
   'if .arm == "pp128" then .warmup_iterations = 2 else . end' \
   'warmups'

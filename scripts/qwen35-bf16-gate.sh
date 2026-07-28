@@ -84,6 +84,23 @@ check '
 ' "pinned llama.cpp revision is required"
 
 check '
+  all(.[]; (.provenance.artifact_sha256 | type == "string" and
+             test("^[0-9a-fA-F]{64}$")) and
+           .provenance.brt_model_sha256 == .provenance.artifact_sha256 and
+           .provenance.llama_model_sha256 == .provenance.artifact_sha256)
+' "measured model SHA256 must match provenance artifact SHA256"
+
+check '
+  all(.[]; (.provenance.llama_server_sha256 | type == "string" and
+             test("^[0-9a-fA-F]{64}$")) and
+           (.provenance.llama_server_version | type == "string" and
+             length > 0) and
+           (.provenance.llama_cpp_revision[0:7]) as $revision_short |
+           (.provenance.llama_server_version | contains($revision_short)) and
+           .provenance.llama_cpp_revision_verified == true)
+' "llama-server version must verify pinned revision"
+
+check '
   all(.[]; .parity.records == 4 and
            .parity.generated_tokens_per_record == 32 and
            .parity.exact_matches == 128 and
@@ -97,16 +114,21 @@ check '
 
 check '
   all(.[]; (.execution.kv_cache_dtype | type == "string" and
-             (. == "f32" or . == "bf16")) and
+             . == "bf16") and
            .brt.execution.kv_cache_dtype == .execution.kv_cache_dtype)
 ' "resolved kv_cache_dtype must be disclosed"
 
 check '
   all(.[]; (.execution.kv_cache_layout | type == "string" and
-             (. == "token-major" or . == "head-major" or
-              . == "token_major" or . == "head_major")) and
+             (. == "head-major")) and
            .brt.execution.kv_cache_layout == .execution.kv_cache_layout)
 ' "resolved kv_cache_layout must be disclosed"
+
+check '
+  all(.[]; .parity.execution.attention == .execution.attention and
+           .parity.execution.kv_cache_dtype == .execution.kv_cache_dtype and
+           .parity.execution.kv_cache_layout == .execution.kv_cache_layout)
+' "parity execution must match benchmark execution"
 
 check '
   all(.[]; if .arm == "tg128_pp512" then
