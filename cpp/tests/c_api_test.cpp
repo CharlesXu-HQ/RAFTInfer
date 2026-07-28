@@ -222,7 +222,6 @@ int main() {
       brt_engine_peak_allocated_gpu_bytes(engine, &peak_allocated_bytes);
   assert(status.code == BRT_STATUS_OK);
   assert(peak_allocated_bytes > model_peak_allocated_bytes);
-  const std::uint64_t session_peak_allocated_bytes = peak_allocated_bytes;
 #endif
 
   BrtQwen35ExecutionPolicy explicit_policy{};
@@ -240,6 +239,13 @@ int main() {
   status = brt_session_create(model, &explicit_session_config, &explicit_session);
   assert(status.code == BRT_STATUS_OK);
   assert(explicit_session != nullptr);
+#if BRT_TEST_CUDA_ENABLED
+  status =
+      brt_engine_peak_allocated_gpu_bytes(engine, &peak_allocated_bytes);
+  assert(status.code == BRT_STATUS_OK);
+  assert(peak_allocated_bytes > model_peak_allocated_bytes);
+  const std::uint64_t session_peak_allocated_bytes = peak_allocated_bytes;
+#endif
 
   brt_model_destroy(model);
   model = nullptr;
