@@ -684,7 +684,7 @@ public:
     try {
       if (can_replay_decode_graph()) {
         *host_decode_token_ = token;
-        decode_graph_->replay();
+        decode_graph_->replay_on_current_device();
         check_cuda(cudaStreamSynchronize(context_.stream()),
                    "Qwen3.5 decode graph synchronization failed");
         decode_graph_replayed_ = true;

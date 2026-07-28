@@ -13,6 +13,10 @@ void check_cuda(cudaError_t status, const char *operation) {
   }
 }
 
+void launch_graph(cudaGraphExec_t exec, cudaStream_t stream) {
+  check_cuda(cudaGraphLaunch(exec, stream), "launch failed");
+}
+
 } // namespace
 
 CudaGraphDecode::CudaGraphDecode(int device_id, cudaStream_t stream)
@@ -63,7 +67,13 @@ void CudaGraphDecode::replay() {
   if (!captured())
     throw std::runtime_error("CUDA graph decode has not been captured");
   check_cuda(cudaSetDevice(device_id_), "device selection failed");
-  check_cuda(cudaGraphLaunch(exec_, stream_), "launch failed");
+  launch_graph(exec_, stream_);
+}
+
+void CudaGraphDecode::replay_on_current_device() {
+  if (!captured())
+    throw std::runtime_error("CUDA graph decode has not been captured");
+  launch_graph(exec_, stream_);
 }
 
 void CudaGraphDecode::reset() noexcept {

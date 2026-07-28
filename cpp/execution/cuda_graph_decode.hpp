@@ -15,6 +15,7 @@ public:
 
   void capture(CaptureBody body);
   void replay();
+  void replay_on_current_device();
   void reset() noexcept;
   bool captured() const noexcept;
 

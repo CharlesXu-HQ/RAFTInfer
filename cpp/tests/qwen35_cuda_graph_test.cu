@@ -62,7 +62,7 @@ void run_graph_raii_tests() {
   require_cuda(cudaStreamSynchronize(stream));
   assert(*host_output == 35);
   *host_input = 5;
-  graph.replay();
+  graph.replay_on_current_device();
   require_cuda(cudaStreamSynchronize(stream));
   assert(*host_output == 56);
 
