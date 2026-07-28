@@ -343,7 +343,7 @@ fn run_generate(arguments: GenerateArguments) -> Result<(), Box<dyn std::error::
     )?;
     match arguments.output_format {
         OutputFormat::Text => print!("{}", output.text),
-        OutputFormat::Json => print!("{}", generation_json(&output)),
+        OutputFormat::Json => print!("{}", generation_json(&output, session.diagnostics()?)),
     }
     Ok(())
 }
@@ -409,6 +409,7 @@ fn run_benchmark(arguments: BenchmarkArguments) -> Result<(), Box<dyn std::error
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct LatencySummary {
     min_us: f64,
+    mean_us: f64,
     median_us: f64,
     p95_us: f64,
     max_us: f64,
@@ -442,6 +443,7 @@ impl LatencySummary {
         let p95_index = (95 * values.len()).div_ceil(100) - 1;
         Self {
             min_us: values[0] as f64,
+            mean_us,
             median_us,
             p95_us: values[p95_index] as f64,
             max_us: values[values.len() - 1] as f64,
@@ -475,10 +477,10 @@ fn benchmark_json(benchmark: &BenchmarkOutput) -> String {
          \"kv_cache_layout\":\"{}\",\"decode_graph_enabled\":{},\
          \"decode_graph_captured\":{},\"decode_graph_replayed\":{},\
          \"attention_workspace_bytes\":{}}},\
-         \"prefill\":{{\"min_us\":{},\"median_us\":{},\"p95_us\":{},\"max_us\":{},\
+         \"prefill\":{{\"min_us\":{},\"mean_us\":{},\"median_us\":{},\"p95_us\":{},\"max_us\":{},\
          \"coefficient_of_variation\":{},\
          \"tokens_per_second\":{}}},\
-         \"generation\":{{\"min_us\":{},\"median_us\":{},\"p95_us\":{},\"max_us\":{},\
+         \"generation\":{{\"min_us\":{},\"mean_us\":{},\"median_us\":{},\"p95_us\":{},\"max_us\":{},\
          \"coefficient_of_variation\":{},\
          \"tokens_per_second\":{}}}}}\n",
         benchmark.prompt_tokens,
@@ -494,12 +496,14 @@ fn benchmark_json(benchmark: &BenchmarkOutput) -> String {
         benchmark.execution.decode_graph_replayed,
         benchmark.execution.attention_workspace_bytes,
         benchmark.prefill.min_us,
+        benchmark.prefill.mean_us,
         benchmark.prefill.median_us,
         benchmark.prefill.p95_us,
         benchmark.prefill.max_us,
         benchmark.prefill.coefficient_of_variation,
         prefill_tokens_per_second,
         benchmark.generation.min_us,
+        benchmark.generation.mean_us,
         benchmark.generation.median_us,
         benchmark.generation.p95_us,
         benchmark.generation.max_us,
@@ -529,15 +533,36 @@ fn kv_cache_layout_name(value: KvCacheLayout) -> &'static str {
     }
 }
 
-fn generation_json(generation: &ChatGeneration) -> String {
+fn generation_json(generation: &ChatGeneration, execution: ExecutionDiagnostics) -> String {
     let mut output = String::from("{\"schema_version\":1,\"prompt_token_ids\":[");
     append_token_ids(&mut output, &generation.prompt_token_ids);
     output.push_str("],\"generated_token_ids\":[");
     append_token_ids(&mut output, &generation.generated_token_ids);
     output.push_str("],\"text\":");
     append_json_string(&mut output, &generation.text);
+    output.push_str(",\"execution\":");
+    append_execution_json(&mut output, execution);
     output.push_str("}\n");
     output
+}
+
+fn append_execution_json(output: &mut String, execution: ExecutionDiagnostics) {
+    output.push_str("{\"attention\":\"");
+    output.push_str(attention_name(execution.attention));
+    output.push_str("\",\"kv_cache_dtype\":\"");
+    output.push_str(kv_cache_dtype_name(execution.kv_cache_dtype));
+    output.push_str("\",\"kv_cache_layout\":\"");
+    output.push_str(kv_cache_layout_name(execution.kv_cache_layout));
+    output.push_str("\",\"decode_graph_enabled\":");
+    write!(output, "{}", execution.decode_graph_enabled).expect("writing to a String cannot fail");
+    output.push_str(",\"decode_graph_captured\":");
+    write!(output, "{}", execution.decode_graph_captured).expect("writing to a String cannot fail");
+    output.push_str(",\"decode_graph_replayed\":");
+    write!(output, "{}", execution.decode_graph_replayed).expect("writing to a String cannot fail");
+    output.push_str(",\"attention_workspace_bytes\":");
+    write!(output, "{}", execution.attention_workspace_bytes)
+        .expect("writing to a String cannot fail");
+    output.push('}');
 }
 
 fn append_token_ids(output: &mut String, token_ids: &[i32]) {
@@ -580,16 +605,53 @@ mod tests {
 
     #[test]
     fn generation_json_preserves_token_ids_and_escapes_text() {
-        let output = generation_json(&ChatGeneration {
-            prompt_token_ids: vec![10, 11],
-            generated_token_ids: vec![20, 21],
-            text: "line\n\"quoted\"\\tail".to_owned(),
-        });
+        let output = generation_json(
+            &ChatGeneration {
+                prompt_token_ids: vec![10, 11],
+                generated_token_ids: vec![20, 21],
+                text: "line\n\"quoted\"\\tail".to_owned(),
+            },
+            default_execution(),
+        );
 
         assert_eq!(
             output,
             "{\"schema_version\":1,\"prompt_token_ids\":[10,11],\
-             \"generated_token_ids\":[20,21],\"text\":\"line\\n\\\"quoted\\\"\\\\tail\"}\n"
+             \"generated_token_ids\":[20,21],\"text\":\"line\\n\\\"quoted\\\"\\\\tail\",\
+             \"execution\":{\"attention\":\"online_tiled\",\"kv_cache_dtype\":\"f32\",\
+             \"kv_cache_layout\":\"token-major\",\"decode_graph_enabled\":true,\
+             \"decode_graph_captured\":false,\"decode_graph_replayed\":false,\
+             \"attention_workspace_bytes\":0}}\n"
+        );
+    }
+
+    #[test]
+    fn generation_json_reports_explicit_resolved_execution_policy() {
+        let output = generation_json(
+            &ChatGeneration {
+                prompt_token_ids: vec![10],
+                generated_token_ids: vec![20],
+                text: "ok".to_owned(),
+            },
+            ExecutionDiagnostics {
+                attention: Qwen35AttentionImplementation::MaterializedReference,
+                kv_cache_dtype: KvCacheDType::Bf16,
+                kv_cache_layout: KvCacheLayout::HeadMajor,
+                decode_graph_enabled: false,
+                decode_graph_captured: false,
+                decode_graph_replayed: false,
+                attention_workspace_bytes: 65_536,
+            },
+        );
+
+        assert_eq!(
+            output,
+            "{\"schema_version\":1,\"prompt_token_ids\":[10],\
+             \"generated_token_ids\":[20],\"text\":\"ok\",\
+             \"execution\":{\"attention\":\"materialized_reference\",\
+             \"kv_cache_dtype\":\"bf16\",\"kv_cache_layout\":\"head-major\",\
+             \"decode_graph_enabled\":false,\"decode_graph_captured\":false,\
+             \"decode_graph_replayed\":false,\"attention_workspace_bytes\":65536}}\n"
         );
     }
 
@@ -601,6 +663,7 @@ mod tests {
             summary,
             LatencySummary {
                 min_us: 10.0,
+                mean_us: 25.0,
                 median_us: 25.0,
                 p95_us: 40.0,
                 max_us: 40.0,
@@ -628,6 +691,7 @@ mod tests {
             },
             prefill: LatencySummary {
                 min_us: 900.0,
+                mean_us: 1_000.0,
                 median_us: 1_000.0,
                 p95_us: 1_100.0,
                 max_us: 1_200.0,
@@ -635,6 +699,7 @@ mod tests {
             },
             generation: LatencySummary {
                 min_us: 1_900.0,
+                mean_us: 2_000.0,
                 median_us: 2_000.0,
                 p95_us: 2_100.0,
                 max_us: 2_200.0,
@@ -651,12 +716,24 @@ mod tests {
              \"kv_cache_layout\":\"head-major\",\"decode_graph_enabled\":true,\
              \"decode_graph_captured\":true,\"decode_graph_replayed\":true,\
              \"attention_workspace_bytes\":2097152},\
-             \"prefill\":{\"min_us\":900,\"median_us\":1000,\"p95_us\":1100,\
+             \"prefill\":{\"min_us\":900,\"mean_us\":1000,\"median_us\":1000,\"p95_us\":1100,\
              \"max_us\":1200,\"coefficient_of_variation\":0.11180339887498948,\
              \"tokens_per_second\":128000},\
-             \"generation\":{\"min_us\":1900,\"median_us\":2000,\"p95_us\":2100,\
+             \"generation\":{\"min_us\":1900,\"mean_us\":2000,\"median_us\":2000,\"p95_us\":2100,\
              \"max_us\":2200,\"coefficient_of_variation\":0.05590169943749474,\
              \"tokens_per_second\":64000}}\n"
         );
+    }
+
+    fn default_execution() -> ExecutionDiagnostics {
+        ExecutionDiagnostics {
+            attention: Qwen35AttentionImplementation::OnlineTiled,
+            kv_cache_dtype: KvCacheDType::F32,
+            kv_cache_layout: KvCacheLayout::TokenMajor,
+            decode_graph_enabled: true,
+            decode_graph_captured: false,
+            decode_graph_replayed: false,
+            attention_workspace_bytes: 0,
+        }
     }
 }

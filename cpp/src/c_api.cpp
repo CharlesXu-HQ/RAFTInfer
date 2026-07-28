@@ -102,7 +102,7 @@ from_attention_implementation(brt::Qwen35AttentionImplementation value) {
   case brt::Qwen35AttentionImplementation::online_tiled:
     return BRT_QWEN35_ATTENTION_ONLINE_TILED;
   }
-  return BRT_QWEN35_ATTENTION_MATERIALIZED_REFERENCE;
+  throw std::logic_error("unmapped Qwen3.5 attention implementation");
 }
 
 std::uint32_t from_kv_cache_dtype(brt::Qwen35KvCacheDType value) {
@@ -112,7 +112,7 @@ std::uint32_t from_kv_cache_dtype(brt::Qwen35KvCacheDType value) {
   case brt::Qwen35KvCacheDType::bf16:
     return BRT_QWEN35_KV_CACHE_BF16;
   }
-  return BRT_QWEN35_KV_CACHE_F32;
+  throw std::logic_error("unmapped Qwen3.5 KV cache dtype");
 }
 
 std::uint32_t from_kv_cache_layout(brt::Qwen35KvCacheLayout value) {
@@ -122,7 +122,7 @@ std::uint32_t from_kv_cache_layout(brt::Qwen35KvCacheLayout value) {
   case brt::Qwen35KvCacheLayout::head_major:
     return BRT_QWEN35_KV_CACHE_LAYOUT_HEAD_MAJOR;
   }
-  return BRT_QWEN35_KV_CACHE_LAYOUT_TOKEN_MAJOR;
+  throw std::logic_error("unmapped Qwen3.5 KV cache layout");
 }
 
 bool to_bool(int32_t value, const char *field_name) {

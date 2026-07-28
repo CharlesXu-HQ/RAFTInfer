@@ -244,6 +244,33 @@ fn generate_accepts_explicit_kv_policy_before_backend_selection() {
 }
 
 #[test]
+fn generate_accepts_json_output_with_explicit_kv_policy_before_backend_selection() {
+    let output = run(&[
+        "generate",
+        "--model",
+        "missing.gguf",
+        "--prompt",
+        "hello",
+        "--max-new-tokens",
+        "1",
+        "--context",
+        "8",
+        "--output-format",
+        "json",
+        "--kv-cache-dtype",
+        "bf16",
+        "--kv-cache-layout",
+        "head-major",
+    ]);
+
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("generation requires a CUDA-enabled BRT build; this binary is host-only")
+    );
+}
+
+#[test]
 fn generate_rejects_invalid_and_duplicate_output_formats() {
     for (args, expected) in [
         (
