@@ -168,18 +168,6 @@ int cublaslt_algorithm_config_id(const cublasLtMatmulAlgo_t &algorithm) {
   return id;
 }
 
-int cublaslt_algorithm_split_k(const cublasLtMatmulAlgo_t &algorithm) {
-  int split_k = 0;
-  std::size_t written = 0;
-  check_status(cublasLtMatmulAlgoConfigGetAttribute(
-                   &algorithm, CUBLASLT_ALGO_CONFIG_SPLITK_NUM, &split_k,
-                   sizeof(split_k), &written),
-               "cublasLtMatmulAlgoConfigGetAttribute");
-  require(written == sizeof(split_k) && split_k >= 1,
-          "cuBLASLt returned an invalid split-K count");
-  return split_k;
-}
-
 class CudaEvent {
 public:
   CudaEvent() {
@@ -241,12 +229,6 @@ void detail::validate_cublaslt_run_buffers(
     require_aligned(buffers.workspace, kWorkspaceAlignment,
                     "cuBLASLt matmul workspace is not 256-byte aligned");
   }
-}
-
-bool detail::cublaslt_candidate_allowed(CublasLtTuningPolicy policy,
-                                        int split_k) {
-  return split_k >= 1 &&
-         (policy == CublasLtTuningPolicy::Any || split_k == 1);
 }
 
 class CublasLtMatmulPlan::Impl {
@@ -472,7 +454,6 @@ enumerate_cublaslt_candidates(const CublasLtMatmulConfig &config,
       candidates.push_back(CublasLtCandidate{
           .algorithm = result.algo,
           .algorithm_id = cublaslt_algorithm_config_id(result.algo),
-          .split_k = cublaslt_algorithm_split_k(result.algo),
           .workspace_bytes = result.workspaceSize,
       });
     }
@@ -548,8 +529,7 @@ void CublasLtMatmulPlan::select_fastest(cudaStream_t stream, const void *input,
                                         void *workspace,
                                         std::size_t workspace_bytes,
                                         std::uint32_t warmups,
-                                        std::uint32_t measurements,
-                                        CublasLtTuningPolicy policy) {
+                                        std::uint32_t measurements) {
   require(measurements > 0,
           "cuBLASLt tuning requires at least one measurement");
   detail::validate_cublaslt_run_buffers(
@@ -588,8 +568,7 @@ void CublasLtMatmulPlan::select_fastest(cudaStream_t stream, const void *input,
   float best_median = std::numeric_limits<float>::infinity();
 
   for (const auto &candidate : candidates) {
-    if (candidate.workspace_bytes > workspace_bytes ||
-        !detail::cublaslt_candidate_allowed(policy, candidate.split_k))
+    if (candidate.workspace_bytes > workspace_bytes)
       continue;
     for (std::uint32_t iteration = 0; iteration < warmups; ++iteration) {
       check_status(cublasLtMatmul(impl_->handle, impl_->operation, &alpha,

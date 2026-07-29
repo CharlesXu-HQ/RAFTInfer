@@ -411,19 +411,6 @@ void check_deterministic_workspace_validation() {
   });
 }
 
-void check_split_k_tuning_policy() {
-  assert(!brt::detail::cublaslt_candidate_allowed(
-      brt::CublasLtTuningPolicy::Any, 0));
-  assert(brt::detail::cublaslt_candidate_allowed(
-      brt::CublasLtTuningPolicy::Any, 1));
-  assert(brt::detail::cublaslt_candidate_allowed(
-      brt::CublasLtTuningPolicy::Any, 8));
-  assert(brt::detail::cublaslt_candidate_allowed(
-      brt::CublasLtTuningPolicy::NoSplitK, 1));
-  assert(!brt::detail::cublaslt_candidate_allowed(
-      brt::CublasLtTuningPolicy::NoSplitK, 8));
-}
-
 template <typename T> void check_candidate_selection_shape() {
   const auto shape = brt::CublasLtMatmulShape{
       .m = 128,
@@ -501,7 +488,6 @@ int main() {
   check_validation();
   check_run_validation();
   check_deterministic_workspace_validation();
-  check_split_k_tuning_policy();
   check_candidate_selection_shape<__half>();
   check_candidate_selection_shape<__nv_bfloat16>();
 }

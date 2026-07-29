@@ -1271,10 +1271,7 @@ private:
                    "Qwen3.5 cuBLASLt tuning input initialization failed");
         plan->select_fastest(context_.stream(), matmul_input_,
                              weight.device_data, output, matmul_workspace_,
-                             kMatmulWorkspaceBudget, 2, 5,
-                             bucket == 1
-                                 ? CublasLtTuningPolicy::NoSplitK
-                                 : CublasLtTuningPolicy::Any);
+                             kMatmulWorkspaceBudget);
       }
       cublaslt_algorithm_ids_.push_back(plan->algorithm_id());
       cublaslt_plan_diagnostics_.push_back(Qwen35CublasLtPlanDiagnostic{

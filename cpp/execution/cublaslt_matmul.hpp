@@ -24,11 +24,6 @@ enum class CublasLtMatrixOrder {
   RowMajor,
 };
 
-enum class CublasLtTuningPolicy {
-  Any,
-  NoSplitK,
-};
-
 struct CublasLtMatmulShape {
   std::size_t m;
   std::size_t n;
@@ -51,7 +46,6 @@ struct CublasLtMatmulConfig {
 struct CublasLtCandidate {
   cublasLtMatmulAlgo_t algorithm;
   int algorithm_id;
-  int split_k;
   std::size_t workspace_bytes;
 };
 
@@ -81,7 +75,6 @@ void validate_cublaslt_shape(const CublasLtMatmulShape &shape);
 void validate_cublaslt_run_buffers(
     const CublasLtRunBuffers &buffers,
     const CublasLtBufferRequirements &requirements);
-bool cublaslt_candidate_allowed(CublasLtTuningPolicy policy, int split_k);
 
 } // namespace detail
 
@@ -118,9 +111,7 @@ public:
   void select_fastest(cudaStream_t stream, const void *input,
                       const void *weight, void *output, void *workspace,
                       std::size_t workspace_bytes, std::uint32_t warmups = 2,
-                      std::uint32_t measurements = 5,
-                      CublasLtTuningPolicy policy =
-                          CublasLtTuningPolicy::Any);
+                      std::uint32_t measurements = 5);
 
 private:
   class Impl;
