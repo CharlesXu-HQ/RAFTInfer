@@ -33,6 +33,17 @@ constexpr std::size_t kMaxPrefillTokens = 512;
 constexpr std::array<std::size_t, 6> kBuckets{1, 2, 4, 17, 128, 512};
 constexpr std::size_t kMatmulWorkspaceBudget = 4U * 1024U * 1024U;
 
+__global__ void commit_decode_result(std::int32_t *next_token,
+                                     const std::int32_t *result,
+                                     std::int32_t *results,
+                                     std::uint32_t *position) {
+  const std::uint32_t current_position = *position;
+  const std::int32_t token = *result;
+  results[current_position] = token;
+  *next_token = token;
+  *position = current_position + 1;
+}
+
 __global__ void fill_delta_tuning_input(void *input, std::size_t elements,
                                         BrtDataType dtype) {
   const std::size_t index =
@@ -993,8 +1004,12 @@ private:
       (void)run_chunk(
           std::span<const std::int32_t>{host_decode_token_.get(), 1}, true, 0,
           device_decode_token_, device_decode_position_,
-          nullptr, false, device_result_, device_decode_token_,
-          device_decode_results_, device_decode_position_);
+          nullptr, false, device_result_);
+      commit_decode_result<<<1, 1, 0, context_.stream()>>>(
+          device_decode_token_, device_result_, device_decode_results_,
+          device_decode_position_);
+      check_cuda(cudaGetLastError(),
+                 "Qwen3.5 decode graph result commit failed");
     });
   }
 
@@ -1689,10 +1704,7 @@ private:
             const std::uint32_t *device_position = nullptr,
             std::int32_t *fixed_host_result = nullptr,
             bool synchronize = true,
-            std::int32_t *fixed_device_result = nullptr,
-            std::int32_t *greedy_next_token = nullptr,
-            std::int32_t *greedy_results = nullptr,
-            std::uint32_t *greedy_position = nullptr) {
+            std::int32_t *fixed_device_result = nullptr) {
     BucketPlans &bucket = bucket_for(tokens.size());
     std::int32_t *device_tokens =
         const_cast<std::int32_t *>(fixed_device_token);
@@ -1802,19 +1814,9 @@ private:
     run_matmul(*bucket.lm_head, scratch, weights_.output(), logits_);
     std::int32_t *device_result =
         fixed_device_result == nullptr ? device_result_ : fixed_device_result;
-    if (greedy_results != nullptr) {
-      require(greedy_next_token != nullptr,
-              "Qwen3.5 greedy next token pointer is null");
-      require(greedy_position != nullptr,
-              "Qwen3.5 greedy position pointer is null");
-      kernels::qwen35_argmax_greedy_decode_typed(
-          logits_, device_result, greedy_next_token, greedy_results,
-          greedy_position, config_.vocabulary_size, dtype_, context_.stream());
-    } else {
-      kernels::qwen35_argmax_typed(logits_, device_result,
-                                   config_.vocabulary_size, dtype_,
-                                   context_.stream());
-    }
+    kernels::qwen35_argmax_typed(logits_, device_result,
+                                 config_.vocabulary_size, dtype_,
+                                 context_.stream());
     if (fixed_host_result == nullptr && !synchronize) {
       return Qwen35ExecutorResult{
           .token = 0,
