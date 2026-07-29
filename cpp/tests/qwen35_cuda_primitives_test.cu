@@ -482,6 +482,32 @@ void run_argmax_test(brt::ExecutionContext &context) {
   const auto actual =
       download<std::int32_t>(context, device_index.data(), std::size_t{1});
   assert(actual[0] == 3);
+
+  const std::vector<std::int32_t> initial_next_token{-1};
+  const std::vector<std::int32_t> initial_results{-1, -1, -1, -1};
+  const std::vector<std::uint32_t> initial_position{2};
+  auto device_next_token = upload(context, std::span{initial_next_token});
+  auto device_results = upload(context, std::span{initial_results});
+  auto device_position = upload(context, std::span{initial_position});
+  brt::kernels::qwen35_argmax_greedy_decode_typed(
+      device_logits.data(), static_cast<std::int32_t *>(device_index.data()),
+      static_cast<std::int32_t *>(device_next_token.data()),
+      static_cast<std::int32_t *>(device_results.data()),
+      static_cast<std::uint32_t *>(device_position.data()), logits.size(),
+      BRT_DTYPE_F32, context.stream());
+
+  const auto greedy_index =
+      download<std::int32_t>(context, device_index.data(), std::size_t{1});
+  const auto next_token = download<std::int32_t>(
+      context, device_next_token.data(), std::size_t{1});
+  const auto results = download<std::int32_t>(
+      context, device_results.data(), initial_results.size());
+  const auto position = download<std::uint32_t>(
+      context, device_position.data(), std::size_t{1});
+  assert(greedy_index[0] == 3);
+  assert(next_token[0] == 3);
+  assert((results == std::vector<std::int32_t>{-1, -1, 3, -1}));
+  assert(position[0] == 3);
 }
 
 void run_token_validator_tests() {

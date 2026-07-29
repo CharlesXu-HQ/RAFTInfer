@@ -79,6 +79,12 @@ void qwen35_argmax_typed(const void *logits, std::int32_t *output_index,
                          std::size_t elements, BrtDataType dtype,
                          cudaStream_t stream);
 
+void qwen35_argmax_greedy_decode_typed(
+    const void *logits, std::int32_t *output_index,
+    std::int32_t *next_token, std::int32_t *output_tokens,
+    std::uint32_t *position, std::size_t elements, BrtDataType dtype,
+    cudaStream_t stream);
+
 void qwen35_split_full_query_gate(const void *query_gate, void *query,
                                   void *gate, std::size_t tokens,
                                   std::size_t heads, std::size_t head_dim,

@@ -233,7 +233,10 @@ __global__ void swiglu_kernel(const void *gate, const void *up, void *output,
 template <typename T>
 __global__ void argmax_typed_kernel(const void *logits,
                                     std::int32_t *output_index,
-                                    std::size_t elements) {
+                                    std::size_t elements,
+                                    std::int32_t *next_token = nullptr,
+                                    std::int32_t *output_tokens = nullptr,
+                                    std::uint32_t *position = nullptr) {
   extern __shared__ unsigned char raw_shared[];
   auto *shared_values = reinterpret_cast<float *>(raw_shared);
   auto *shared_indices =
@@ -267,7 +270,14 @@ __global__ void argmax_typed_kernel(const void *logits,
   }
 
   if (threadIdx.x == 0) {
-    *output_index = static_cast<std::int32_t>(shared_indices[0]);
+    const auto token = static_cast<std::int32_t>(shared_indices[0]);
+    *output_index = token;
+    if (position != nullptr) {
+      const std::uint32_t current_position = *position;
+      output_tokens[current_position] = token;
+      *next_token = token;
+      *position = current_position + 1;
+    }
   }
 }
 
@@ -581,7 +591,8 @@ void qwen35_argmax(const float *logits, std::int32_t *output_index,
   const std::size_t shared_bytes =
       kBlockSize * sizeof(float) + kBlockSize * sizeof(std::size_t);
   argmax_typed_kernel<float>
-      <<<1, kBlockSize, shared_bytes, stream>>>(logits, output_index, elements);
+      <<<1, kBlockSize, shared_bytes, stream>>>(logits, output_index, elements,
+                                                nullptr, nullptr, nullptr);
   check_launch("qwen35_argmax");
 }
 
@@ -600,9 +611,35 @@ void qwen35_argmax_typed(const void *logits, std::int32_t *output_index,
       kBlockSize * sizeof(float) + kBlockSize * sizeof(std::size_t);
   launch_by_dtype(dtype, [&]<typename T>() {
     argmax_typed_kernel<T><<<1, kBlockSize, shared_bytes, stream>>>(
-        logits, output_index, elements);
+        logits, output_index, elements, nullptr, nullptr, nullptr);
   });
   check_launch("qwen35_argmax_typed");
+}
+
+void qwen35_argmax_greedy_decode_typed(
+    const void *logits, std::int32_t *output_index,
+    std::int32_t *next_token, std::int32_t *output_tokens,
+    std::uint32_t *position, std::size_t elements, BrtDataType dtype,
+    cudaStream_t stream) {
+  require(logits != nullptr, "greedy argmax logits pointer is null");
+  require(output_index != nullptr, "greedy argmax output pointer is null");
+  require(next_token != nullptr, "greedy argmax next token pointer is null");
+  require(output_tokens != nullptr,
+          "greedy argmax output tokens pointer is null");
+  require(position != nullptr, "greedy argmax position pointer is null");
+  require(elements > 0, "greedy argmax elements must be positive");
+  require(elements <= static_cast<std::size_t>(
+                          std::numeric_limits<std::int32_t>::max()),
+          "greedy argmax elements exceed int32 output range");
+  require(stream != nullptr, "CUDA stream is null");
+  require_dtype(dtype);
+  const std::size_t shared_bytes =
+      kBlockSize * sizeof(float) + kBlockSize * sizeof(std::size_t);
+  launch_by_dtype(dtype, [&]<typename T>() {
+    argmax_typed_kernel<T><<<1, kBlockSize, shared_bytes, stream>>>(
+        logits, output_index, elements, next_token, output_tokens, position);
+  });
+  check_launch("qwen35_argmax_greedy_decode_typed");
 }
 
 void qwen35_split_full_query_gate(const void *query_gate, void *query,
