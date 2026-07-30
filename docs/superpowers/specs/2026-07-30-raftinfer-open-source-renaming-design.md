@@ -138,7 +138,9 @@ field names. No v1 compatibility reader is added.
 
 Tracked source, tests, scripts, current documentation, CI, examples, fixtures,
 and generated public assets must contain no old project identifier after the
-rename. Git history is not rewritten.
+rename. The only prose exceptions are this migration design and the changelog,
+where the former identifiers may appear solely to describe historical
+old-to-new mappings. Git history is not rewritten.
 
 References to `bw24` remain only where they describe provenance or the external
 kernel reuse policy. The README does not compare RAFTInfer performance with
@@ -283,7 +285,7 @@ resolved and compared with the verified local commit.
 
 The work is complete only when:
 
-1. all public and internal project identifiers use RAFTInfer naming;
+1. all active public and internal project identifiers use RAFTInfer naming;
 2. no compatibility layer for the old name exists;
 3. the repository structure and GitHub community files match this design;
 4. English and Chinese README files are synchronized and accurate;
