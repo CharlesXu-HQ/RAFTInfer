@@ -421,6 +421,15 @@ void run_workspace_contract_tests() {
   assert(bytes == brt::Qwen35Executor::workspace_bytes(config, 17,
                                                        materialized_policy()));
 
+  auto thirty_two_argmax_blocks = config;
+  thirty_two_argmax_blocks.vocabulary_size = 8192;
+  auto thirty_three_argmax_blocks = thirty_two_argmax_blocks;
+  thirty_three_argmax_blocks.vocabulary_size = 8193;
+  assert(
+      brt::Qwen35Executor::workspace_bytes(thirty_three_argmax_blocks, 17) -
+          brt::Qwen35Executor::workspace_bytes(thirty_two_argmax_blocks, 17) ==
+      2 * brt::Qwen35Executor::workspace_alignment);
+
   const auto release = release_attention_config();
   const auto reference = materialized_policy();
   const auto online = brt::Qwen35ExecutionPolicy{};

@@ -3,6 +3,7 @@
 #include <cuda_bf16.h>
 #include <cuda_fp16.h>
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
 
@@ -10,6 +11,7 @@ namespace brt::kernels {
 namespace {
 
 constexpr int kBlockSize = 256;
+constexpr std::size_t kArgmaxMaxBlocks = 256;
 
 void require(bool condition, const char *message) {
   if (!condition) {
@@ -269,6 +271,95 @@ __global__ void argmax_typed_kernel(const void *logits,
   if (threadIdx.x == 0) {
     *output_index = static_cast<std::int32_t>(shared_indices[0]);
   }
+}
+
+__device__ bool argmax_precedes(float candidate_value,
+                                std::uint32_t candidate_index,
+                                float current_value,
+                                std::uint32_t current_index) {
+  return candidate_value > current_value ||
+         (candidate_value == current_value && candidate_index < current_index);
+}
+
+template <typename T>
+__global__ void parallel_argmax_partials_kernel(const void *logits,
+                                                float *partial_values,
+                                                std::uint32_t *partial_indices,
+                                                std::size_t elements) {
+  extern __shared__ unsigned char raw_shared[];
+  auto *shared_values = reinterpret_cast<float *>(raw_shared);
+  auto *shared_indices =
+      reinterpret_cast<std::uint32_t *>(shared_values + blockDim.x);
+
+  float best_value = -std::numeric_limits<float>::infinity();
+  std::uint32_t best_index = 0;
+  const std::size_t first =
+      static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  const std::size_t stride = static_cast<std::size_t>(gridDim.x) * blockDim.x;
+  for (std::size_t index = first; index < elements; index += stride) {
+    const float value = load_as_float<T>(logits, index);
+    const auto narrowed_index = static_cast<std::uint32_t>(index);
+    if (argmax_precedes(value, narrowed_index, best_value, best_index)) {
+      best_value = value;
+      best_index = narrowed_index;
+    }
+  }
+  shared_values[threadIdx.x] = best_value;
+  shared_indices[threadIdx.x] = best_index;
+  __syncthreads();
+
+  for (int stride_offset = blockDim.x / 2; stride_offset > 0;
+       stride_offset >>= 1) {
+    if (threadIdx.x < stride_offset) {
+      const float other_value = shared_values[threadIdx.x + stride_offset];
+      const std::uint32_t other_index =
+          shared_indices[threadIdx.x + stride_offset];
+      if (argmax_precedes(other_value, other_index, shared_values[threadIdx.x],
+                          shared_indices[threadIdx.x])) {
+        shared_values[threadIdx.x] = other_value;
+        shared_indices[threadIdx.x] = other_index;
+      }
+    }
+    __syncthreads();
+  }
+
+  if (threadIdx.x == 0) {
+    partial_values[blockIdx.x] = shared_values[0];
+    partial_indices[blockIdx.x] = shared_indices[0];
+  }
+}
+
+__global__ void parallel_argmax_finalize_kernel(
+    const float *partial_values, const std::uint32_t *partial_indices,
+    std::int32_t *output_index, std::size_t partial_count) {
+  __shared__ float shared_values[kBlockSize];
+  __shared__ std::uint32_t shared_indices[kBlockSize];
+
+  float best_value = -std::numeric_limits<float>::infinity();
+  std::uint32_t best_index = 0;
+  if (threadIdx.x < partial_count) {
+    best_value = partial_values[threadIdx.x];
+    best_index = partial_indices[threadIdx.x];
+  }
+  shared_values[threadIdx.x] = best_value;
+  shared_indices[threadIdx.x] = best_index;
+  __syncthreads();
+
+  for (int stride = blockDim.x / 2; stride > 0; stride >>= 1) {
+    if (threadIdx.x < stride) {
+      const float other_value = shared_values[threadIdx.x + stride];
+      const std::uint32_t other_index = shared_indices[threadIdx.x + stride];
+      if (argmax_precedes(other_value, other_index, shared_values[threadIdx.x],
+                          shared_indices[threadIdx.x])) {
+        shared_values[threadIdx.x] = other_value;
+        shared_indices[threadIdx.x] = other_index;
+      }
+    }
+    __syncthreads();
+  }
+
+  if (threadIdx.x == 0)
+    *output_index = static_cast<std::int32_t>(shared_indices[0]);
 }
 
 template <typename T>
@@ -603,6 +694,50 @@ void qwen35_argmax_typed(const void *logits, std::int32_t *output_index,
         logits, output_index, elements);
   });
   check_launch("qwen35_argmax_typed");
+}
+
+std::size_t qwen35_parallel_argmax_workspace_bytes(std::size_t elements) {
+  require(elements > 0, "parallel argmax elements must be positive");
+  require(elements <= static_cast<std::size_t>(
+                          std::numeric_limits<std::int32_t>::max()),
+          "parallel argmax elements exceed int32 output range");
+  const std::size_t blocks = std::min(
+      kArgmaxMaxBlocks, (elements + static_cast<std::size_t>(kBlockSize) - 1) /
+                            static_cast<std::size_t>(kBlockSize));
+  return checked_mul(blocks, sizeof(float) + sizeof(std::uint32_t),
+                     "parallel argmax workspace size overflow");
+}
+
+void qwen35_parallel_argmax_typed(const void *logits,
+                                  std::int32_t *output_index,
+                                  std::size_t elements, BrtDataType dtype,
+                                  void *workspace, std::size_t workspace_bytes,
+                                  cudaStream_t stream) {
+  require(logits != nullptr, "parallel argmax logits pointer is null");
+  require(output_index != nullptr, "parallel argmax output pointer is null");
+  require(workspace != nullptr, "parallel argmax workspace pointer is null");
+  require(stream != nullptr, "CUDA stream is null");
+  require_dtype(dtype);
+  const std::size_t required_bytes =
+      qwen35_parallel_argmax_workspace_bytes(elements);
+  require(workspace_bytes >= required_bytes,
+          "parallel argmax workspace is too small");
+  const std::size_t blocks =
+      required_bytes / (sizeof(float) + sizeof(std::uint32_t));
+  auto *partial_values = static_cast<float *>(workspace);
+  auto *partial_indices =
+      reinterpret_cast<std::uint32_t *>(partial_values + blocks);
+  const std::size_t shared_bytes =
+      kBlockSize * (sizeof(float) + sizeof(std::uint32_t));
+  launch_by_dtype(dtype, [&]<typename T>() {
+    parallel_argmax_partials_kernel<T>
+        <<<static_cast<int>(blocks), kBlockSize, shared_bytes, stream>>>(
+            logits, partial_values, partial_indices, elements);
+  });
+  check_launch("qwen35_parallel_argmax_partials");
+  parallel_argmax_finalize_kernel<<<1, kBlockSize, 0, stream>>>(
+      partial_values, partial_indices, output_index, blocks);
+  check_launch("qwen35_parallel_argmax_finalize");
 }
 
 void qwen35_split_full_query_gate(const void *query_gate, void *query,

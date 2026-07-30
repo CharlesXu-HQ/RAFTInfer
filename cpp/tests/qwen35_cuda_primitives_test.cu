@@ -471,6 +471,38 @@ void run_f32_weight_tests(brt::ExecutionContext &context) {
   assert_matches<T>(actual, expected);
 }
 
+template <typename T>
+void run_parallel_argmax_dtype_test(brt::ExecutionContext &context) {
+  std::vector<float> logits(65537,
+                            -std::numeric_limits<float>::infinity());
+  logits[1024] = std::numeric_limits<float>::quiet_NaN();
+  logits[17] = 7.5F;
+  logits[65536] = 7.5F;
+  const auto encoded = encode<T>(logits);
+  const auto device_logits = upload(context, std::span{encoded});
+  DeviceBuffer device_reference_index{context, sizeof(std::int32_t)};
+  DeviceBuffer device_parallel_index{context, sizeof(std::int32_t)};
+  const auto argmax_workspace_bytes =
+      brt::kernels::qwen35_parallel_argmax_workspace_bytes(logits.size());
+  DeviceBuffer device_argmax_workspace{context, argmax_workspace_bytes};
+
+  brt::kernels::qwen35_argmax_typed(
+      device_logits.data(),
+      static_cast<std::int32_t *>(device_reference_index.data()), logits.size(),
+      DTypeTraits<T>::dtype, context.stream());
+  brt::kernels::qwen35_parallel_argmax_typed(
+      device_logits.data(),
+      static_cast<std::int32_t *>(device_parallel_index.data()),
+      logits.size(), DTypeTraits<T>::dtype, device_argmax_workspace.data(),
+      argmax_workspace_bytes, context.stream());
+  const auto reference_index = download<std::int32_t>(
+      context, device_reference_index.data(), std::size_t{1});
+  const auto parallel_index = download<std::int32_t>(
+      context, device_parallel_index.data(), std::size_t{1});
+  assert(reference_index[0] == 17);
+  assert(parallel_index[0] == 17);
+}
+
 void run_argmax_test(brt::ExecutionContext &context) {
   const std::vector<float> logits{-1.0F, 3.0F, -7.0F, 4.5F,
                                   4.5F,  2.0F, -0.0F, -0.0F};
@@ -482,6 +514,10 @@ void run_argmax_test(brt::ExecutionContext &context) {
   const auto actual =
       download<std::int32_t>(context, device_index.data(), std::size_t{1});
   assert(actual[0] == 3);
+
+  run_parallel_argmax_dtype_test<float>(context);
+  run_parallel_argmax_dtype_test<__half>(context);
+  run_parallel_argmax_dtype_test<__nv_bfloat16>(context);
 }
 
 void run_token_validator_tests() {

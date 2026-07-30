@@ -79,6 +79,14 @@ void qwen35_argmax_typed(const void *logits, std::int32_t *output_index,
                          std::size_t elements, BrtDataType dtype,
                          cudaStream_t stream);
 
+std::size_t qwen35_parallel_argmax_workspace_bytes(std::size_t elements);
+
+void qwen35_parallel_argmax_typed(const void *logits,
+                                  std::int32_t *output_index,
+                                  std::size_t elements, BrtDataType dtype,
+                                  void *workspace, std::size_t workspace_bytes,
+                                  cudaStream_t stream);
+
 void qwen35_split_full_query_gate(const void *query_gate, void *query,
                                   void *gate, std::size_t tokens,
                                   std::size_t heads, std::size_t head_dim,

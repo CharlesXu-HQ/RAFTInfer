@@ -494,6 +494,7 @@ std::size_t workspace_estimate(const model::Qwen35Config &config,
   add(checked_mul(max_context, sizeof(std::int32_t),
                   "token buffer byte size overflow"));
   add(sizeof(std::int32_t));
+  add(kernels::qwen35_parallel_argmax_workspace_bytes(config.vocabulary_size));
   add(sizeof(std::int32_t));
   add(sizeof(std::uint32_t));
   add(checked_mul(max_context, sizeof(std::int32_t),
@@ -1070,6 +1071,10 @@ private:
                  alignof(std::int32_t)));
     device_result_ = static_cast<std::int32_t *>(
         allocate(arena, sizeof(std::int32_t), alignof(std::int32_t)));
+    argmax_workspace_bytes_ = kernels::qwen35_parallel_argmax_workspace_bytes(
+        config_.vocabulary_size);
+    argmax_workspace_ =
+        allocate(arena, argmax_workspace_bytes_, alignof(std::uint32_t));
     device_decode_token_ = static_cast<std::int32_t *>(
         allocate(arena, sizeof(std::int32_t), alignof(std::int32_t)));
     device_decode_position_ = static_cast<std::uint32_t *>(
@@ -1814,9 +1819,9 @@ private:
     run_matmul(*bucket.lm_head, scratch, weights_.output(), logits_);
     std::int32_t *device_result =
         fixed_device_result == nullptr ? device_result_ : fixed_device_result;
-    kernels::qwen35_argmax_typed(logits_, device_result,
-                                 config_.vocabulary_size, dtype_,
-                                 context_.stream());
+    kernels::qwen35_parallel_argmax_typed(
+        logits_, device_result, config_.vocabulary_size, dtype_,
+        argmax_workspace_, argmax_workspace_bytes_, context_.stream());
     if (fixed_host_result == nullptr && !synchronize) {
       return Qwen35ExecutorResult{
           .token = 0,
@@ -2021,6 +2026,8 @@ private:
 
   std::int32_t *device_tokens_{};
   std::int32_t *device_result_{};
+  void *argmax_workspace_{};
+  std::size_t argmax_workspace_bytes_{};
   std::int32_t *device_decode_token_{};
   std::uint32_t *device_decode_position_{};
   std::int32_t *device_decode_results_{};
