@@ -27,7 +27,12 @@ for readme_name in ("README.md", "README.zh-CN.md"):
         ):
             continue
 
-        local_path = repo_root / target
+        local_path = (repo_root / target).resolve()
+        try:
+            local_path.relative_to(repo_root)
+        except ValueError:
+            missing.append(f"{readme_name}: outside repository {target}")
+            continue
         if not local_path.exists():
             missing.append(f"{readme_name}: missing {target}")
 
