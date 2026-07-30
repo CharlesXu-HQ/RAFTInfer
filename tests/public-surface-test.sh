@@ -9,19 +9,19 @@ off_build_dir="${work_dir}/build-off"
 cmake -S "${repo_root}" -B "${off_build_dir}" -G Ninja \
   -DRAFTINFER_ENABLE_CUDA=OFF \
   -DRAFTINFER_BUILD_TESTS=OFF
-if ! ctest --test-dir "${off_build_dir}" -N | grep -Fq 'Total Tests: 0'; then
+off_ctest_output="$(ctest --test-dir "${off_build_dir}" -N 2>&1)"
+if ! grep -Fq 'Total Tests: 0' <<<"${off_ctest_output}"; then
   printf 'public-surface: RAFTINFER_BUILD_TESTS=OFF registered CTest tests\n' \
     >&2
   exit 1
 fi
-if cmake --build "${off_build_dir}" --target help | \
-  grep -Fq 'raftinfer_c_api_test'; then
+off_targets="$(cmake --build "${off_build_dir}" --target help)"
+if grep -Fq 'raftinfer_c_api_test' <<<"${off_targets}"; then
   printf 'public-surface: RAFTINFER_BUILD_TESTS=OFF exposed raftinfer_c_api_test\n' \
     >&2
   exit 1
 fi
-if cmake --build "${off_build_dir}" --target help | \
-  grep -Fq 'raftinfer-qwen35-logits'; then
+if grep -Fq 'raftinfer-qwen35-logits' <<<"${off_targets}"; then
   printf 'public-surface: RAFTINFER_ENABLE_CUDA=OFF exposed CUDA target\n' >&2
   exit 1
 fi
@@ -35,8 +35,8 @@ cmake -S "${repo_root}" -B "${cuda_on_build_dir}" -G Ninja \
 cuda_on_status=$?
 set -e
 if [[ "${cuda_on_status}" -eq 0 ]]; then
-  if ! cmake --build "${cuda_on_build_dir}" --target help | \
-    grep -Fq 'raftinfer-qwen35-logits'; then
+  cuda_on_targets="$(cmake --build "${cuda_on_build_dir}" --target help)"
+  if ! grep -Fq 'raftinfer-qwen35-logits' <<<"${cuda_on_targets}"; then
     cat "${cuda_on_log}" >&2
     printf 'public-surface: RAFTINFER_ENABLE_CUDA=ON configured without CUDA target\n' \
       >&2
@@ -69,14 +69,14 @@ on_build_dir="${work_dir}/build-on"
 cmake -S "${repo_root}" -B "${on_build_dir}" -G Ninja \
   -DRAFTINFER_ENABLE_CUDA=OFF \
   -DRAFTINFER_BUILD_TESTS=ON
-if ! ctest --test-dir "${on_build_dir}" -N | \
-  grep -Fq 'raftinfer_c_api_test'; then
+on_ctest_output="$(ctest --test-dir "${on_build_dir}" -N 2>&1)"
+if ! grep -Fq 'raftinfer_c_api_test' <<<"${on_ctest_output}"; then
   printf 'public-surface: RAFTINFER_BUILD_TESTS=ON did not register raftinfer_c_api_test\n' \
     >&2
   exit 1
 fi
-if ! cmake --build "${on_build_dir}" --target help | \
-  grep -Fq 'raftinfer_c_api_test'; then
+on_targets="$(cmake --build "${on_build_dir}" --target help)"
+if ! grep -Fq 'raftinfer_c_api_test' <<<"${on_targets}"; then
   printf 'public-surface: RAFTINFER_BUILD_TESTS=ON did not expose raftinfer_c_api_test\n' \
     >&2
   exit 1
@@ -117,7 +117,7 @@ int main(void) {
   RaftInferEngineConfig config = {
       .struct_size = sizeof(config),
       .device_id = 0,
-      .initial_pool_bytes = 0,
+      .initial_pool_bytes = 64ULL * 1024ULL * 1024ULL,
   };
   RaftInferEngineHandle *engine = NULL;
   RaftInferStatus status = raftinfer_engine_create(&config, &engine);
@@ -148,4 +148,5 @@ if names != expected:
 
 CARGO_TARGET_DIR="${work_dir}/cargo-target" \
   cargo build --manifest-path "${repo_root}/Cargo.toml" -p raftinfer-cli
-"${work_dir}/cargo-target/debug/raftinfer" info | grep -Fx 'backend=host'
+cli_output="$("${work_dir}/cargo-target/debug/raftinfer" info)"
+grep -Fxq 'backend=host' <<<"${cli_output}"
