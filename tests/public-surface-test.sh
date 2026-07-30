@@ -26,6 +26,45 @@ if cmake --build "${off_build_dir}" --target help | \
   exit 1
 fi
 
+cuda_on_build_dir="${work_dir}/build-cuda-on"
+cuda_on_log="${work_dir}/cuda-on-configure.log"
+set +e
+cmake -S "${repo_root}" -B "${cuda_on_build_dir}" -G Ninja \
+  -DRAFTINFER_ENABLE_CUDA=ON \
+  -DRAFTINFER_BUILD_TESTS=OFF >"${cuda_on_log}" 2>&1
+cuda_on_status=$?
+set -e
+if [[ "${cuda_on_status}" -eq 0 ]]; then
+  if ! cmake --build "${cuda_on_build_dir}" --target help | \
+    grep -Fq 'raftinfer-qwen35-logits'; then
+    cat "${cuda_on_log}" >&2
+    printf 'public-surface: RAFTINFER_ENABLE_CUDA=ON configured without CUDA target\n' \
+      >&2
+    exit 1
+  fi
+else
+  if grep -Fq 'Manually-specified variables were not used' "${cuda_on_log}" && \
+    grep -Fq 'RAFTINFER_ENABLE_CUDA' "${cuda_on_log}"; then
+    cat "${cuda_on_log}" >&2
+    printf 'public-surface: RAFTINFER_ENABLE_CUDA=ON was not consumed\n' >&2
+    exit 1
+  fi
+  if grep -Eiq 'unknown (CMake )?option|unknown option.*RAFTINFER_ENABLE_CUDA|RAFTINFER_ENABLE_CUDA.*unknown option' \
+    "${cuda_on_log}"; then
+    cat "${cuda_on_log}" >&2
+    printf 'public-surface: RAFTINFER_ENABLE_CUDA=ON was rejected as an unknown option\n' \
+      >&2
+    exit 1
+  fi
+  if ! grep -Eiq 'Could not find CMAKE_CUDA_COMPILER|No CMAKE_CUDA_COMPILER could be found|Failed to find nvcc|Could NOT find CUDAToolkit|Could not find a package configuration file provided by "(CUDAToolkit|raft|rmm)"|Could NOT find (raft|rmm)' \
+    "${cuda_on_log}"; then
+    cat "${cuda_on_log}" >&2
+    printf 'public-surface: RAFTINFER_ENABLE_CUDA=ON failed for an unexpected reason\n' \
+      >&2
+    exit 1
+  fi
+fi
+
 on_build_dir="${work_dir}/build-on"
 cmake -S "${repo_root}" -B "${on_build_dir}" -G Ninja \
   -DRAFTINFER_ENABLE_CUDA=OFF \
