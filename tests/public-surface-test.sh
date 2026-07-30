@@ -5,22 +5,47 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 work_dir="$(mktemp -d "${TMPDIR:-/tmp}/raftinfer-public-surface.XXXXXX")"
 trap 'rm -rf "${work_dir}"' EXIT
 
-build_dir="${work_dir}/build"
-cmake -S "${repo_root}" -B "${build_dir}" -G Ninja \
+off_build_dir="${work_dir}/build-off"
+cmake -S "${repo_root}" -B "${off_build_dir}" -G Ninja \
   -DRAFTINFER_ENABLE_CUDA=OFF \
   -DRAFTINFER_BUILD_TESTS=OFF
-for expected_cache_entry in \
-  'RAFTINFER_ENABLE_CUDA:BOOL=OFF' \
-  'RAFTINFER_BUILD_TESTS:BOOL=OFF'; do
-  grep -Fx "${expected_cache_entry}" "${build_dir}/CMakeCache.txt" >/dev/null || {
-    printf 'public-surface: CMake did not consume %s\n' \
-      "${expected_cache_entry%%:*}" >&2
-    exit 1
-  }
-done
-cmake --build "${build_dir}" --target raftinfer_cpp
+if ! ctest --test-dir "${off_build_dir}" -N | grep -Fq 'Total Tests: 0'; then
+  printf 'public-surface: RAFTINFER_BUILD_TESTS=OFF registered CTest tests\n' \
+    >&2
+  exit 1
+fi
+if cmake --build "${off_build_dir}" --target help | \
+  grep -Fq 'raftinfer_c_api_test'; then
+  printf 'public-surface: RAFTINFER_BUILD_TESTS=OFF exposed raftinfer_c_api_test\n' \
+    >&2
+  exit 1
+fi
+if cmake --build "${off_build_dir}" --target help | \
+  grep -Fq 'raftinfer-qwen35-logits'; then
+  printf 'public-surface: RAFTINFER_ENABLE_CUDA=OFF exposed CUDA target\n' >&2
+  exit 1
+fi
+
+on_build_dir="${work_dir}/build-on"
+cmake -S "${repo_root}" -B "${on_build_dir}" -G Ninja \
+  -DRAFTINFER_ENABLE_CUDA=OFF \
+  -DRAFTINFER_BUILD_TESTS=ON
+if ! ctest --test-dir "${on_build_dir}" -N | \
+  grep -Fq 'raftinfer_c_api_test'; then
+  printf 'public-surface: RAFTINFER_BUILD_TESTS=ON did not register raftinfer_c_api_test\n' \
+    >&2
+  exit 1
+fi
+if ! cmake --build "${on_build_dir}" --target help | \
+  grep -Fq 'raftinfer_c_api_test'; then
+  printf 'public-surface: RAFTINFER_BUILD_TESTS=ON did not expose raftinfer_c_api_test\n' \
+    >&2
+  exit 1
+fi
+
+cmake --build "${off_build_dir}" --target raftinfer_cpp
 install_prefix="${work_dir}/install"
-cmake --install "${build_dir}" --prefix "${install_prefix}"
+cmake --install "${off_build_dir}" --prefix "${install_prefix}"
 
 consumer_dir="${work_dir}/consumer"
 mkdir -p "${consumer_dir}"
