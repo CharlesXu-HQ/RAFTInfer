@@ -29,19 +29,51 @@
 ### Task 1: Lock the repository brand and publication contract
 
 **Files:**
-- Create: `tests/project-brand-test.sh`
+- Create: `scripts/check-project-brand.sh`
+- Create: `tests/public-surface-test.sh`
 - Create: `tests/readme-links-test.py`
 - Modify: `scripts/local-check.sh`
-- Test: `tests/project-brand-test.sh`
+- Test: `tests/public-surface-test.sh`
+- Lint: `scripts/check-project-brand.sh`
 - Test: `tests/readme-links-test.py`
 
 **Interfaces:**
 - Consumes: the design allowlist for the migration specification and `CHANGELOG.md`.
-- Produces: a failing pre-rename test that later tasks must make green; a dependency-free local Markdown link validator.
+- Produces: a failing behavioral test for the renamed public surface, a
+  separate static repository-brand policy check, and a dependency-free local
+  Markdown link validator.
 
-- [ ] **Step 1: Add the failing project-brand test**
+- [ ] **Step 1: Add the failing public-surface behavior test**
 
-Create an executable Bash test that:
+Create an executable test that:
+
+1. configures and builds the host CMake project using only
+   `RAFTINFER_ENABLE_CUDA`, `RAFTINFER_BUILD_TESTS`, and the
+   `raftinfer_cpp` target;
+2. compiles and links a small C consumer that includes
+   `<raftinfer/c_api.h>`, constructs `RaftInferEngineConfig`, and calls
+   `raftinfer_engine_create` and `raftinfer_engine_destroy`;
+3. reads `cargo metadata --format-version 1 --no-deps` and requires exactly
+   `raftinfer-sys`, `raftinfer-runtime`, and `raftinfer-cli`;
+4. runs the host `raftinfer info` command and requires it to report the host
+   backend successfully.
+
+This test verifies public behavior, not source spelling.
+
+- [ ] **Step 2: Run the public-surface test and verify the expected red state**
+
+Run:
+
+```bash
+tests/public-surface-test.sh
+```
+
+Expected: FAIL because the RAFTInfer CMake options, C header, packages, and CLI
+do not exist before the rename.
+
+- [ ] **Step 3: Add the static project-brand policy check**
+
+Create an executable Bash linter that:
 
 ```bash
 #!/usr/bin/env bash
@@ -86,44 +118,48 @@ git grep -q 'schema_version.*2' -- \
   tests benchmarks scripts cpp rust
 ```
 
-- [ ] **Step 2: Add the local README link checker**
+- [ ] **Step 4: Add the local README link checker**
 
 Implement `tests/readme-links-test.py` with only `pathlib`, `re`, and
 `urllib.parse`. It reads both README files, ignores HTTP(S), anchors, badges,
 and image data URLs, URL-decodes local targets, strips anchors, and fails when
 the referenced repository-relative path does not exist.
 
-- [ ] **Step 3: Register both checks in `scripts/local-check.sh`**
+- [ ] **Step 5: Register the behavioral test and both linters**
 
 Add:
 
 ```bash
-tests/project-brand-test.sh
+tests/public-surface-test.sh
+scripts/check-project-brand.sh
 python3 tests/readme-links-test.py
 ```
 
 before Rust tests so repository contract failures are reported early.
 
-- [ ] **Step 4: Run the tests and verify the expected red state**
+- [ ] **Step 6: Run the checks and verify the complete red state**
 
 Run:
 
 ```bash
-tests/project-brand-test.sh
+tests/public-surface-test.sh
+scripts/check-project-brand.sh
 python3 tests/readme-links-test.py
 ```
 
 Expected:
 
-- `project-brand-test.sh` fails because RAFTInfer community files and renamed
+- `public-surface-test.sh` fails on the missing RAFTInfer build/API surface.
+- `check-project-brand.sh` fails because RAFTInfer community files and renamed
   identifiers do not exist yet.
 - `readme-links-test.py` passes against the current English README or reports
   only links that the implementation must repair.
 
-- [ ] **Step 5: Commit the regression contract**
+- [ ] **Step 7: Commit the regression contract**
 
 ```bash
-git add tests/project-brand-test.sh tests/readme-links-test.py scripts/local-check.sh
+git add scripts/check-project-brand.sh tests/public-surface-test.sh \
+  tests/readme-links-test.py scripts/local-check.sh
 git commit -m "test: define RAFTInfer repository contract"
 ```
 
@@ -553,7 +589,7 @@ Run:
 
 ```bash
 python3 tests/readme-links-test.py
-tests/project-brand-test.sh
+scripts/check-project-brand.sh
 ```
 
 At this point the brand test may still fail only because README and benchmark
@@ -580,6 +616,7 @@ git commit -m "docs: add RAFTInfer GitHub project surface"
 - Create: `docs/benchmarks.md`
 - Create: `docs/assets/qwen35-bf16-rtx5090.svg`
 - Create: `tools/render_benchmark_chart.py`
+- Create: `tests/benchmark-chart-test.py`
 - Create: `tests/benchmark-asset-test.sh`
 - Modify: `scripts/local-check.sh`
 
@@ -603,7 +640,28 @@ Write the three JSONL records to
 parity, execution, GPU, software, latency, throughput, variation, memory, and
 ratio fields.
 
-- [ ] **Step 2: Implement deterministic SVG rendering**
+- [ ] **Step 2: Add the failing renderer behavior test**
+
+Create `tests/benchmark-chart-test.py` with a hand-written three-record
+schema-v2 fixture. Run the renderer as a subprocess and assert:
+
+- it exits successfully for the valid fixture;
+- the SVG is exactly 1200 by 620;
+- both panel labels exist;
+- the five RAFTInfer values, five llama.cpp values, and five ratios match the
+  hand-derived fixture values;
+- invalid schema, missing arm, failed parity, and failed performance-floor
+  fixtures exit nonzero with actionable diagnostics.
+
+Run:
+
+```bash
+python3 tests/benchmark-chart-test.py
+```
+
+Expected: FAIL because `tools/render_benchmark_chart.py` does not exist.
+
+- [ ] **Step 3: Implement deterministic SVG rendering**
 
 `tools/render_benchmark_chart.py`:
 
@@ -615,7 +673,17 @@ ratio fields.
 - prints tok/s above each bar and the RAFTInfer ratio above each group;
 - writes no timestamps or machine-local paths.
 
-- [ ] **Step 3: Add the chart reproducibility test**
+- [ ] **Step 4: Run the renderer behavior test to green**
+
+Run:
+
+```bash
+python3 tests/benchmark-chart-test.py
+```
+
+Expected: all valid and invalid behavior cases pass.
+
+- [ ] **Step 5: Add the chart reproducibility test**
 
 `tests/benchmark-asset-test.sh` renders to a temporary file and uses `cmp` to
 compare it with `docs/assets/qwen35-bf16-rtx5090.svg`. It also asserts:
@@ -633,7 +701,7 @@ compare it with `docs/assets/qwen35-bf16-rtx5090.svg`. It also asserts:
 1.009x
 ```
 
-- [ ] **Step 4: Write the English README**
+- [ ] **Step 6: Write the English README**
 
 Use the approved section order. The top contains:
 
@@ -650,7 +718,7 @@ Include the chart, exact benchmark protocol, scope, architecture, quick start,
 renamed CLI commands, parity/performance reproduction, limitations, roadmap,
 contribution, security, citation, and Apache-2.0 license.
 
-- [ ] **Step 5: Write the Chinese README**
+- [ ] **Step 7: Write the Chinese README**
 
 Mirror the English structure and facts. Link back with:
 
@@ -661,34 +729,38 @@ Mirror the English structure and facts. Link back with:
 Do not translate command names, paths, model identifiers, revisions, or
 measured values.
 
-- [ ] **Step 6: Write benchmark documentation**
+- [ ] **Step 8: Write benchmark documentation**
 
 `benchmarks/README.md` defines the checked-in result policy and renderer.
 `docs/benchmarks.md` records methodology, fixed artifact/revision, exact parity,
 measurement counts, ratio definitions, memory meaning, shared-GPU preflight,
 and limitations.
 
-- [ ] **Step 7: Register and run asset tests**
+- [ ] **Step 9: Register and run asset tests**
 
-Add `tests/benchmark-asset-test.sh` to `scripts/local-check.sh`, then run:
+Add `tests/benchmark-chart-test.py` and `tests/benchmark-asset-test.sh` to
+`scripts/local-check.sh`, then run:
 
 ```bash
+python3 tests/benchmark-chart-test.py
 python3 tools/render_benchmark_chart.py \
   benchmarks/results/qwen35-9b-bf16-rtx5090.jsonl \
   docs/assets/qwen35-bf16-rtx5090.svg
 tests/benchmark-asset-test.sh
 python3 tests/readme-links-test.py
-tests/project-brand-test.sh
+tests/public-surface-test.sh
+scripts/check-project-brand.sh
 ```
 
 Expected: all pass.
 
-- [ ] **Step 8: Commit README and benchmark assets**
+- [ ] **Step 10: Commit README and benchmark assets**
 
 ```bash
 git add README.md README.zh-CN.md benchmarks docs/assets \
   docs/benchmarks.md tools/render_benchmark_chart.py \
-  tests/benchmark-asset-test.sh scripts/local-check.sh
+  tests/benchmark-chart-test.py tests/benchmark-asset-test.sh \
+  scripts/local-check.sh
 git commit -m "docs: publish RAFTInfer README and benchmarks"
 ```
 
@@ -723,7 +795,8 @@ Expected: exit 0 throughout.
 Run:
 
 ```bash
-tests/project-brand-test.sh
+tests/public-surface-test.sh
+scripts/check-project-brand.sh
 git grep -I -nE \
   'Blackwell RAFT Runtime|namespace brt|include/brt|Brt[A-Z]|brt_[A-Za-z]|BRT_[A-Z]|brt-(sys|runtime|cli|dev)|"brt_cpp"' \
   -- . \
