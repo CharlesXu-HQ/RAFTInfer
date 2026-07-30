@@ -20,7 +20,7 @@
 #include <utility>
 #include <vector>
 
-namespace brt::model {
+namespace raftinfer::model {
 namespace {
 
 class BestEffortDeviceGuard {
@@ -426,4 +426,4 @@ CudaWeightPlan::upload(ExecutionContext &context, const Model &model,
   return std::unique_ptr<CudaWeightPlan>(new CudaWeightPlan(std::move(impl)));
 }
 
-} // namespace brt::model
+} // namespace raftinfer::model

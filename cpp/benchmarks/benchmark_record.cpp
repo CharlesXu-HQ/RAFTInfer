@@ -7,7 +7,7 @@
 #include <stdexcept>
 #include <string_view>
 
-namespace brt {
+namespace raftinfer {
 namespace {
 
 bool is_digit(char ch) {
@@ -297,4 +297,4 @@ std::string BenchmarkRecord::to_json_line() const {
   return out.str();
 }
 
-}  // namespace brt
+}  // namespace raftinfer

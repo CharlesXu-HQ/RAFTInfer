@@ -1,6 +1,6 @@
 #pragma once
 
-#include <brt/tensor.h>
+#include <raftinfer/tensor.h>
 
 #include <cublasLt.h>
 #include <cuda_runtime_api.h>
@@ -12,7 +12,7 @@
 #include <string>
 #include <vector>
 
-namespace brt {
+namespace raftinfer {
 
 class CublasLtMatmulError : public std::runtime_error {
 public:
@@ -34,9 +34,9 @@ struct CublasLtMatmulShape {
 
 struct CublasLtMatmulConfig {
   CublasLtMatmulShape shape;
-  BrtDataType input_dtype;
-  BrtDataType weight_dtype;
-  BrtDataType output_dtype;
+  RaftInferDataType input_dtype;
+  RaftInferDataType weight_dtype;
+  RaftInferDataType output_dtype;
   CublasLtMatrixOrder input_order;
   CublasLtMatrixOrder weight_order;
   CublasLtMatrixOrder output_order;
@@ -123,4 +123,4 @@ private:
   std::unique_ptr<Impl> impl_;
 };
 
-} // namespace brt
+} // namespace raftinfer

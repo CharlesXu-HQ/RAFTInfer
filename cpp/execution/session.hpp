@@ -10,7 +10,7 @@
 #include <stdexcept>
 #include <string>
 
-namespace brt {
+namespace raftinfer {
 
 class DeviceExecutionOwner;
 class Qwen35Executor;
@@ -68,10 +68,10 @@ private:
   std::shared_ptr<const model::Model> model_;
   Qwen35ExecutionPolicy policy_;
   Qwen35HostState state_;
-#if BRT_ENABLE_CUDA
+#if RAFTINFER_ENABLE_CUDA
   std::unique_ptr<DeviceExecutionOwner> execution_owner_;
   std::unique_ptr<Qwen35Executor> executor_;
 #endif
 };
 
-} // namespace brt
+} // namespace raftinfer

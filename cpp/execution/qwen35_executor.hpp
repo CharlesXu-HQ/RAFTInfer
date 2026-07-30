@@ -15,7 +15,7 @@
 #include <string>
 #include <vector>
 
-namespace brt {
+namespace raftinfer {
 
 class Qwen35ExecutorError : public std::runtime_error {
 public:
@@ -59,7 +59,7 @@ struct Qwen35TraceEntry {
   std::array<float, 3> last{};
 };
 
-#if defined(BRT_QWEN35_EXECUTOR_TESTING)
+#if defined(RAFTINFER_QWEN35_EXECUTOR_TESTING)
 namespace test {
 
 struct Qwen35ExecutorStateSnapshot {
@@ -107,7 +107,7 @@ public:
   bool poisoned() const noexcept;
   Qwen35ExecutionDiagnostics diagnostics() const noexcept;
 
-#if defined(BRT_QWEN35_EXECUTOR_TESTING)
+#if defined(RAFTINFER_QWEN35_EXECUTOR_TESTING)
   test::Qwen35ExecutorStateSnapshot state_snapshot_for_tests() const;
 #endif
 
@@ -116,4 +116,4 @@ private:
   Impl *impl_{};
 };
 
-} // namespace brt
+} // namespace raftinfer

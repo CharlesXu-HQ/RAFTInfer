@@ -37,18 +37,18 @@
 namespace {
 
 static_assert(
-    std::is_same_v<std::underlying_type_t<brt::Qwen35AttentionImplementation>,
+    std::is_same_v<std::underlying_type_t<raftinfer::Qwen35AttentionImplementation>,
                    std::uint8_t>);
-static_assert(brt::Qwen35AttentionImplementation::materialized_reference !=
-              brt::Qwen35AttentionImplementation::online_tiled);
-static_assert(brt::Qwen35ExecutionPolicy{}.attention ==
-              brt::Qwen35AttentionImplementation::online_tiled);
+static_assert(raftinfer::Qwen35AttentionImplementation::materialized_reference !=
+              raftinfer::Qwen35AttentionImplementation::online_tiled);
+static_assert(raftinfer::Qwen35ExecutionPolicy{}.attention ==
+              raftinfer::Qwen35AttentionImplementation::online_tiled);
 
-constexpr brt::kernels::Qwen35AttentionLaunchPolicy kReferenceAttentionPolicy{
+constexpr raftinfer::kernels::Qwen35AttentionLaunchPolicy kReferenceAttentionPolicy{
     .implementation =
-        brt::Qwen35AttentionImplementation::materialized_reference,
-    .kv_cache_dtype = brt::Qwen35KvCacheDType::f32,
-    .kv_cache_layout = brt::Qwen35KvCacheLayout::token_major,
+        raftinfer::Qwen35AttentionImplementation::materialized_reference,
+    .kv_cache_dtype = raftinfer::Qwen35KvCacheDType::f32,
+    .kv_cache_layout = raftinfer::Qwen35KvCacheLayout::token_major,
 };
 
 class TestResources {
@@ -62,10 +62,10 @@ public:
     cudaDeviceProp properties{};
     assert(cudaGetDeviceProperties(&properties, 0) == cudaSuccess);
     const auto stream = raft::resource::get_cuda_stream(resources_).value();
-    workspace_ = std::make_unique<brt::WorkspaceArena>(
+    workspace_ = std::make_unique<raftinfer::WorkspaceArena>(
         rmm::device_async_resource_ref{pool_}, cuda::stream_ref{stream}, stream,
         8 * 1024 * 1024);
-    context_ = std::make_unique<brt::ExecutionContext>(
+    context_ = std::make_unique<raftinfer::ExecutionContext>(
         resources_, rmm::device_async_resource_ref{pool_}, stream, *workspace_,
         0, properties.major, properties.minor, properties.sharedMemPerBlock);
   }
@@ -78,19 +78,19 @@ public:
     workspace_.reset();
   }
 
-  brt::ExecutionContext &context() noexcept { return *context_; }
+  raftinfer::ExecutionContext &context() noexcept { return *context_; }
 
 private:
   rmm::mr::cuda_memory_resource cuda_resource_;
   rmm::mr::pool_memory_resource pool_;
   raft::device_resources resources_;
-  std::unique_ptr<brt::WorkspaceArena> workspace_;
-  std::unique_ptr<brt::ExecutionContext> context_;
+  std::unique_ptr<raftinfer::WorkspaceArena> workspace_;
+  std::unique_ptr<raftinfer::ExecutionContext> context_;
 };
 
 class DeviceBuffer {
 public:
-  DeviceBuffer(brt::ExecutionContext &context, std::size_t bytes)
+  DeviceBuffer(raftinfer::ExecutionContext &context, std::size_t bytes)
       : resource_(context.memory_resource()), stream_ref_(context.stream()),
         stream_(context.stream()), bytes_(bytes == 0 ? 1 : bytes),
         data_(resource_.allocate(stream_ref_, bytes_,
@@ -129,13 +129,13 @@ private:
 template <typename T> struct DTypeTraits;
 
 template <> struct DTypeTraits<__half> {
-  static constexpr BrtDataType dtype = BRT_DTYPE_F16;
+  static constexpr RaftInferDataType dtype = RAFTINFER_DTYPE_F16;
   static __half from_float(float value) { return __float2half_rn(value); }
   static float to_float(__half value) { return __half2float(value); }
 };
 
 template <> struct DTypeTraits<__nv_bfloat16> {
-  static constexpr BrtDataType dtype = BRT_DTYPE_BF16;
+  static constexpr RaftInferDataType dtype = RAFTINFER_DTYPE_BF16;
   static __nv_bfloat16 from_float(float value) {
     return __float2bfloat16_rn(value);
   }
@@ -143,7 +143,7 @@ template <> struct DTypeTraits<__nv_bfloat16> {
 };
 
 template <> struct DTypeTraits<float> {
-  static constexpr BrtDataType dtype = BRT_DTYPE_F32;
+  static constexpr RaftInferDataType dtype = RAFTINFER_DTYPE_F32;
   static float from_float(float value) { return value; }
   static float to_float(float value) { return value; }
 };
@@ -156,7 +156,7 @@ template <typename T> std::vector<T> encode(std::span<const float> values) {
 }
 
 template <typename T>
-DeviceBuffer upload(brt::ExecutionContext &context, std::span<const T> host) {
+DeviceBuffer upload(raftinfer::ExecutionContext &context, std::span<const T> host) {
   DeviceBuffer device{context, host.size_bytes()};
   assert(cudaMemcpyAsync(device.data(), host.data(), host.size_bytes(),
                          cudaMemcpyHostToDevice,
@@ -165,7 +165,7 @@ DeviceBuffer upload(brt::ExecutionContext &context, std::span<const T> host) {
 }
 
 template <typename T>
-std::vector<T> download(brt::ExecutionContext &context, const void *device,
+std::vector<T> download(raftinfer::ExecutionContext &context, const void *device,
                         std::size_t elements) {
   std::vector<T> host(elements);
   assert(cudaMemcpyAsync(host.data(), device, elements * sizeof(T),
@@ -194,14 +194,14 @@ void expect_primitive_error(auto &&fn) {
   bool thrown = false;
   try {
     fn();
-  } catch (const brt::kernels::Qwen35PrimitiveError &) {
+  } catch (const raftinfer::kernels::Qwen35PrimitiveError &) {
     thrown = true;
   }
   assert(thrown);
 }
 
-void run_attention_policy_contract_tests(brt::ExecutionContext &context) {
-  const brt::kernels::Qwen35AttentionShape shape{
+void run_attention_policy_contract_tests(raftinfer::ExecutionContext &context) {
+  const raftinfer::kernels::Qwen35AttentionShape shape{
       .tokens = 1,
       .query_heads = 2,
       .kv_heads = 1,
@@ -209,23 +209,23 @@ void run_attention_policy_contract_tests(brt::ExecutionContext &context) {
       .max_context_tokens = 4,
       .past_tokens = 0,
   };
-  const brt::kernels::Qwen35AttentionLaunchPolicy bf16_online{
-      .implementation = brt::Qwen35AttentionImplementation::online_tiled,
-      .kv_cache_dtype = brt::Qwen35KvCacheDType::bf16,
-      .kv_cache_layout = brt::Qwen35KvCacheLayout::token_major,
+  const raftinfer::kernels::Qwen35AttentionLaunchPolicy bf16_online{
+      .implementation = raftinfer::Qwen35AttentionImplementation::online_tiled,
+      .kv_cache_dtype = raftinfer::Qwen35KvCacheDType::bf16,
+      .kv_cache_layout = raftinfer::Qwen35KvCacheLayout::token_major,
   };
-  const brt::kernels::Qwen35AttentionLaunchPolicy bf16_materialized{
+  const raftinfer::kernels::Qwen35AttentionLaunchPolicy bf16_materialized{
       .implementation =
-          brt::Qwen35AttentionImplementation::materialized_reference,
-      .kv_cache_dtype = brt::Qwen35KvCacheDType::bf16,
-      .kv_cache_layout = brt::Qwen35KvCacheLayout::token_major,
+          raftinfer::Qwen35AttentionImplementation::materialized_reference,
+      .kv_cache_dtype = raftinfer::Qwen35KvCacheDType::bf16,
+      .kv_cache_layout = raftinfer::Qwen35KvCacheLayout::token_major,
   };
-  const brt::kernels::Qwen35AttentionLaunchPolicy f32_online{
-      .implementation = brt::Qwen35AttentionImplementation::online_tiled,
-      .kv_cache_dtype = brt::Qwen35KvCacheDType::f32,
-      .kv_cache_layout = brt::Qwen35KvCacheLayout::token_major,
+  const raftinfer::kernels::Qwen35AttentionLaunchPolicy f32_online{
+      .implementation = raftinfer::Qwen35AttentionImplementation::online_tiled,
+      .kv_cache_dtype = raftinfer::Qwen35KvCacheDType::f32,
+      .kv_cache_layout = raftinfer::Qwen35KvCacheLayout::token_major,
   };
-  const brt::kernels::Qwen35AttentionShape supported_prefill{
+  const raftinfer::kernels::Qwen35AttentionShape supported_prefill{
       .tokens = 4,
       .query_heads = 4,
       .kv_heads = 2,
@@ -233,103 +233,103 @@ void run_attention_policy_contract_tests(brt::ExecutionContext &context) {
       .max_context_tokens = 4,
       .past_tokens = 0,
   };
-  assert(brt::kernels::qwen35_online_attention_prefill_supported(
-      supported_prefill, BRT_DTYPE_F32, f32_online));
-  assert(brt::kernels::qwen35_online_attention_prefill_supported(
-      supported_prefill, BRT_DTYPE_BF16, bf16_online));
-  assert(!brt::kernels::qwen35_online_attention_prefill_supported(
-      supported_prefill, BRT_DTYPE_F16, f32_online));
-  assert(!brt::kernels::qwen35_online_attention_prefill_supported(
-      supported_prefill, BRT_DTYPE_F32, kReferenceAttentionPolicy));
+  assert(raftinfer::kernels::qwen35_online_attention_prefill_supported(
+      supported_prefill, RAFTINFER_DTYPE_F32, f32_online));
+  assert(raftinfer::kernels::qwen35_online_attention_prefill_supported(
+      supported_prefill, RAFTINFER_DTYPE_BF16, bf16_online));
+  assert(!raftinfer::kernels::qwen35_online_attention_prefill_supported(
+      supported_prefill, RAFTINFER_DTYPE_F16, f32_online));
+  assert(!raftinfer::kernels::qwen35_online_attention_prefill_supported(
+      supported_prefill, RAFTINFER_DTYPE_F32, kReferenceAttentionPolicy));
   auto head_major_online = f32_online;
-  head_major_online.kv_cache_layout = brt::Qwen35KvCacheLayout::head_major;
-  assert(brt::kernels::qwen35_online_attention_prefill_supported(
-      supported_prefill, BRT_DTYPE_F32, head_major_online));
+  head_major_online.kv_cache_layout = raftinfer::Qwen35KvCacheLayout::head_major;
+  assert(raftinfer::kernels::qwen35_online_attention_prefill_supported(
+      supported_prefill, RAFTINFER_DTYPE_F32, head_major_online));
   auto unknown_layout_online = f32_online;
   unknown_layout_online.kv_cache_layout =
-      static_cast<brt::Qwen35KvCacheLayout>(99);
-  assert(!brt::kernels::qwen35_online_attention_prefill_supported(
-      supported_prefill, BRT_DTYPE_F32, unknown_layout_online));
+      static_cast<raftinfer::Qwen35KvCacheLayout>(99);
+  assert(!raftinfer::kernels::qwen35_online_attention_prefill_supported(
+      supported_prefill, RAFTINFER_DTYPE_F32, unknown_layout_online));
   auto decode_shape = supported_prefill;
   decode_shape.tokens = 1;
-  assert(!brt::kernels::qwen35_online_attention_prefill_supported(
-      decode_shape, BRT_DTYPE_F32, f32_online));
+  assert(!raftinfer::kernels::qwen35_online_attention_prefill_supported(
+      decode_shape, RAFTINFER_DTYPE_F32, f32_online));
   auto oversized_head = supported_prefill;
   oversized_head.head_dim = 257;
-  assert(!brt::kernels::qwen35_online_attention_prefill_supported(
-      oversized_head, BRT_DTYPE_F32, f32_online));
-  assert(brt::kernels::qwen35_attention_cache_bytes(
+  assert(!raftinfer::kernels::qwen35_online_attention_prefill_supported(
+      oversized_head, RAFTINFER_DTYPE_F32, f32_online));
+  assert(raftinfer::kernels::qwen35_attention_cache_bytes(
              shape, kReferenceAttentionPolicy) ==
          2 * shape.max_context_tokens * shape.kv_heads * shape.head_dim *
              sizeof(float));
-  assert(brt::kernels::qwen35_attention_workspace_bytes(
+  assert(raftinfer::kernels::qwen35_attention_workspace_bytes(
              shape, kReferenceAttentionPolicy) ==
          shape.tokens * shape.query_heads * (shape.past_tokens + shape.tokens) *
              sizeof(float));
-  assert(brt::kernels::qwen35_attention_cache_bytes(shape, bf16_online) ==
+  assert(raftinfer::kernels::qwen35_attention_cache_bytes(shape, bf16_online) ==
          2 * shape.max_context_tokens * shape.kv_heads * shape.head_dim *
              sizeof(__nv_bfloat16));
-  assert(brt::kernels::qwen35_attention_workspace_bytes(shape, bf16_online) ==
+  assert(raftinfer::kernels::qwen35_attention_workspace_bytes(shape, bf16_online) ==
          0);
 
   auto *pointer = reinterpret_cast<void *>(0x1000);
   auto *const_pointer = reinterpret_cast<const void *>(0x1000);
   expect_primitive_error([&] {
-    brt::kernels::qwen35_causal_attention(
+    raftinfer::kernels::qwen35_causal_attention(
         const_pointer, const_pointer, const_pointer, const_pointer, pointer,
         pointer,
-        brt::kernels::qwen35_attention_cache_bytes(shape, bf16_online) - 1,
+        raftinfer::kernels::qwen35_attention_cache_bytes(shape, bf16_online) - 1,
         pointer,
-        brt::kernels::qwen35_attention_workspace_bytes(
+        raftinfer::kernels::qwen35_attention_workspace_bytes(
             shape, kReferenceAttentionPolicy),
-        shape, BRT_DTYPE_F16, bf16_online, context.stream());
+        shape, RAFTINFER_DTYPE_F16, bf16_online, context.stream());
   });
   expect_primitive_error([&] {
-    brt::kernels::qwen35_causal_attention(
+    raftinfer::kernels::qwen35_causal_attention(
         const_pointer, const_pointer, const_pointer, const_pointer, pointer,
         pointer,
-        brt::kernels::qwen35_attention_cache_bytes(shape, bf16_materialized),
+        raftinfer::kernels::qwen35_attention_cache_bytes(shape, bf16_materialized),
         pointer,
-        brt::kernels::qwen35_attention_workspace_bytes(
+        raftinfer::kernels::qwen35_attention_workspace_bytes(
             shape, kReferenceAttentionPolicy),
-        shape, BRT_DTYPE_F16, bf16_materialized, context.stream());
+        shape, RAFTINFER_DTYPE_F16, bf16_materialized, context.stream());
   });
   expect_primitive_error([&] {
-    brt::kernels::qwen35_causal_attention(
+    raftinfer::kernels::qwen35_causal_attention(
         const_pointer, const_pointer, const_pointer, const_pointer, pointer,
         pointer, std::numeric_limits<std::size_t>::max(), nullptr, 0,
-        oversized_head, BRT_DTYPE_F32, f32_online, context.stream());
+        oversized_head, RAFTINFER_DTYPE_F32, f32_online, context.stream());
   });
-  const brt::kernels::Qwen35AttentionShape decode_model_shape{1,   16, 4,
+  const raftinfer::kernels::Qwen35AttentionShape decode_model_shape{1,   16, 4,
                                                               256, 32, 0};
   expect_primitive_error([&] {
-    brt::kernels::qwen35_online_attention_decode(
+    raftinfer::kernels::qwen35_online_attention_decode(
         const_pointer, const_pointer, const_pointer, const_pointer, pointer,
         pointer, std::numeric_limits<std::size_t>::max(),
-        brt::kernels::Qwen35AttentionShape{1, 16, 4, 255, 32, 0}, BRT_DTYPE_F32,
-        brt::Qwen35KvCacheDType::f32,
-        brt::Qwen35KvCacheLayout::token_major, nullptr, context.stream());
+        raftinfer::kernels::Qwen35AttentionShape{1, 16, 4, 255, 32, 0}, RAFTINFER_DTYPE_F32,
+        raftinfer::Qwen35KvCacheDType::f32,
+        raftinfer::Qwen35KvCacheLayout::token_major, nullptr, context.stream());
   });
   expect_primitive_error([&] {
-    brt::kernels::qwen35_online_attention_decode(
+    raftinfer::kernels::qwen35_online_attention_decode(
         const_pointer, const_pointer, const_pointer, const_pointer, pointer,
         pointer, std::numeric_limits<std::size_t>::max(), decode_model_shape,
-        BRT_DTYPE_F16, brt::Qwen35KvCacheDType::f32,
-        brt::Qwen35KvCacheLayout::token_major, nullptr, context.stream());
+        RAFTINFER_DTYPE_F16, raftinfer::Qwen35KvCacheDType::f32,
+        raftinfer::Qwen35KvCacheLayout::token_major, nullptr, context.stream());
   });
   expect_primitive_error([&] {
-    brt::kernels::qwen35_online_attention_decode(
+    raftinfer::kernels::qwen35_online_attention_decode(
         const_pointer, const_pointer, const_pointer, const_pointer, pointer,
-        pointer, sizeof(float), decode_model_shape, BRT_DTYPE_F32,
-        brt::Qwen35KvCacheDType::f32,
-        brt::Qwen35KvCacheLayout::token_major, nullptr, context.stream());
+        pointer, sizeof(float), decode_model_shape, RAFTINFER_DTYPE_F32,
+        raftinfer::Qwen35KvCacheDType::f32,
+        raftinfer::Qwen35KvCacheLayout::token_major, nullptr, context.stream());
   });
   expect_primitive_error([&] {
-    brt::kernels::qwen35_online_attention_decode(
+    raftinfer::kernels::qwen35_online_attention_decode(
         const_pointer, const_pointer, const_pointer, const_pointer, pointer,
         pointer, std::numeric_limits<std::size_t>::max(), decode_model_shape,
-        BRT_DTYPE_F32, brt::Qwen35KvCacheDType::f32,
-        static_cast<brt::Qwen35KvCacheLayout>(99), nullptr, context.stream());
+        RAFTINFER_DTYPE_F32, raftinfer::Qwen35KvCacheDType::f32,
+        static_cast<raftinfer::Qwen35KvCacheLayout>(99), nullptr, context.stream());
   });
 
   const std::size_t supported_output_elements = supported_prefill.tokens *
@@ -347,25 +347,25 @@ void run_attention_policy_contract_tests(brt::ExecutionContext &context) {
   DeviceBuffer supported_output{context,
                                 supported_output_elements * sizeof(float)};
   DeviceBuffer supported_cache{
-      context, brt::kernels::qwen35_attention_cache_bytes(supported_prefill,
+      context, raftinfer::kernels::qwen35_attention_cache_bytes(supported_prefill,
                                                           f32_online)};
   DeviceBuffer forbidden_workspace{context, sizeof(float)};
   expect_primitive_error([&] {
-    brt::kernels::qwen35_causal_attention(
+    raftinfer::kernels::qwen35_causal_attention(
         supported_query.data(), supported_key.data(), supported_value.data(),
         supported_gate.data(), supported_output.data(), supported_cache.data(),
-        brt::kernels::qwen35_attention_cache_bytes(supported_prefill,
+        raftinfer::kernels::qwen35_attention_cache_bytes(supported_prefill,
                                                    f32_online),
-        forbidden_workspace.data(), 0, supported_prefill, BRT_DTYPE_F32,
+        forbidden_workspace.data(), 0, supported_prefill, RAFTINFER_DTYPE_F32,
         f32_online, context.stream());
   });
   expect_primitive_error([&] {
-    brt::kernels::qwen35_causal_attention(
+    raftinfer::kernels::qwen35_causal_attention(
         supported_query.data(), supported_key.data(), supported_value.data(),
         supported_gate.data(), supported_output.data(), supported_cache.data(),
-        brt::kernels::qwen35_attention_cache_bytes(supported_prefill,
+        raftinfer::kernels::qwen35_attention_cache_bytes(supported_prefill,
                                                    f32_online),
-        nullptr, sizeof(float), supported_prefill, BRT_DTYPE_F32, f32_online,
+        nullptr, sizeof(float), supported_prefill, RAFTINFER_DTYPE_F32, f32_online,
         context.stream());
   });
 }
@@ -373,7 +373,7 @@ void run_attention_policy_contract_tests(brt::ExecutionContext &context) {
 void apply_qk_norm_rope_reference(std::span<const float> input,
                                   std::span<const float> weight,
                                   std::span<float> output,
-                                  brt::kernels::QkNormRopeShape shape,
+                                  raftinfer::kernels::QkNormRopeShape shape,
                                   float epsilon) {
   for (std::size_t token = 0; token < shape.tokens; ++token) {
     for (std::size_t head = 0; head < shape.heads; ++head) {
@@ -436,23 +436,23 @@ struct OnlinePrefillCase {
 };
 
 template <typename T>
-constexpr brt::Qwen35KvCacheDType cache_dtype_for() noexcept {
+constexpr raftinfer::Qwen35KvCacheDType cache_dtype_for() noexcept {
   if constexpr (std::is_same_v<T, float>) {
-    return brt::Qwen35KvCacheDType::f32;
+    return raftinfer::Qwen35KvCacheDType::f32;
   } else {
     static_assert(std::is_same_v<T, __nv_bfloat16>);
-    return brt::Qwen35KvCacheDType::bf16;
+    return raftinfer::Qwen35KvCacheDType::bf16;
   }
 }
 
-std::size_t cache_index_for_layout(brt::Qwen35KvCacheLayout layout,
+std::size_t cache_index_for_layout(raftinfer::Qwen35KvCacheLayout layout,
                                    std::size_t token, std::size_t kv_head,
                                    std::size_t dim,
-                                   brt::kernels::Qwen35AttentionShape shape) {
+                                   raftinfer::kernels::Qwen35AttentionShape shape) {
   switch (layout) {
-  case brt::Qwen35KvCacheLayout::token_major:
+  case raftinfer::Qwen35KvCacheLayout::token_major:
     return (token * shape.kv_heads + kv_head) * shape.head_dim + dim;
-  case brt::Qwen35KvCacheLayout::head_major:
+  case raftinfer::Qwen35KvCacheLayout::head_major:
     return (kv_head * shape.max_context_tokens + token) * shape.head_dim + dim;
   }
   assert(false);
@@ -463,8 +463,8 @@ template <typename CacheT>
 std::vector<CacheT>
 make_online_cache(std::span<const float> past_key,
                   std::span<const float> past_value,
-                  brt::kernels::Qwen35AttentionShape shape,
-                  brt::Qwen35KvCacheLayout layout) {
+                  raftinfer::kernels::Qwen35AttentionShape shape,
+                  raftinfer::Qwen35KvCacheLayout layout) {
   const std::size_t kv_size = shape.kv_heads * shape.head_dim;
   const std::size_t plane = shape.max_context_tokens * kv_size;
   std::vector<float> cache_f32(2 * plane, 0.0F);
@@ -487,14 +487,14 @@ make_online_cache(std::span<const float> past_key,
 
 template <typename T>
 std::vector<float> run_materialized_prefill(
-    brt::ExecutionContext &context, std::span<const T> query,
+    raftinfer::ExecutionContext &context, std::span<const T> query,
     std::span<const T> key, std::span<const T> value, std::span<const T> gate,
     std::span<const float> past_key, std::span<const float> past_value,
-    brt::kernels::Qwen35AttentionShape shape) {
+    raftinfer::kernels::Qwen35AttentionShape shape) {
   const std::size_t output_elements =
       shape.tokens * shape.query_heads * shape.head_dim;
   const auto cache = make_online_cache<float>(
-      past_key, past_value, shape, brt::Qwen35KvCacheLayout::token_major);
+      past_key, past_value, shape, raftinfer::Qwen35KvCacheLayout::token_major);
   auto device_cache = upload(context, std::span{cache});
   const auto device_query = upload(context, query);
   const auto device_key = upload(context, key);
@@ -502,14 +502,14 @@ std::vector<float> run_materialized_prefill(
   const auto device_gate = upload(context, gate);
   DeviceBuffer device_output{context, output_elements * sizeof(T)};
   DeviceBuffer device_workspace{context,
-                                brt::kernels::qwen35_attention_workspace_bytes(
+                                raftinfer::kernels::qwen35_attention_workspace_bytes(
                                     shape, kReferenceAttentionPolicy)};
 
-  brt::kernels::qwen35_causal_attention(
+  raftinfer::kernels::qwen35_causal_attention(
       device_query.data(), device_key.data(), device_value.data(),
       device_gate.data(), device_output.data(), device_cache.data(),
       cache.size() * sizeof(float), device_workspace.data(),
-      brt::kernels::qwen35_attention_workspace_bytes(shape,
+      raftinfer::kernels::qwen35_attention_workspace_bytes(shape,
                                                      kReferenceAttentionPolicy),
       shape, DTypeTraits<T>::dtype, kReferenceAttentionPolicy,
       context.stream());
@@ -524,15 +524,15 @@ std::vector<float> run_materialized_prefill(
 
 template <typename ActivationT, typename CacheT>
 std::vector<float>
-run_online_prefill(brt::ExecutionContext &context,
+run_online_prefill(raftinfer::ExecutionContext &context,
                    std::span<const ActivationT> query,
                    std::span<const ActivationT> key,
                    std::span<const ActivationT> value,
                    std::span<const ActivationT> gate,
                    std::span<const float> past_key,
                    std::span<const float> past_value,
-                   brt::kernels::Qwen35AttentionShape shape,
-                   brt::Qwen35KvCacheLayout layout) {
+                   raftinfer::kernels::Qwen35AttentionShape shape,
+                   raftinfer::Qwen35KvCacheLayout layout) {
   const std::size_t output_elements =
       shape.tokens * shape.query_heads * shape.head_dim;
   const auto cache = make_online_cache<CacheT>(past_key, past_value, shape,
@@ -543,16 +543,16 @@ run_online_prefill(brt::ExecutionContext &context,
   const auto device_value = upload(context, value);
   const auto device_gate = upload(context, gate);
   DeviceBuffer device_output{context, output_elements * sizeof(ActivationT)};
-  const brt::kernels::Qwen35AttentionLaunchPolicy online_policy{
-      .implementation = brt::Qwen35AttentionImplementation::online_tiled,
+  const raftinfer::kernels::Qwen35AttentionLaunchPolicy online_policy{
+      .implementation = raftinfer::Qwen35AttentionImplementation::online_tiled,
       .kv_cache_dtype = cache_dtype_for<CacheT>(),
       .kv_cache_layout = layout,
   };
 
-  assert(brt::kernels::qwen35_online_attention_workspace_bytes(shape) == 0);
-  assert(brt::kernels::qwen35_attention_workspace_bytes(shape, online_policy) ==
+  assert(raftinfer::kernels::qwen35_online_attention_workspace_bytes(shape) == 0);
+  assert(raftinfer::kernels::qwen35_attention_workspace_bytes(shape, online_policy) ==
          0);
-  brt::kernels::qwen35_causal_attention(
+  raftinfer::kernels::qwen35_causal_attention(
       device_query.data(), device_key.data(), device_value.data(),
       device_gate.data(), device_output.data(), device_cache.data(),
       cache.size() * sizeof(CacheT), nullptr, 0, shape,
@@ -567,10 +567,10 @@ run_online_prefill(brt::ExecutionContext &context,
 }
 
 template <typename ActivationT, typename CacheT>
-void run_online_materialized_parity_case(brt::ExecutionContext &context,
+void run_online_materialized_parity_case(raftinfer::ExecutionContext &context,
                                          OnlinePrefillCase test_case,
-                                         brt::Qwen35KvCacheLayout layout) {
-  const brt::kernels::Qwen35AttentionShape shape{
+                                         raftinfer::Qwen35KvCacheLayout layout) {
+  const raftinfer::kernels::Qwen35AttentionShape shape{
       .tokens = test_case.tokens,
       .query_heads = test_case.query_heads,
       .kv_heads = test_case.kv_heads,
@@ -637,12 +637,12 @@ void run_online_materialized_parity_case(brt::ExecutionContext &context,
 }
 
 template <typename ActivationT, typename CacheT>
-void run_adversarial_online_rescaling_case(brt::ExecutionContext &context) {
+void run_adversarial_online_rescaling_case(raftinfer::ExecutionContext &context) {
   constexpr std::size_t tokens = 17;
   constexpr std::size_t query_heads = 4;
   constexpr std::size_t kv_heads = 2;
   constexpr std::size_t head_dim = 64;
-  const brt::kernels::Qwen35AttentionShape shape{
+  const raftinfer::kernels::Qwen35AttentionShape shape{
       tokens, query_heads, kv_heads, head_dim, tokens, 0};
   std::vector<float> query_f32(tokens * query_heads * head_dim, 0.0F);
   std::vector<float> key_f32(tokens * kv_heads * head_dim, 0.0F);
@@ -671,7 +671,7 @@ void run_adversarial_online_rescaling_case(brt::ExecutionContext &context) {
       context, query, key, value, gate, no_past, no_past, shape);
   const auto online = run_online_prefill<ActivationT, CacheT>(
       context, query, key, value, gate, no_past, no_past, shape,
-      brt::Qwen35KvCacheLayout::head_major);
+      raftinfer::Qwen35KvCacheLayout::head_major);
 
   assert(reference.size() == online.size());
   for (std::size_t i = 0; i < online.size(); ++i) {
@@ -681,9 +681,9 @@ void run_adversarial_online_rescaling_case(brt::ExecutionContext &context) {
 }
 
 template <typename ActivationT, typename CacheT>
-void run_online_prefill_cases(brt::ExecutionContext &context) {
-  for (const auto layout : {brt::Qwen35KvCacheLayout::token_major,
-                            brt::Qwen35KvCacheLayout::head_major}) {
+void run_online_prefill_cases(raftinfer::ExecutionContext &context) {
+  for (const auto layout : {raftinfer::Qwen35KvCacheLayout::token_major,
+                            raftinfer::Qwen35KvCacheLayout::head_major}) {
     run_online_materialized_parity_case<ActivationT, CacheT>(
         context, {4, 4, 2, 64, 0}, layout);
     run_online_materialized_parity_case<ActivationT, CacheT>(
@@ -697,9 +697,9 @@ void run_online_prefill_cases(brt::ExecutionContext &context) {
 }
 
 template <typename ActivationT, typename CacheT>
-void run_online_decode_case(brt::ExecutionContext &context,
+void run_online_decode_case(raftinfer::ExecutionContext &context,
                             std::size_t context_tokens,
-                            brt::Qwen35KvCacheLayout layout) {
+                            raftinfer::Qwen35KvCacheLayout layout) {
   constexpr std::size_t query_heads = 16;
   constexpr std::size_t kv_heads = 4;
   constexpr std::size_t head_dim = 256;
@@ -707,7 +707,7 @@ void run_online_decode_case(brt::ExecutionContext &context,
   constexpr std::size_t kv_size = kv_heads * head_dim;
   const std::size_t first_position = context_tokens - 1;
   const std::size_t max_context_tokens = context_tokens + 1;
-  const brt::kernels::Qwen35AttentionShape decode_shape{
+  const raftinfer::kernels::Qwen35AttentionShape decode_shape{
       .tokens = 1,
       .query_heads = query_heads,
       .kv_heads = kv_heads,
@@ -731,7 +731,7 @@ void run_online_decode_case(brt::ExecutionContext &context,
       context, std::span{query}.first(hidden_size),
       std::span{key}.first(kv_size), std::span{value}.first(kv_size),
       std::span{gate}.first(hidden_size), past_key, past_value,
-      brt::kernels::Qwen35AttentionShape{1, query_heads, kv_heads, head_dim,
+      raftinfer::kernels::Qwen35AttentionShape{1, query_heads, kv_heads, head_dim,
                                          max_context_tokens, first_position});
 
   auto second_past_key = past_key;
@@ -752,7 +752,7 @@ void run_online_decode_case(brt::ExecutionContext &context,
       std::span{value}.subspan(kv_size, kv_size),
       std::span{gate}.subspan(hidden_size, hidden_size), second_past_key,
       second_past_value,
-      brt::kernels::Qwen35AttentionShape{1, query_heads, kv_heads, head_dim,
+      raftinfer::kernels::Qwen35AttentionShape{1, query_heads, kv_heads, head_dim,
                                          max_context_tokens,
                                          first_position + 1});
 
@@ -770,7 +770,7 @@ void run_online_decode_case(brt::ExecutionContext &context,
   auto device_position = upload(
       context, std::span<const std::uint32_t>{&position, std::size_t{1}});
 
-  brt::kernels::qwen35_online_attention_decode(
+  raftinfer::kernels::qwen35_online_attention_decode(
       device_query.data(), device_key.data(), device_value.data(),
       device_gate.data(), device_output.data(), device_cache.data(),
       cache.size() * sizeof(CacheT), decode_shape,
@@ -781,7 +781,7 @@ void run_online_decode_case(brt::ExecutionContext &context,
   assert(cudaMemcpyAsync(device_position.data(), &position, sizeof(position),
                          cudaMemcpyHostToDevice,
                          context.stream()) == cudaSuccess);
-  brt::kernels::qwen35_online_attention_decode(
+  raftinfer::kernels::qwen35_online_attention_decode(
       static_cast<const ActivationT *>(device_query.data()) + hidden_size,
       static_cast<const ActivationT *>(device_key.data()) + kv_size,
       static_cast<const ActivationT *>(device_value.data()) + kv_size,
@@ -851,12 +851,12 @@ void run_online_decode_case(brt::ExecutionContext &context,
         upload(context, std::span{host_position_cache});
     DeviceBuffer device_host_position_output{context,
                                              hidden_size * sizeof(ActivationT)};
-    const brt::kernels::Qwen35AttentionLaunchPolicy online_policy{
-        .implementation = brt::Qwen35AttentionImplementation::online_tiled,
+    const raftinfer::kernels::Qwen35AttentionLaunchPolicy online_policy{
+        .implementation = raftinfer::Qwen35AttentionImplementation::online_tiled,
         .kv_cache_dtype = cache_dtype_for<CacheT>(),
         .kv_cache_layout = layout,
     };
-    brt::kernels::qwen35_causal_attention(
+    raftinfer::kernels::qwen35_causal_attention(
         device_query.data(), device_key.data(), device_value.data(),
         device_gate.data(), device_host_position_output.data(),
         device_host_position_cache.data(),
@@ -875,9 +875,9 @@ void run_online_decode_case(brt::ExecutionContext &context,
 }
 
 template <typename ActivationT, typename CacheT>
-void run_online_decode_cases(brt::ExecutionContext &context) {
-  for (const auto layout : {brt::Qwen35KvCacheLayout::token_major,
-                            brt::Qwen35KvCacheLayout::head_major}) {
+void run_online_decode_cases(raftinfer::ExecutionContext &context) {
+  for (const auto layout : {raftinfer::Qwen35KvCacheLayout::token_major,
+                            raftinfer::Qwen35KvCacheLayout::head_major}) {
     run_online_decode_case<ActivationT, CacheT>(context, 32, layout);
     run_online_decode_case<ActivationT, CacheT>(context, 128, layout);
     run_online_decode_case<ActivationT, CacheT>(context, 512, layout);
@@ -885,7 +885,7 @@ void run_online_decode_cases(brt::ExecutionContext &context) {
 }
 
 template <typename T>
-void run_prefill_case(brt::ExecutionContext &context, std::size_t tokens,
+void run_prefill_case(raftinfer::ExecutionContext &context, std::size_t tokens,
                       std::size_t query_heads, std::size_t kv_heads,
                       std::size_t head_dim) {
   const std::size_t hidden_size = query_heads * head_dim;
@@ -904,12 +904,12 @@ void run_prefill_case(brt::ExecutionContext &context, std::size_t tokens,
   std::vector<float> k_norm(k_raw.size());
   apply_qk_norm_rope_reference(
       q_raw, q_weight, q_norm,
-      brt::kernels::QkNormRopeShape{tokens, query_heads, head_dim, rotary_dim,
+      raftinfer::kernels::QkNormRopeShape{tokens, query_heads, head_dim, rotary_dim,
                                     3, 10000.0F},
       1.0e-5F);
   apply_qk_norm_rope_reference(
       k_raw, k_weight, k_norm,
-      brt::kernels::QkNormRopeShape{tokens, kv_heads, head_dim, rotary_dim, 3,
+      raftinfer::kernels::QkNormRopeShape{tokens, kv_heads, head_dim, rotary_dim, 3,
                                     10000.0F},
       1.0e-5F);
 
@@ -934,13 +934,13 @@ void run_prefill_case(brt::ExecutionContext &context, std::size_t tokens,
   }
 
   std::vector<float> expected(tokens * hidden_size);
-  brt::reference::qwen35_gated_full_attention(
+  raftinfer::reference::qwen35_gated_full_attention(
       reference_input, expected,
-      brt::reference::FullAttentionReferenceWeights{
+      raftinfer::reference::FullAttentionReferenceWeights{
           .query_norm_weight = q_weight,
           .key_norm_weight = k_weight,
           .output_weight = identity_matrix(hidden_size)},
-      brt::reference::FullAttentionReferenceArgs{.tokens = tokens,
+      raftinfer::reference::FullAttentionReferenceArgs{.tokens = tokens,
                                                  .hidden_size = hidden_size,
                                                  .query_heads = query_heads,
                                                  .kv_heads = kv_heads,
@@ -969,34 +969,34 @@ void run_prefill_case(brt::ExecutionContext &context, std::size_t tokens,
   DeviceBuffer device_cache{context,
                             2 * tokens * kv_heads * head_dim * sizeof(float)};
   DeviceBuffer device_logits{
-      context, brt::kernels::qwen35_attention_workspace_bytes(
-                   brt::kernels::Qwen35AttentionShape{
+      context, raftinfer::kernels::qwen35_attention_workspace_bytes(
+                   raftinfer::kernels::Qwen35AttentionShape{
                        tokens, query_heads, kv_heads, head_dim, tokens, 0})};
   DeviceBuffer device_output{context, tokens * hidden_size * sizeof(T)};
 
-  brt::kernels::qwen35_qk_norm_rope(
+  raftinfer::kernels::qwen35_qk_norm_rope(
       device_q_raw.data(), device_q_weight.data(), device_q.data(),
-      brt::kernels::QkNormRopeShape{tokens, query_heads, head_dim, rotary_dim,
+      raftinfer::kernels::QkNormRopeShape{tokens, query_heads, head_dim, rotary_dim,
                                     3, 10000.0F},
       1.0e-5F, DTypeTraits<T>::dtype, DTypeTraits<T>::dtype, context.stream());
-  brt::kernels::qwen35_qk_norm_rope(
+  raftinfer::kernels::qwen35_qk_norm_rope(
       device_k_raw.data(), device_k_weight.data(), device_k.data(),
-      brt::kernels::QkNormRopeShape{tokens, kv_heads, head_dim, rotary_dim, 3,
+      raftinfer::kernels::QkNormRopeShape{tokens, kv_heads, head_dim, rotary_dim, 3,
                                     10000.0F},
       1.0e-5F, DTypeTraits<T>::dtype, DTypeTraits<T>::dtype, context.stream());
-  brt::kernels::qwen35_causal_attention(
+  raftinfer::kernels::qwen35_causal_attention(
       device_q.data(), device_k.data(), device_v.data(), device_gate.data(),
       device_output.data(), device_cache.data(),
-      brt::kernels::qwen35_attention_cache_bytes(
-          brt::kernels::Qwen35AttentionShape{tokens, query_heads, kv_heads,
+      raftinfer::kernels::qwen35_attention_cache_bytes(
+          raftinfer::kernels::Qwen35AttentionShape{tokens, query_heads, kv_heads,
                                              head_dim, tokens, 0},
           kReferenceAttentionPolicy),
       device_logits.data(),
-      brt::kernels::qwen35_attention_workspace_bytes(
-          brt::kernels::Qwen35AttentionShape{tokens, query_heads, kv_heads,
+      raftinfer::kernels::qwen35_attention_workspace_bytes(
+          raftinfer::kernels::Qwen35AttentionShape{tokens, query_heads, kv_heads,
                                              head_dim, tokens, 0},
           kReferenceAttentionPolicy),
-      brt::kernels::Qwen35AttentionShape{tokens, query_heads, kv_heads,
+      raftinfer::kernels::Qwen35AttentionShape{tokens, query_heads, kv_heads,
                                          head_dim, tokens, 0},
       DTypeTraits<T>::dtype, kReferenceAttentionPolicy, context.stream());
 
@@ -1018,7 +1018,7 @@ void run_prefill_case(brt::ExecutionContext &context, std::size_t tokens,
 }
 
 template <typename T>
-void run_prefill_dtype_cases(brt::ExecutionContext &context) {
+void run_prefill_dtype_cases(raftinfer::ExecutionContext &context) {
   run_prefill_case<T>(context, 1, 2, 1, 7);
   run_prefill_case<T>(context, 2, 4, 2, 7);
   run_prefill_case<T>(context, 4, 4, 1, 7);
@@ -1026,7 +1026,7 @@ void run_prefill_dtype_cases(brt::ExecutionContext &context) {
 }
 
 template <typename T>
-void run_decode_after_prefill_case(brt::ExecutionContext &context,
+void run_decode_after_prefill_case(raftinfer::ExecutionContext &context,
                                    std::size_t decode_tokens) {
   constexpr std::size_t prefill_tokens = 4;
   constexpr std::size_t query_heads = 4;
@@ -1047,12 +1047,12 @@ void run_decode_after_prefill_case(brt::ExecutionContext &context,
   std::vector<float> k_norm(k_raw.size());
   apply_qk_norm_rope_reference(
       q_raw, unit_weight, q_norm,
-      brt::kernels::QkNormRopeShape{total_tokens, query_heads, head_dim,
+      raftinfer::kernels::QkNormRopeShape{total_tokens, query_heads, head_dim,
                                     rotary_dim, 0, 10000.0F},
       1.0e-5F);
   apply_qk_norm_rope_reference(
       k_raw, unit_weight, k_norm,
-      brt::kernels::QkNormRopeShape{total_tokens, kv_heads, head_dim,
+      raftinfer::kernels::QkNormRopeShape{total_tokens, kv_heads, head_dim,
                                     rotary_dim, 0, 10000.0F},
       1.0e-5F);
 
@@ -1076,13 +1076,13 @@ void run_decode_after_prefill_case(brt::ExecutionContext &context,
             static_cast<std::ptrdiff_t>(token * stride + q_size + 2 * kv_size));
   }
   std::vector<float> expected_all(total_tokens * hidden_size);
-  brt::reference::qwen35_gated_full_attention(
+  raftinfer::reference::qwen35_gated_full_attention(
       reference_input, expected_all,
-      brt::reference::FullAttentionReferenceWeights{
+      raftinfer::reference::FullAttentionReferenceWeights{
           .query_norm_weight = unit_weight,
           .key_norm_weight = unit_weight,
           .output_weight = identity_matrix(hidden_size)},
-      brt::reference::FullAttentionReferenceArgs{.tokens = total_tokens,
+      raftinfer::reference::FullAttentionReferenceArgs{.tokens = total_tokens,
                                                  .hidden_size = hidden_size,
                                                  .query_heads = query_heads,
                                                  .kv_heads = kv_heads,
@@ -1095,13 +1095,13 @@ void run_decode_after_prefill_case(brt::ExecutionContext &context,
   DeviceBuffer device_cache{context, 2 * total_tokens * kv_heads * head_dim *
                                          sizeof(float)};
   DeviceBuffer prefill_logits{context,
-                              brt::kernels::qwen35_attention_workspace_bytes(
-                                  brt::kernels::Qwen35AttentionShape{
+                              raftinfer::kernels::qwen35_attention_workspace_bytes(
+                                  raftinfer::kernels::Qwen35AttentionShape{
                                       prefill_tokens, query_heads, kv_heads,
                                       head_dim, total_tokens, 0})};
   DeviceBuffer decode_logits{context,
-                             brt::kernels::qwen35_attention_workspace_bytes(
-                                 brt::kernels::Qwen35AttentionShape{
+                             raftinfer::kernels::qwen35_attention_workspace_bytes(
+                                 raftinfer::kernels::Qwen35AttentionShape{
                                      decode_tokens, query_heads, kv_heads,
                                      head_dim, total_tokens, prefill_tokens})};
   DeviceBuffer prefill_output{context,
@@ -1123,44 +1123,44 @@ void run_decode_after_prefill_case(brt::ExecutionContext &context,
   DeviceBuffer device_q{context, q.size() * sizeof(T)};
   DeviceBuffer device_k{context, k.size() * sizeof(T)};
 
-  brt::kernels::qwen35_qk_norm_rope(
+  raftinfer::kernels::qwen35_qk_norm_rope(
       device_q_raw.data(), device_weight.data(), device_q.data(),
-      brt::kernels::QkNormRopeShape{total_tokens, query_heads, head_dim,
+      raftinfer::kernels::QkNormRopeShape{total_tokens, query_heads, head_dim,
                                     rotary_dim, 0, 10000.0F},
       1.0e-5F, DTypeTraits<T>::dtype, DTypeTraits<T>::dtype, context.stream());
-  brt::kernels::qwen35_qk_norm_rope(
+  raftinfer::kernels::qwen35_qk_norm_rope(
       device_k_raw.data(), device_weight.data(), device_k.data(),
-      brt::kernels::QkNormRopeShape{total_tokens, kv_heads, head_dim,
+      raftinfer::kernels::QkNormRopeShape{total_tokens, kv_heads, head_dim,
                                     rotary_dim, 0, 10000.0F},
       1.0e-5F, DTypeTraits<T>::dtype, DTypeTraits<T>::dtype, context.stream());
 
-  brt::kernels::qwen35_causal_attention(
+  raftinfer::kernels::qwen35_causal_attention(
       device_q.data(), device_k.data(), device_v.data(), device_gate.data(),
       prefill_output.data(), static_cast<float *>(device_cache.data()),
       static_cast<float *>(prefill_logits.data()),
-      brt::kernels::qwen35_attention_workspace_floats(
-          brt::kernels::Qwen35AttentionShape{prefill_tokens, query_heads,
+      raftinfer::kernels::qwen35_attention_workspace_floats(
+          raftinfer::kernels::Qwen35AttentionShape{prefill_tokens, query_heads,
                                              kv_heads, head_dim, total_tokens,
                                              0}),
-      brt::kernels::Qwen35AttentionShape{prefill_tokens, query_heads, kv_heads,
+      raftinfer::kernels::Qwen35AttentionShape{prefill_tokens, query_heads, kv_heads,
                                          head_dim, total_tokens, 0},
       DTypeTraits<T>::dtype, context.stream());
 
   const std::size_t q_offset = prefill_tokens * q_size;
   const std::size_t kv_offset = prefill_tokens * kv_size;
   const std::size_t hidden_offset = prefill_tokens * hidden_size;
-  brt::kernels::qwen35_causal_attention(
+  raftinfer::kernels::qwen35_causal_attention(
       static_cast<const T *>(device_q.data()) + q_offset,
       static_cast<const T *>(device_k.data()) + kv_offset,
       static_cast<const T *>(device_v.data()) + kv_offset,
       static_cast<const T *>(device_gate.data()) + hidden_offset,
       decode_output.data(), static_cast<float *>(device_cache.data()),
       static_cast<float *>(decode_logits.data()),
-      brt::kernels::qwen35_attention_workspace_floats(
-          brt::kernels::Qwen35AttentionShape{decode_tokens, query_heads,
+      raftinfer::kernels::qwen35_attention_workspace_floats(
+          raftinfer::kernels::Qwen35AttentionShape{decode_tokens, query_heads,
                                              kv_heads, head_dim, total_tokens,
                                              prefill_tokens}),
-      brt::kernels::Qwen35AttentionShape{decode_tokens, query_heads, kv_heads,
+      raftinfer::kernels::Qwen35AttentionShape{decode_tokens, query_heads, kv_heads,
                                          head_dim, total_tokens,
                                          prefill_tokens},
       DTypeTraits<T>::dtype, context.stream());
@@ -1184,54 +1184,54 @@ void run_decode_after_prefill_case(brt::ExecutionContext &context,
   }
 }
 
-void run_invalid_shape_tests(brt::ExecutionContext &context) {
+void run_invalid_shape_tests(raftinfer::ExecutionContext &context) {
   auto *pointer = reinterpret_cast<void *>(0x1000);
   auto *const_pointer = reinterpret_cast<const void *>(0x1000);
   auto *floats = reinterpret_cast<float *>(0x1000);
-  const brt::kernels::Qwen35AttentionShape valid{1, 2, 1, 7, 4, 0};
+  const raftinfer::kernels::Qwen35AttentionShape valid{1, 2, 1, 7, 4, 0};
   expect_primitive_error([&] {
-    brt::kernels::qwen35_causal_attention(
+    raftinfer::kernels::qwen35_causal_attention(
         nullptr, const_pointer, const_pointer, const_pointer, pointer, floats,
-        floats, brt::kernels::qwen35_attention_workspace_floats(valid), valid,
-        BRT_DTYPE_F16, context.stream());
+        floats, raftinfer::kernels::qwen35_attention_workspace_floats(valid), valid,
+        RAFTINFER_DTYPE_F16, context.stream());
   });
   expect_primitive_error([&] {
-    brt::kernels::qwen35_causal_attention(
+    raftinfer::kernels::qwen35_causal_attention(
         const_pointer, const_pointer, const_pointer, const_pointer, pointer,
-        floats, floats, brt::kernels::qwen35_attention_workspace_floats(valid),
-        brt::kernels::Qwen35AttentionShape{0, 2, 1, 7, 4, 0}, BRT_DTYPE_F16,
+        floats, floats, raftinfer::kernels::qwen35_attention_workspace_floats(valid),
+        raftinfer::kernels::Qwen35AttentionShape{0, 2, 1, 7, 4, 0}, RAFTINFER_DTYPE_F16,
         context.stream());
   });
   expect_primitive_error([&] {
-    brt::kernels::qwen35_causal_attention(
+    raftinfer::kernels::qwen35_causal_attention(
         const_pointer, const_pointer, const_pointer, const_pointer, pointer,
-        floats, floats, brt::kernels::qwen35_attention_workspace_floats(valid),
-        brt::kernels::Qwen35AttentionShape{1, 3, 2, 7, 4, 0}, BRT_DTYPE_F16,
+        floats, floats, raftinfer::kernels::qwen35_attention_workspace_floats(valid),
+        raftinfer::kernels::Qwen35AttentionShape{1, 3, 2, 7, 4, 0}, RAFTINFER_DTYPE_F16,
         context.stream());
   });
   expect_primitive_error([&] {
-    brt::kernels::qwen35_causal_attention(
+    raftinfer::kernels::qwen35_causal_attention(
         const_pointer, const_pointer, const_pointer, const_pointer, pointer,
-        floats, floats, brt::kernels::qwen35_attention_workspace_floats(valid),
-        brt::kernels::Qwen35AttentionShape{2, 2, 1, 7, 2, 1}, BRT_DTYPE_F16,
+        floats, floats, raftinfer::kernels::qwen35_attention_workspace_floats(valid),
+        raftinfer::kernels::Qwen35AttentionShape{2, 2, 1, 7, 2, 1}, RAFTINFER_DTYPE_F16,
         context.stream());
   });
   expect_primitive_error([&] {
-    brt::kernels::qwen35_causal_attention(
+    raftinfer::kernels::qwen35_causal_attention(
         const_pointer, const_pointer, const_pointer, const_pointer, pointer,
-        floats, floats, brt::kernels::qwen35_attention_workspace_floats(valid),
-        valid, BRT_DTYPE_Q4_K, context.stream());
+        floats, floats, raftinfer::kernels::qwen35_attention_workspace_floats(valid),
+        valid, RAFTINFER_DTYPE_Q4_K, context.stream());
   });
   expect_primitive_error([&] {
-    brt::kernels::qwen35_causal_attention(
+    raftinfer::kernels::qwen35_causal_attention(
         const_pointer, const_pointer, const_pointer, const_pointer, pointer,
         floats, floats,
-        brt::kernels::qwen35_attention_workspace_floats(valid) - 1, valid,
-        BRT_DTYPE_F16, context.stream());
+        raftinfer::kernels::qwen35_attention_workspace_floats(valid) - 1, valid,
+        RAFTINFER_DTYPE_F16, context.stream());
   });
   expect_primitive_error([&] {
-    (void)brt::kernels::qwen35_attention_workspace_bytes(
-        brt::kernels::Qwen35AttentionShape{
+    (void)raftinfer::kernels::qwen35_attention_workspace_bytes(
+        raftinfer::kernels::Qwen35AttentionShape{
             2, 2, 1, 7, std::numeric_limits<std::size_t>::max(), 0});
   });
 }

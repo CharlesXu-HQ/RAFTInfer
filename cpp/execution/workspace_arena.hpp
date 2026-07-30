@@ -8,7 +8,7 @@
 
 #include <cstddef>
 
-namespace brt {
+namespace raftinfer {
 
 class WorkspaceArena {
  public:
@@ -36,4 +36,4 @@ class WorkspaceArena {
   WorkspaceLayout layout_;
 };
 
-}  // namespace brt
+}  // namespace raftinfer

@@ -2,7 +2,7 @@
 
 #include <cstdint>
 
-namespace brt {
+namespace raftinfer {
 
 enum class Qwen35AttentionImplementation : std::uint8_t {
   materialized_reference,
@@ -28,4 +28,4 @@ struct Qwen35ExecutionPolicy {
   bool grouped_input_casts{true};
 };
 
-} // namespace brt
+} // namespace raftinfer

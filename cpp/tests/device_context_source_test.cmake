@@ -20,6 +20,16 @@ file(READ "${EXECUTION_CONTEXT_HEADER}" execution_context_header)
 file(READ "${CUDA_WEIGHTS_HEADER}" cuda_weights_header)
 file(READ "${CUDA_WEIGHTS_SOURCE}" cuda_weights_source)
 
+# Production change caught: reintroducing the legacy C++ namespace in native
+# device ownership paths after the RAFTInfer rename.
+foreach(legacy_source "${header}" "${source}" "${arena_header}" "${arena_source}"
+                      "${execution_context_header}" "${cuda_weights_header}"
+                      "${cuda_weights_source}")
+  if(legacy_source MATCHES "namespace[ \\t\\r\\n]+brt" OR legacy_source MATCHES "brt::")
+    message(FATAL_ERROR "Native device source retains the legacy brt namespace")
+  endif()
+endforeach()
+
 require_match("${header}" "~DeviceContext\\(\\) noexcept" "non-throwing DeviceContext destructor")
 require_match("${header}" "class Resources;" "private resource owner declaration")
 require_match("${header}" "std::shared_ptr<Resources> resources_;" "ref-counted private resource ownership")
@@ -67,7 +77,7 @@ reject_match("${execution_context_header}" "#include <rmm/mr/device_memory_resou
 
 require_match("${cuda_weights_source}" "#include <rmm/aligned\\.hpp>" "CUDA weights RMM allocation alignment header")
 require_match("${cuda_weights_header}" "static std::unique_ptr<CudaWeightPlan>[ \n]+upload\\(" "low-level CUDA weight upload is a private plan constructor")
-require_match("${cuda_weights_header}" "friend class brt::DeviceContext;" "only DeviceContext can invoke low-level CUDA weight upload")
+require_match("${cuda_weights_header}" "friend class raftinfer::DeviceContext;" "only DeviceContext can invoke low-level CUDA weight upload")
 require_match("${cuda_weights_header}" "std::shared_ptr<void> lifetime_anchor" "CUDA weights private upload requires lifetime anchor")
 reject_match("${cuda_weights_header}" "namespace detail" "public detail upload namespace")
 require_match("${cuda_weights_source}" "context\\.memory_resource\\(\\)" "CUDA weights allocate from execution context RMM resource")

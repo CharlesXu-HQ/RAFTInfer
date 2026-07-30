@@ -9,7 +9,7 @@
 #include <string>
 #include <vector>
 
-namespace brt::model {
+namespace raftinfer::model {
 
 class ManifestError : public std::runtime_error {
 public:
@@ -63,4 +63,4 @@ struct Qwen35Manifest {
 Qwen35Manifest validate_qwen35_manifest(const gguf::Catalog &catalog,
                                         const Qwen35Config &config);
 
-} // namespace brt::model
+} // namespace raftinfer::model

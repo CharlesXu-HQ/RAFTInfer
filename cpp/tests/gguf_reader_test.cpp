@@ -35,7 +35,7 @@ void append_string_metadata(std::vector<std::uint8_t> &bytes,
                             const std::string &key, const std::string &value) {
   append_string(bytes, key);
   append<std::uint32_t>(
-      bytes, static_cast<std::uint32_t>(brt::gguf::MetadataType::string));
+      bytes, static_cast<std::uint32_t>(raftinfer::gguf::MetadataType::string));
   append_string(bytes, value);
 }
 
@@ -43,7 +43,7 @@ void append_u32_metadata(std::vector<std::uint8_t> &bytes,
                          const std::string &key, std::uint32_t value) {
   append_string(bytes, key);
   append<std::uint32_t>(
-      bytes, static_cast<std::uint32_t>(brt::gguf::MetadataType::uint32));
+      bytes, static_cast<std::uint32_t>(raftinfer::gguf::MetadataType::uint32));
   append<std::uint32_t>(bytes, value);
 }
 
@@ -52,9 +52,9 @@ void append_string_array_metadata(std::vector<std::uint8_t> &bytes,
                                   const std::vector<std::string> &values) {
   append_string(bytes, key);
   append<std::uint32_t>(
-      bytes, static_cast<std::uint32_t>(brt::gguf::MetadataType::array));
+      bytes, static_cast<std::uint32_t>(raftinfer::gguf::MetadataType::array));
   append<std::uint32_t>(
-      bytes, static_cast<std::uint32_t>(brt::gguf::MetadataType::string));
+      bytes, static_cast<std::uint32_t>(raftinfer::gguf::MetadataType::string));
   append<std::uint64_t>(bytes, values.size());
   for (const auto &value : values) {
     append_string(bytes, value);
@@ -91,7 +91,7 @@ template <class Fn> void expect_parse_error(Fn &&fn) {
   bool thrown = false;
   try {
     fn();
-  } catch (const brt::gguf::ParseError &) {
+  } catch (const raftinfer::gguf::ParseError &) {
     thrown = true;
   }
   assert(thrown);
@@ -101,7 +101,7 @@ template <class Fn> void expect_model_io_error(Fn &&fn) {
   bool thrown = false;
   try {
     fn();
-  } catch (const brt::model::ModelIoError &) {
+  } catch (const raftinfer::model::ModelIoError &) {
     thrown = true;
   }
   assert(thrown);
@@ -110,15 +110,15 @@ template <class Fn> void expect_model_io_error(Fn &&fn) {
 } // namespace
 
 int main() {
-  using brt::gguf::MetadataArray;
-  using brt::gguf::MetadataValue;
+  using raftinfer::gguf::MetadataArray;
+  using raftinfer::gguf::MetadataValue;
 
   MetadataValue name{std::string{"Qwen3.5-9B"}};
   assert(name.get<std::string>() == "Qwen3.5-9B");
   assert(name.get_if<std::uint32_t>() == nullptr);
 
   MetadataArray layers{
-      .element_type = brt::gguf::MetadataType::string,
+      .element_type = raftinfer::gguf::MetadataType::string,
       .values = {MetadataValue{std::string{"linear_attention"}},
                  MetadataValue{std::string{"full_attention"}}},
   };
@@ -127,10 +127,10 @@ int main() {
   assert(stored_layers.values.size() == 2);
   assert(stored_layers.values[1].get<std::string>() == "full_attention");
 
-  brt::gguf::Catalog catalog;
+  raftinfer::gguf::Catalog catalog;
   catalog.metadata.emplace("general.architecture",
                            MetadataValue{std::string{"qwen35"}});
-  catalog.tensors.push_back(brt::gguf::TensorInfo{
+  catalog.tensors.push_back(raftinfer::gguf::TensorInfo{
       .name = "token_embd.weight",
       .dimensions = {4096, 248320},
       .type = 1,
@@ -144,7 +144,7 @@ int main() {
   assert(catalog.find_tensor("missing") == nullptr);
 
   const auto bytes = valid_gguf();
-  const auto parsed = brt::gguf::read_catalog(bytes);
+  const auto parsed = raftinfer::gguf::read_catalog(bytes);
   assert(parsed.version == 3);
   assert(parsed.alignment == 32);
   assert(parsed.tensor_data_offset % 32 == 0);
@@ -152,29 +152,29 @@ int main() {
          "qwen35");
   const auto &parsed_layers =
       parsed.require_metadata("qwen35.layer_types").get<MetadataArray>();
-  assert(parsed_layers.element_type == brt::gguf::MetadataType::string);
+  assert(parsed_layers.element_type == raftinfer::gguf::MetadataType::string);
   assert(parsed_layers.values.size() == 4);
   assert(parsed.require_tensor("token_embd.weight").dimensions ==
          std::vector<std::uint64_t>({2, 2}));
   assert(parsed.require_tensor("token_embd.weight").byte_size == 8);
 
-  brt::gguf::ReaderLimits tiny_catalog_limit;
+  raftinfer::gguf::ReaderLimits tiny_catalog_limit;
   tiny_catalog_limit.max_catalog_bytes = 16;
   expect_parse_error([&] {
-    (void)brt::gguf::read_catalog(std::span{bytes}, tiny_catalog_limit);
+    (void)raftinfer::gguf::read_catalog(std::span{bytes}, tiny_catalog_limit);
   });
 
-  const auto model_bytes = brt::test::make_qwen35_gguf_fixture();
-  const auto model_catalog = brt::gguf::read_catalog(std::span{model_bytes});
+  const auto model_bytes = raftinfer::test::make_qwen35_gguf_fixture();
+  const auto model_catalog = raftinfer::gguf::read_catalog(std::span{model_bytes});
   const auto temporary_path =
       std::filesystem::temp_directory_path() /
-      ("brt_gguf_reader_test_" + std::to_string(getpid()) + ".gguf");
+      ("raftinfer_gguf_reader_test_" + std::to_string(getpid()) + ".gguf");
   {
     std::ofstream output{temporary_path, std::ios::binary};
     output.write(reinterpret_cast<const char *>(model_bytes.data()),
                  static_cast<std::streamsize>(model_bytes.size()));
   }
-  brt::model::Model model{temporary_path.string()};
+  raftinfer::model::Model model{temporary_path.string()};
   assert(model.tensor_payload(model_catalog.require_tensor("token_embd.weight"))
              .size() == 256);
 
@@ -186,12 +186,12 @@ int main() {
   auto bad_magic = bytes;
   bad_magic[0] = 'X';
   expect_parse_error(
-      [&] { (void)brt::gguf::read_catalog(std::span{bad_magic}); });
+      [&] { (void)raftinfer::gguf::read_catalog(std::span{bad_magic}); });
 
   auto bad_version = bytes;
   bad_version[4] = 2;
   expect_parse_error(
-      [&] { (void)brt::gguf::read_catalog(std::span{bad_version}); });
+      [&] { (void)raftinfer::gguf::read_catalog(std::span{bad_version}); });
 
   auto invalid_metadata_key = bytes;
   const std::string architecture_key = "general.architecture";
@@ -201,11 +201,11 @@ int main() {
   assert(key_position != invalid_metadata_key.end());
   *key_position = 'G';
   expect_parse_error(
-      [&] { (void)brt::gguf::read_catalog(std::span{invalid_metadata_key}); });
+      [&] { (void)raftinfer::gguf::read_catalog(std::span{invalid_metadata_key}); });
 
   for (std::size_t size = 0; size < 24; ++size) {
     expect_parse_error([&] {
-      (void)brt::gguf::read_catalog(
+      (void)raftinfer::gguf::read_catalog(
           std::span<const std::uint8_t>{bytes.data(), size});
     });
   }

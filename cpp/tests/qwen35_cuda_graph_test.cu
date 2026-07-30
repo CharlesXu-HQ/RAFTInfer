@@ -46,7 +46,7 @@ void run_graph_raii_tests() {
   require_cuda(cudaHostAlloc(&host_input, sizeof(*host_input), cudaHostAllocDefault));
   require_cuda(cudaHostAlloc(&host_output, sizeof(*host_output), cudaHostAllocDefault));
 
-  brt::CudaGraphDecode graph{0, stream};
+  raftinfer::CudaGraphDecode graph{0, stream};
   graph.capture([&] {
     require_cuda(cudaMemcpyAsync(device_input, host_input, sizeof(*host_input),
                                  cudaMemcpyHostToDevice, stream));
@@ -140,7 +140,7 @@ void run_device_position_rope_graph_tests() {
                                cudaMemcpyHostToDevice, stream));
   require_cuda(cudaStreamSynchronize(stream));
 
-  const auto shape = brt::kernels::QkNormRopeShape{
+  const auto shape = raftinfer::kernels::QkNormRopeShape{
       .tokens = 1,
       .heads = 1,
       .head_dim = head_dim,
@@ -148,11 +148,11 @@ void run_device_position_rope_graph_tests() {
       .position_offset = 0,
       .rope_base = 10'000.0F,
   };
-  brt::CudaGraphDecode graph{0, stream};
+  raftinfer::CudaGraphDecode graph{0, stream};
   graph.capture([&] {
-    brt::kernels::qwen35_qk_norm_rope(
+    raftinfer::kernels::qwen35_qk_norm_rope(
         device_input, device_weight, device_output, shape, 1.0e-6F,
-        BRT_DTYPE_F32, BRT_DTYPE_F32, stream, device_position);
+        RAFTINFER_DTYPE_F32, RAFTINFER_DTYPE_F32, stream, device_position);
     require_cuda(cudaMemcpyAsync(host_graph_output, device_output,
                                  input.size() * sizeof(float),
                                  cudaMemcpyDeviceToHost, stream));
@@ -165,9 +165,9 @@ void run_device_position_rope_graph_tests() {
     std::vector<float> host_reference(input.size());
     auto host_shape = shape;
     host_shape.position_offset = expected_position;
-    brt::kernels::qwen35_qk_norm_rope(
+    raftinfer::kernels::qwen35_qk_norm_rope(
         device_input, device_weight, device_output, host_shape, 1.0e-6F,
-        BRT_DTYPE_F32, BRT_DTYPE_F32, stream);
+        RAFTINFER_DTYPE_F32, RAFTINFER_DTYPE_F32, stream);
     require_cuda(cudaMemcpyAsync(host_reference.data(), device_output,
                                  host_reference.size() * sizeof(float),
                                  cudaMemcpyDeviceToHost, stream));
@@ -188,7 +188,7 @@ void run_device_position_rope_graph_tests() {
 
 std::filesystem::path write_fixture(std::vector<std::uint8_t> bytes) {
   const auto path = std::filesystem::temp_directory_path() /
-                    "brt_qwen35_cuda_graph.gguf";
+                    "raftinfer_qwen35_cuda_graph.gguf";
   std::ofstream output{path, std::ios::binary};
   output.write(reinterpret_cast<const char *>(bytes.data()),
                static_cast<std::streamsize>(bytes.size()));
@@ -198,13 +198,13 @@ std::filesystem::path write_fixture(std::vector<std::uint8_t> bytes) {
 }
 
 struct ExecutorObservation {
-  brt::Qwen35ExecutorResult result;
+  raftinfer::Qwen35ExecutorResult result;
   std::vector<float> logits;
-  brt::test::Qwen35ExecutorStateSnapshot state;
+  raftinfer::test::Qwen35ExecutorStateSnapshot state;
 };
 
-ExecutorObservation observe_executor(brt::Qwen35Executor &executor,
-                                     brt::Qwen35ExecutorResult result,
+ExecutorObservation observe_executor(raftinfer::Qwen35Executor &executor,
+                                     raftinfer::Qwen35ExecutorResult result,
                                      std::size_t vocabulary_size) {
   ExecutorObservation observation{
       .result = result,
@@ -227,7 +227,7 @@ void assert_same_observation(const ExecutorObservation &actual,
 
 void run_executor_graph_equivalence_tests() {
   require_cuda(cudaSetDevice(0));
-  const brt::test::Qwen35GgufFixtureOptions fixture_options{
+  const raftinfer::test::Qwen35GgufFixtureOptions fixture_options{
       .hidden_size = 4096,
       .full_head_count = 16,
       .full_kv_head_count = 4,
@@ -238,23 +238,23 @@ void run_executor_graph_equivalence_tests() {
       .rotary_dimension = 64,
   };
   const auto path = write_fixture(
-      brt::test::make_qwen35_nonzero_bf16_gguf_fixture(fixture_options));
-  brt::model::Model model{path.string()};
+      raftinfer::test::make_qwen35_nonzero_bf16_gguf_fixture(fixture_options));
+  raftinfer::model::Model model{path.string()};
   constexpr std::size_t max_context = 64;
-  auto graph_policy = brt::Qwen35ExecutionPolicy{};
+  auto graph_policy = raftinfer::Qwen35ExecutionPolicy{};
   graph_policy.decode_graph = true;
-  const auto workspace_bytes = brt::Qwen35Executor::workspace_bytes(
+  const auto workspace_bytes = raftinfer::Qwen35Executor::workspace_bytes(
       model.qwen35_config(), max_context, graph_policy);
 
-  brt::DeviceContext device{0, 1024U * 1024U * 1024U};
+  raftinfer::DeviceContext device{0, 1024U * 1024U * 1024U};
   auto weights = device.upload_qwen35_weights(model);
   auto graph_owner = device.create_execution_owner(workspace_bytes);
   auto graph_context = graph_owner->execution_context();
-  brt::Qwen35Executor graph{graph_context, model.qwen35_config(), *weights,
+  raftinfer::Qwen35Executor graph{graph_context, model.qwen35_config(), *weights,
                             max_context, graph_policy};
   const auto construction_diagnostics = graph.diagnostics();
   assert(construction_diagnostics.attention ==
-         brt::Qwen35AttentionImplementation::online_tiled);
+         raftinfer::Qwen35AttentionImplementation::online_tiled);
   assert(!construction_diagnostics.cublaslt_plans.empty());
 
   const std::vector<std::int32_t> prompt{1, 2, 3, 4};
@@ -303,7 +303,7 @@ void run_executor_graph_equivalence_tests() {
 } // namespace
 
 int main() {
-  const char *opt_in = std::getenv("BRT_RUN_GPU_TESTS");
+  const char *opt_in = std::getenv("RAFTINFER_RUN_GPU_TESTS");
   if (opt_in == nullptr || std::string{opt_in} != "1")
     return 77;
   run_graph_raii_tests();

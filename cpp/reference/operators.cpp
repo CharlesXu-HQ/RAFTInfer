@@ -5,7 +5,7 @@
 #include <limits>
 #include <stdexcept>
 
-namespace brt::reference {
+namespace raftinfer::reference {
 namespace {
 
 void require(bool condition, const char* message) {
@@ -211,4 +211,4 @@ void swiglu(
   }
 }
 
-}  // namespace brt::reference
+}  // namespace raftinfer::reference

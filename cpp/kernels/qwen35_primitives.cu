@@ -7,7 +7,7 @@
 #include <cmath>
 #include <limits>
 
-namespace brt::kernels {
+namespace raftinfer::kernels {
 namespace {
 
 constexpr int kBlockSize = 256;
@@ -19,16 +19,16 @@ void require(bool condition, const char *message) {
   }
 }
 
-void require_dtype(BrtDataType dtype) {
-  require(dtype == BRT_DTYPE_F32 || dtype == BRT_DTYPE_F16 ||
-              dtype == BRT_DTYPE_BF16,
+void require_dtype(RaftInferDataType dtype) {
+  require(dtype == RAFTINFER_DTYPE_F32 || dtype == RAFTINFER_DTYPE_F16 ||
+              dtype == RAFTINFER_DTYPE_BF16,
           "unsupported Qwen3.5 primitive dtype");
 }
 
-void require_weight_dtype(BrtDataType dtype, BrtDataType weight_dtype) {
-  require(weight_dtype == dtype || weight_dtype == BRT_DTYPE_F32 ||
-              (dtype == BRT_DTYPE_F32 && (weight_dtype == BRT_DTYPE_F16 ||
-                                          weight_dtype == BRT_DTYPE_BF16)),
+void require_weight_dtype(RaftInferDataType dtype, RaftInferDataType weight_dtype) {
+  require(weight_dtype == dtype || weight_dtype == RAFTINFER_DTYPE_F32 ||
+              (dtype == RAFTINFER_DTYPE_F32 && (weight_dtype == RAFTINFER_DTYPE_F16 ||
+                                          weight_dtype == RAFTINFER_DTYPE_BF16)),
           "Qwen3.5 primitive weight dtype is incompatible with activations");
 }
 
@@ -436,16 +436,16 @@ int checked_block_count(std::size_t blocks, const char *message) {
 }
 
 template <typename KernelLauncher>
-void launch_by_dtype(BrtDataType dtype, KernelLauncher launcher) {
-  if (dtype == BRT_DTYPE_F32) {
+void launch_by_dtype(RaftInferDataType dtype, KernelLauncher launcher) {
+  if (dtype == RAFTINFER_DTYPE_F32) {
     launcher.template operator()<float>();
     return;
   }
-  if (dtype == BRT_DTYPE_F16) {
+  if (dtype == RAFTINFER_DTYPE_F16) {
     launcher.template operator()<__half>();
     return;
   }
-  if (dtype == BRT_DTYPE_BF16) {
+  if (dtype == RAFTINFER_DTYPE_BF16) {
     launcher.template operator()<__nv_bfloat16>();
     return;
   }
@@ -455,8 +455,8 @@ void launch_by_dtype(BrtDataType dtype, KernelLauncher launcher) {
 } // namespace
 
 void qwen35_embedding(const std::int32_t *tokens, const void *table,
-                      void *output, EmbeddingShape shape, BrtDataType dtype,
-                      BrtDataType table_dtype, cudaStream_t stream) {
+                      void *output, EmbeddingShape shape, RaftInferDataType dtype,
+                      RaftInferDataType table_dtype, cudaStream_t stream) {
   require(tokens != nullptr, "embedding tokens pointer is null");
   require(table != nullptr, "embedding table pointer is null");
   require(output != nullptr, "embedding output pointer is null");
@@ -472,11 +472,11 @@ void qwen35_embedding(const std::int32_t *tokens, const void *table,
                                         "embedding shape overflow");
   const int grid = checked_grid_for(total, "embedding grid dimension overflow");
   launch_by_dtype(dtype, [&]<typename T>() {
-    if (table_dtype == BRT_DTYPE_F32) {
+    if (table_dtype == RAFTINFER_DTYPE_F32) {
       embedding_kernel<T, float><<<grid, kBlockSize, 0, stream>>>(
           tokens, table, output, shape.tokens, shape.embedding_dim,
           shape.vocab_size);
-    } else if (table_dtype == BRT_DTYPE_F16) {
+    } else if (table_dtype == RAFTINFER_DTYPE_F16) {
       embedding_kernel<T, __half><<<grid, kBlockSize, 0, stream>>>(
           tokens, table, output, shape.tokens, shape.embedding_dim,
           shape.vocab_size);
@@ -501,16 +501,16 @@ void qwen35_validate_token_ids(std::span<const std::int32_t> tokens,
 }
 
 void qwen35_cast_f32(const float *input, void *output, std::size_t elements,
-                     BrtDataType output_dtype, cudaStream_t stream) {
+                     RaftInferDataType output_dtype, cudaStream_t stream) {
   require(input != nullptr, "cast_f32 input pointer is null");
   require(output != nullptr, "cast_f32 output pointer is null");
   require(elements > 0, "cast_f32 elements must be positive");
-  require(output_dtype == BRT_DTYPE_F16 || output_dtype == BRT_DTYPE_BF16,
+  require(output_dtype == RAFTINFER_DTYPE_F16 || output_dtype == RAFTINFER_DTYPE_BF16,
           "cast_f32 output dtype must be F16 or BF16");
   require(stream != nullptr, "CUDA stream is null");
   const int grid =
       checked_grid_for(elements, "cast_f32 grid dimension overflow");
-  if (output_dtype == BRT_DTYPE_F16) {
+  if (output_dtype == RAFTINFER_DTYPE_F16) {
     cast_f32_kernel<__half>
         <<<grid, kBlockSize, 0, stream>>>(input, output, elements);
   } else {
@@ -521,8 +521,8 @@ void qwen35_cast_f32(const float *input, void *output, std::size_t elements,
 }
 
 void qwen35_rms_norm(const void *input, const void *weight, void *output,
-                     RmsNormShape shape, float epsilon, BrtDataType dtype,
-                     BrtDataType weight_dtype, cudaStream_t stream) {
+                     RmsNormShape shape, float epsilon, RaftInferDataType dtype,
+                     RaftInferDataType weight_dtype, cudaStream_t stream) {
   require(input != nullptr, "rms_norm input pointer is null");
   require(weight != nullptr, "rms_norm weight pointer is null");
   require(output != nullptr, "rms_norm output pointer is null");
@@ -537,11 +537,11 @@ void qwen35_rms_norm(const void *input, const void *weight, void *output,
   const int grid =
       checked_block_count(shape.rows, "rms_norm grid dimension overflow");
   launch_by_dtype(dtype, [&]<typename T>() {
-    if (weight_dtype == BRT_DTYPE_F32) {
+    if (weight_dtype == RAFTINFER_DTYPE_F32) {
       rms_norm_kernel<T, float>
           <<<grid, kBlockSize, kBlockSize * sizeof(float), stream>>>(
               input, weight, output, shape.cols, epsilon);
-    } else if (weight_dtype == BRT_DTYPE_F16) {
+    } else if (weight_dtype == RAFTINFER_DTYPE_F16) {
       rms_norm_kernel<T, __half>
           <<<grid, kBlockSize, kBlockSize * sizeof(float), stream>>>(
               input, weight, output, shape.cols, epsilon);
@@ -555,7 +555,7 @@ void qwen35_rms_norm(const void *input, const void *weight, void *output,
 }
 
 void qwen35_residual_add(const void *lhs, const void *rhs, void *output,
-                         std::size_t elements, BrtDataType dtype,
+                         std::size_t elements, RaftInferDataType dtype,
                          cudaStream_t stream) {
   require(lhs != nullptr, "residual_add lhs pointer is null");
   require(rhs != nullptr, "residual_add rhs pointer is null");
@@ -573,7 +573,7 @@ void qwen35_residual_add(const void *lhs, const void *rhs, void *output,
 
 void qwen35_qk_norm_rope(const void *input, const void *weight, void *output,
                          QkNormRopeShape shape, float epsilon,
-                         BrtDataType dtype, BrtDataType weight_dtype,
+                         RaftInferDataType dtype, RaftInferDataType weight_dtype,
                          cudaStream_t stream,
                          const std::uint32_t *device_position) {
   require(input != nullptr, "qk_norm_rope input pointer is null");
@@ -602,13 +602,13 @@ void qwen35_qk_norm_rope(const void *input, const void *weight, void *output,
   const int grid =
       checked_block_count(vectors, "qk_norm_rope grid dimension overflow");
   launch_by_dtype(dtype, [&]<typename T>() {
-    if (weight_dtype == BRT_DTYPE_F32) {
+    if (weight_dtype == RAFTINFER_DTYPE_F32) {
       qk_norm_rope_kernel<T, float>
           <<<grid, kBlockSize, kBlockSize * sizeof(float), stream>>>(
               input, weight, output, shape.heads, shape.head_dim,
               shape.rotary_dim, shape.position_offset, shape.rope_base,
               epsilon, device_position);
-    } else if (weight_dtype == BRT_DTYPE_F16) {
+    } else if (weight_dtype == RAFTINFER_DTYPE_F16) {
       qk_norm_rope_kernel<T, __half>
           <<<grid, kBlockSize, kBlockSize * sizeof(float), stream>>>(
               input, weight, output, shape.heads, shape.head_dim,
@@ -626,7 +626,7 @@ void qwen35_qk_norm_rope(const void *input, const void *weight, void *output,
 }
 
 void qwen35_sigmoid_gate(const void *values, const void *gates, void *output,
-                         std::size_t elements, BrtDataType dtype,
+                         std::size_t elements, RaftInferDataType dtype,
                          cudaStream_t stream) {
   require(values != nullptr, "sigmoid_gate values pointer is null");
   require(gates != nullptr, "sigmoid_gate gates pointer is null");
@@ -644,7 +644,7 @@ void qwen35_sigmoid_gate(const void *values, const void *gates, void *output,
 }
 
 void qwen35_swiglu(const void *gate, const void *up, void *output,
-                   std::size_t elements, BrtDataType dtype,
+                   std::size_t elements, RaftInferDataType dtype,
                    cudaStream_t stream) {
   require(gate != nullptr, "swiglu gate pointer is null");
   require(up != nullptr, "swiglu up pointer is null");
@@ -677,7 +677,7 @@ void qwen35_argmax(const float *logits, std::int32_t *output_index,
 }
 
 void qwen35_argmax_typed(const void *logits, std::int32_t *output_index,
-                         std::size_t elements, BrtDataType dtype,
+                         std::size_t elements, RaftInferDataType dtype,
                          cudaStream_t stream) {
   require(logits != nullptr, "argmax logits pointer is null");
   require(output_index != nullptr, "argmax output pointer is null");
@@ -710,7 +710,7 @@ std::size_t qwen35_parallel_argmax_workspace_bytes(std::size_t elements) {
 
 void qwen35_parallel_argmax_typed(const void *logits,
                                   std::int32_t *output_index,
-                                  std::size_t elements, BrtDataType dtype,
+                                  std::size_t elements, RaftInferDataType dtype,
                                   void *workspace, std::size_t workspace_bytes,
                                   cudaStream_t stream) {
   require(logits != nullptr, "parallel argmax logits pointer is null");
@@ -743,7 +743,7 @@ void qwen35_parallel_argmax_typed(const void *logits,
 void qwen35_split_full_query_gate(const void *query_gate, void *query,
                                   void *gate, std::size_t tokens,
                                   std::size_t heads, std::size_t head_dim,
-                                  BrtDataType dtype, cudaStream_t stream) {
+                                  RaftInferDataType dtype, cudaStream_t stream) {
   require(query_gate != nullptr, "split_full_query_gate input pointer is null");
   require(query != nullptr, "split_full_query_gate query pointer is null");
   require(gate != nullptr, "split_full_query_gate gate pointer is null");
@@ -769,7 +769,7 @@ void qwen35_pack_linear_delta_input(
     const void *qkv, const void *beta, const void *alpha, const void *gate,
     void *packed, std::size_t tokens, std::size_t qkv_width,
     std::size_t beta_width, std::size_t alpha_width, std::size_t gate_width,
-    BrtDataType dtype, cudaStream_t stream) {
+    RaftInferDataType dtype, cudaStream_t stream) {
   require(qkv != nullptr, "pack_linear_delta_input qkv pointer is null");
   require(beta != nullptr, "pack_linear_delta_input beta pointer is null");
   require(alpha != nullptr, "pack_linear_delta_input alpha pointer is null");
@@ -803,4 +803,4 @@ void qwen35_pack_linear_delta_input(
   check_launch("qwen35_pack_linear_delta_input");
 }
 
-} // namespace brt::kernels
+} // namespace raftinfer::kernels

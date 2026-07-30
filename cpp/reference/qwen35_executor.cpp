@@ -17,7 +17,7 @@
 #include <stdexcept>
 #include <vector>
 
-namespace brt::reference {
+namespace raftinfer::reference {
 namespace {
 
 constexpr std::uint32_t kF32TensorType = 0;
@@ -330,4 +330,4 @@ qwen35_execute_model(const model::Model &model,
   };
 }
 
-} // namespace brt::reference
+} // namespace raftinfer::reference

@@ -12,7 +12,7 @@
 #include <span>
 #include <vector>
 
-namespace brt::test {
+namespace raftinfer::test {
 
 inline std::vector<std::uint8_t>
 make_qwen35_nonzero_bf16_gguf_fixture(Qwen35GgufFixtureOptions options = {}) {
@@ -54,4 +54,4 @@ make_qwen35_nonzero_bf16_gguf_fixture(Qwen35GgufFixtureOptions options = {}) {
   return bytes;
 }
 
-} // namespace brt::test
+} // namespace raftinfer::test

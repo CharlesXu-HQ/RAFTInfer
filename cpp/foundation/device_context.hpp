@@ -1,18 +1,18 @@
 #pragma once
 
-#include <brt/c_api.h>
+#include <raftinfer/c_api.h>
 
 #include <cstddef>
 #include <cstdint>
 #include <memory>
 
-namespace brt::model {
+namespace raftinfer::model {
 class CudaWeightPlan;
 class Model;
 struct Qwen35Manifest;
-}  // namespace brt::model
+}  // namespace raftinfer::model
 
-namespace brt {
+namespace raftinfer {
 
 class ExecutionContext;
 class DeviceContext;
@@ -44,7 +44,7 @@ class DeviceContext {
  public:
   DeviceContext(int device_id, uint64_t initial_pool_bytes);
   ~DeviceContext() noexcept;
-  BrtSmokeResult run_smoke();
+  RaftInferSmokeResult run_smoke();
   std::uint64_t peak_allocated_bytes();
   std::unique_ptr<DeviceExecutionOwner>
   create_execution_owner(std::size_t workspace_bytes) const;
@@ -61,4 +61,4 @@ class DeviceContext {
   std::shared_ptr<Resources> resources_;
 };
 
-}  // namespace brt
+}  // namespace raftinfer

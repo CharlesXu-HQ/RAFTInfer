@@ -4,11 +4,11 @@
 #include <span>
 #include <vector>
 
-namespace brt::model {
+namespace raftinfer::model {
 class Model;
 }
 
-namespace brt::reference {
+namespace raftinfer::reference {
 
 struct Qwen35ReferenceExecution {
   std::vector<float> logits;
@@ -19,4 +19,4 @@ Qwen35ReferenceExecution
 qwen35_execute_model(const model::Model &model,
                      std::span<const std::int32_t> tokens);
 
-} // namespace brt::reference
+} // namespace raftinfer::reference

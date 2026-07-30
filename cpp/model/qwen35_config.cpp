@@ -5,7 +5,7 @@
 #include <limits>
 #include <string>
 
-namespace brt::model {
+namespace raftinfer::model {
 namespace {
 
 const gguf::MetadataValue &require(const gguf::Catalog &catalog,
@@ -229,4 +229,4 @@ Qwen35Config derive_qwen35_config(const gguf::Catalog &catalog) {
   return config;
 }
 
-} // namespace brt::model
+} // namespace raftinfer::model

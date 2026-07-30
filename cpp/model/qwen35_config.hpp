@@ -8,7 +8,7 @@
 #include <string>
 #include <vector>
 
-namespace brt::model {
+namespace raftinfer::model {
 
 class ConfigError : public std::runtime_error {
 public:
@@ -46,4 +46,4 @@ struct Qwen35Config {
 
 Qwen35Config derive_qwen35_config(const gguf::Catalog &catalog);
 
-} // namespace brt::model
+} // namespace raftinfer::model

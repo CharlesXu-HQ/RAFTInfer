@@ -27,8 +27,8 @@ constexpr std::uint32_t kVersion = 1;
 constexpr std::uint32_t kEndianMarker = 0x01020304U;
 
 struct Fixture {
-  brt::reference::FullAttentionReferenceArgs full{};
-  brt::reference::GatedDeltaReferenceArgs delta{};
+  raftinfer::reference::FullAttentionReferenceArgs full{};
+  raftinfer::reference::GatedDeltaReferenceArgs delta{};
   std::vector<float> full_input;
   std::vector<float> full_query_norm_weight;
   std::vector<float> full_key_norm_weight;
@@ -161,10 +161,10 @@ Fixture parse_fixture(std::span<const std::uint8_t> bytes) {
 }
 
 std::vector<std::uint8_t> read_fixture_file() {
-  std::ifstream stream(BRT_QWEN35_FIXTURE_PATH, std::ios::binary);
+  std::ifstream stream(RAFTINFER_QWEN35_FIXTURE_PATH, std::ios::binary);
   if (!stream) {
     throw std::runtime_error(std::string("missing Qwen3.5 fixture: ") +
-                             BRT_QWEN35_FIXTURE_PATH);
+                             RAFTINFER_QWEN35_FIXTURE_PATH);
   }
   stream.seekg(0, std::ios::end);
   const auto end = stream.tellg();
@@ -258,9 +258,9 @@ int main() {
 
   std::vector<float> full_output(fixture.full.tokens *
                                  fixture.full.hidden_size);
-  brt::reference::qwen35_gated_full_attention(
+  raftinfer::reference::qwen35_gated_full_attention(
       fixture.full_input, full_output,
-      brt::reference::FullAttentionReferenceWeights{
+      raftinfer::reference::FullAttentionReferenceWeights{
           .query_norm_weight = fixture.full_query_norm_weight,
           .key_norm_weight = fixture.full_key_norm_weight,
           .output_weight = fixture.full_output_weight},
@@ -268,7 +268,7 @@ int main() {
   expect_vector_near(full_output, fixture.full_expected_output,
                      "full_expected_output");
 
-  brt::reference::GatedDeltaReferenceState delta_state(fixture.delta);
+  raftinfer::reference::GatedDeltaReferenceState delta_state(fixture.delta);
   assert(delta_state.convolution.size() ==
          fixture.delta_initial_convolution.size());
   assert(delta_state.recurrent.size() ==
@@ -277,9 +277,9 @@ int main() {
   delta_state.recurrent = fixture.delta_initial_recurrent;
   std::vector<float> delta_output(fixture.delta.tokens *
                                   fixture.delta.hidden_size);
-  brt::reference::qwen35_gated_delta_prefill(
+  raftinfer::reference::qwen35_gated_delta_prefill(
       fixture.delta_input, delta_output,
-      brt::reference::GatedDeltaReferenceWeights{
+      raftinfer::reference::GatedDeltaReferenceWeights{
           .conv_weight = fixture.delta_conv_weight,
           .recurrent_a = fixture.delta_recurrent_a,
           .dt_bias = fixture.delta_dt_bias,

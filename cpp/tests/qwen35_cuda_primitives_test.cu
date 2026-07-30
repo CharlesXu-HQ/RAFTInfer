@@ -45,10 +45,10 @@ public:
     cudaDeviceProp properties{};
     assert(cudaGetDeviceProperties(&properties, 0) == cudaSuccess);
     const auto stream = raft::resource::get_cuda_stream(resources_).value();
-    workspace_ = std::make_unique<brt::WorkspaceArena>(
+    workspace_ = std::make_unique<raftinfer::WorkspaceArena>(
         rmm::device_async_resource_ref{pool_}, cuda::stream_ref{stream}, stream,
         1024 * 1024);
-    context_ = std::make_unique<brt::ExecutionContext>(
+    context_ = std::make_unique<raftinfer::ExecutionContext>(
         resources_, rmm::device_async_resource_ref{pool_}, stream, *workspace_,
         0, properties.major, properties.minor, properties.sharedMemPerBlock);
   }
@@ -61,19 +61,19 @@ public:
     workspace_.reset();
   }
 
-  brt::ExecutionContext &context() noexcept { return *context_; }
+  raftinfer::ExecutionContext &context() noexcept { return *context_; }
 
 private:
   rmm::mr::cuda_memory_resource cuda_resource_;
   rmm::mr::pool_memory_resource pool_;
   raft::device_resources resources_;
-  std::unique_ptr<brt::WorkspaceArena> workspace_;
-  std::unique_ptr<brt::ExecutionContext> context_;
+  std::unique_ptr<raftinfer::WorkspaceArena> workspace_;
+  std::unique_ptr<raftinfer::ExecutionContext> context_;
 };
 
 class DeviceBuffer {
 public:
-  DeviceBuffer(brt::ExecutionContext &context, std::size_t bytes)
+  DeviceBuffer(raftinfer::ExecutionContext &context, std::size_t bytes)
       : resource_(context.memory_resource()), stream_ref_(context.stream()),
         stream_(context.stream()), bytes_(bytes == 0 ? 1 : bytes),
         data_(resource_.allocate(stream_ref_, bytes_,
@@ -112,14 +112,14 @@ private:
 template <typename T> struct DTypeTraits;
 
 template <> struct DTypeTraits<__half> {
-  static constexpr BrtDataType dtype = BRT_DTYPE_F16;
+  static constexpr RaftInferDataType dtype = RAFTINFER_DTYPE_F16;
 
   static __half from_float(float value) { return __float2half_rn(value); }
   static float to_float(__half value) { return __half2float(value); }
 };
 
 template <> struct DTypeTraits<__nv_bfloat16> {
-  static constexpr BrtDataType dtype = BRT_DTYPE_BF16;
+  static constexpr RaftInferDataType dtype = RAFTINFER_DTYPE_BF16;
 
   static __nv_bfloat16 from_float(float value) {
     return __float2bfloat16_rn(value);
@@ -128,7 +128,7 @@ template <> struct DTypeTraits<__nv_bfloat16> {
 };
 
 template <> struct DTypeTraits<float> {
-  static constexpr BrtDataType dtype = BRT_DTYPE_F32;
+  static constexpr RaftInferDataType dtype = RAFTINFER_DTYPE_F32;
   static float from_float(float value) { return value; }
   static float to_float(float value) { return value; }
 };
@@ -154,7 +154,7 @@ template <typename T> std::vector<float> decode(std::span<const T> values) {
 }
 
 template <typename T>
-DeviceBuffer upload(brt::ExecutionContext &context, std::span<const T> host) {
+DeviceBuffer upload(raftinfer::ExecutionContext &context, std::span<const T> host) {
   DeviceBuffer device{context, host.size_bytes()};
   assert(cudaMemcpyAsync(device.data(), host.data(), host.size_bytes(),
                          cudaMemcpyHostToDevice,
@@ -163,7 +163,7 @@ DeviceBuffer upload(brt::ExecutionContext &context, std::span<const T> host) {
 }
 
 template <typename T>
-std::vector<T> download(brt::ExecutionContext &context, const void *device,
+std::vector<T> download(raftinfer::ExecutionContext &context, const void *device,
                         std::size_t elements) {
   std::vector<T> host(elements);
   assert(cudaMemcpyAsync(host.data(), device, elements * sizeof(T),
@@ -177,7 +177,7 @@ void expect_primitive_error(auto &&fn) {
   bool thrown = false;
   try {
     fn();
-  } catch (const brt::kernels::Qwen35PrimitiveError &) {
+  } catch (const raftinfer::kernels::Qwen35PrimitiveError &) {
     thrown = true;
   }
   assert(thrown);
@@ -204,7 +204,7 @@ void assert_matches(std::span<const T> actual,
 void apply_qk_norm_rope_reference(std::span<const float> input,
                                   std::span<const float> weight,
                                   std::span<float> output,
-                                  brt::kernels::QkNormRopeShape shape,
+                                  raftinfer::kernels::QkNormRopeShape shape,
                                   float epsilon) {
   for (std::size_t token = 0; token < shape.tokens; ++token) {
     for (std::size_t head = 0; head < shape.heads; ++head) {
@@ -242,7 +242,7 @@ void apply_qk_norm_rope_reference(std::span<const float> input,
   }
 }
 
-template <typename T> void run_dtype_tests(brt::ExecutionContext &context) {
+template <typename T> void run_dtype_tests(raftinfer::ExecutionContext &context) {
   for (const std::size_t rows :
        {std::size_t{1}, std::size_t{2}, std::size_t{4}, std::size_t{17}}) {
     {
@@ -260,17 +260,17 @@ template <typename T> void run_dtype_tests(brt::ExecutionContext &context) {
       const auto device_tokens = upload(context, std::span{tokens});
       const auto device_table = upload(context, std::span{table});
       DeviceBuffer device_output{context, rows * embedding_dim * sizeof(T)};
-      brt::kernels::qwen35_embedding(
+      raftinfer::kernels::qwen35_embedding(
           static_cast<const std::int32_t *>(device_tokens.data()),
           device_table.data(), device_output.data(),
-          brt::kernels::EmbeddingShape{rows, embedding_dim, vocab_size},
+          raftinfer::kernels::EmbeddingShape{rows, embedding_dim, vocab_size},
           DTypeTraits<T>::dtype, DTypeTraits<T>::dtype, context.stream());
       const auto actual =
           download<T>(context, device_output.data(), rows * embedding_dim);
       std::vector<float> expected(rows * embedding_dim);
-      brt::reference::embedding(
+      raftinfer::reference::embedding(
           std::span{tokens}, table_f32, expected,
-          brt::reference::EmbeddingShape{rows, embedding_dim, vocab_size});
+          raftinfer::reference::EmbeddingShape{rows, embedding_dim, vocab_size});
       assert_matches<T>(actual, expected);
     }
 
@@ -283,14 +283,14 @@ template <typename T> void run_dtype_tests(brt::ExecutionContext &context) {
       const auto device_input = upload(context, std::span{input});
       const auto device_weight = upload(context, std::span{weight});
       DeviceBuffer device_output{context, input.size() * sizeof(T)};
-      brt::kernels::qwen35_rms_norm(
+      raftinfer::kernels::qwen35_rms_norm(
           device_input.data(), device_weight.data(), device_output.data(),
-          brt::kernels::RmsNormShape{rows, cols}, 1.0e-5F,
+          raftinfer::kernels::RmsNormShape{rows, cols}, 1.0e-5F,
           DTypeTraits<T>::dtype, DTypeTraits<T>::dtype, context.stream());
       const auto actual =
           download<T>(context, device_output.data(), input.size());
       std::vector<float> expected(input_f32.size());
-      brt::reference::qwen35_rms_norm(input_f32, unit_weight_f32, expected,
+      raftinfer::reference::qwen35_rms_norm(input_f32, unit_weight_f32, expected,
                                       rows, cols, 1.0e-5F);
       assert_matches<T>(actual, expected);
     }
@@ -304,14 +304,14 @@ template <typename T> void run_dtype_tests(brt::ExecutionContext &context) {
       const auto device_lhs = upload(context, std::span{lhs});
       const auto device_rhs = upload(context, std::span{rhs});
       DeviceBuffer device_output{context, lhs.size() * sizeof(T)};
-      brt::kernels::qwen35_residual_add(
+      raftinfer::kernels::qwen35_residual_add(
           device_lhs.data(), device_rhs.data(), device_output.data(),
           lhs.size(), DTypeTraits<T>::dtype, context.stream());
       const auto actual =
           download<T>(context, device_output.data(), lhs.size());
       std::vector<float> expected(lhs_f32.size());
-      brt::reference::add(lhs_f32, rhs_f32, expected,
-                          brt::reference::AddShape{lhs_f32.size()});
+      raftinfer::reference::add(lhs_f32, rhs_f32, expected,
+                          raftinfer::reference::AddShape{lhs_f32.size()});
       assert_matches<T>(actual, expected);
     }
 
@@ -326,9 +326,9 @@ template <typename T> void run_dtype_tests(brt::ExecutionContext &context) {
       const auto device_input = upload(context, std::span{input});
       const auto device_weight = upload(context, std::span{weight});
       DeviceBuffer device_output{context, input.size() * sizeof(T)};
-      const brt::kernels::QkNormRopeShape shape{rows,       heads, head_dim,
+      const raftinfer::kernels::QkNormRopeShape shape{rows,       heads, head_dim,
                                                 rotary_dim, 5,     10000.0F};
-      brt::kernels::qwen35_qk_norm_rope(
+      raftinfer::kernels::qwen35_qk_norm_rope(
           device_input.data(), device_weight.data(), device_output.data(),
           shape, 1.0e-5F, DTypeTraits<T>::dtype, DTypeTraits<T>::dtype,
           context.stream());
@@ -349,7 +349,7 @@ template <typename T> void run_dtype_tests(brt::ExecutionContext &context) {
       const auto device_values = upload(context, std::span{values});
       const auto device_gates = upload(context, std::span{gates});
       DeviceBuffer device_output{context, values.size() * sizeof(T)};
-      brt::kernels::qwen35_sigmoid_gate(
+      raftinfer::kernels::qwen35_sigmoid_gate(
           device_values.data(), device_gates.data(), device_output.data(),
           values.size(), DTypeTraits<T>::dtype, context.stream());
       const auto actual =
@@ -370,14 +370,14 @@ template <typename T> void run_dtype_tests(brt::ExecutionContext &context) {
       const auto device_gate = upload(context, std::span{gate});
       const auto device_up = upload(context, std::span{up});
       DeviceBuffer device_output{context, gate.size() * sizeof(T)};
-      brt::kernels::qwen35_swiglu(device_gate.data(), device_up.data(),
+      raftinfer::kernels::qwen35_swiglu(device_gate.data(), device_up.data(),
                                   device_output.data(), gate.size(),
                                   DTypeTraits<T>::dtype, context.stream());
       const auto actual =
           download<T>(context, device_output.data(), gate.size());
       std::vector<float> expected(gate.size());
-      brt::reference::swiglu(gate_f32, up_f32, expected,
-                             brt::reference::SwiGluShape{gate.size()});
+      raftinfer::reference::swiglu(gate_f32, up_f32, expected,
+                             raftinfer::reference::SwiGluShape{gate.size()});
       assert_matches<T>(actual, expected);
     }
 
@@ -390,7 +390,7 @@ template <typename T> void run_dtype_tests(brt::ExecutionContext &context) {
       const auto device_query_gate = upload(context, std::span{query_gate});
       DeviceBuffer device_query{context, rows * hidden * sizeof(T)};
       DeviceBuffer device_gate{context, rows * hidden * sizeof(T)};
-      brt::kernels::qwen35_split_full_query_gate(
+      raftinfer::kernels::qwen35_split_full_query_gate(
           device_query_gate.data(), device_query.data(), device_gate.data(),
           rows, heads, head_dim, DTypeTraits<T>::dtype, context.stream());
       const auto actual_query =
@@ -417,7 +417,7 @@ template <typename T> void run_dtype_tests(brt::ExecutionContext &context) {
 }
 
 template <typename T>
-void run_f32_weight_tests(brt::ExecutionContext &context) {
+void run_f32_weight_tests(raftinfer::ExecutionContext &context) {
   constexpr std::size_t rows = 4;
   constexpr std::size_t cols = 31;
   const auto input_f32 = sequence(rows * cols, 0.047F, 0.1F);
@@ -428,28 +428,28 @@ void run_f32_weight_tests(brt::ExecutionContext &context) {
   const auto device_weight = upload(context, std::span{weight});
   DeviceBuffer device_output{context, input.size() * sizeof(T)};
 
-  brt::kernels::qwen35_cast_f32(
+  raftinfer::kernels::qwen35_cast_f32(
       static_cast<const float *>(device_weight.data()), device_output.data(),
       weight.size(), DTypeTraits<T>::dtype, context.stream());
   const auto cast = download<T>(context, device_output.data(), weight.size());
   assert_matches<T>(cast, weight);
 
-  brt::kernels::qwen35_rms_norm(
+  raftinfer::kernels::qwen35_rms_norm(
       device_input.data(), device_weight.data(), device_output.data(),
-      brt::kernels::RmsNormShape{rows, cols}, 1.0e-5F, DTypeTraits<T>::dtype,
-      BRT_DTYPE_F32, context.stream());
+      raftinfer::kernels::RmsNormShape{rows, cols}, 1.0e-5F, DTypeTraits<T>::dtype,
+      RAFTINFER_DTYPE_F32, context.stream());
   auto actual = download<T>(context, device_output.data(), input.size());
   std::vector<float> expected(input.size());
-  brt::reference::qwen35_rms_norm(quantized_input, weight, expected, rows, cols,
+  raftinfer::reference::qwen35_rms_norm(quantized_input, weight, expected, rows, cols,
                                   1.0e-5F);
   assert_matches<T>(actual, expected);
 
   const std::vector<std::int32_t> tokens{0, 2};
   const auto device_tokens = upload(context, std::span{tokens});
-  brt::kernels::qwen35_embedding(
+  raftinfer::kernels::qwen35_embedding(
       static_cast<const std::int32_t *>(device_tokens.data()),
       device_input.data(), device_output.data(),
-      brt::kernels::EmbeddingShape{tokens.size(), cols, rows}, BRT_DTYPE_F32,
+      raftinfer::kernels::EmbeddingShape{tokens.size(), cols, rows}, RAFTINFER_DTYPE_F32,
       DTypeTraits<T>::dtype, context.stream());
   const auto embedded =
       download<float>(context, device_output.data(), tokens.size() * cols);
@@ -461,10 +461,10 @@ void run_f32_weight_tests(brt::ExecutionContext &context) {
     }
   }
 
-  const brt::kernels::QkNormRopeShape shape{rows, 1, cols, 16, 5, 10000.0F};
-  brt::kernels::qwen35_qk_norm_rope(
+  const raftinfer::kernels::QkNormRopeShape shape{rows, 1, cols, 16, 5, 10000.0F};
+  raftinfer::kernels::qwen35_qk_norm_rope(
       device_input.data(), device_weight.data(), device_output.data(), shape,
-      1.0e-5F, DTypeTraits<T>::dtype, BRT_DTYPE_F32, context.stream());
+      1.0e-5F, DTypeTraits<T>::dtype, RAFTINFER_DTYPE_F32, context.stream());
   actual = download<T>(context, device_output.data(), input.size());
   apply_qk_norm_rope_reference(quantized_input, weight, expected, shape,
                                1.0e-5F);
@@ -472,7 +472,7 @@ void run_f32_weight_tests(brt::ExecutionContext &context) {
 }
 
 template <typename T>
-void run_parallel_argmax_dtype_test(brt::ExecutionContext &context) {
+void run_parallel_argmax_dtype_test(raftinfer::ExecutionContext &context) {
   std::vector<float> logits(65537,
                             -std::numeric_limits<float>::infinity());
   logits[1024] = std::numeric_limits<float>::quiet_NaN();
@@ -483,14 +483,14 @@ void run_parallel_argmax_dtype_test(brt::ExecutionContext &context) {
   DeviceBuffer device_reference_index{context, sizeof(std::int32_t)};
   DeviceBuffer device_parallel_index{context, sizeof(std::int32_t)};
   const auto argmax_workspace_bytes =
-      brt::kernels::qwen35_parallel_argmax_workspace_bytes(logits.size());
+      raftinfer::kernels::qwen35_parallel_argmax_workspace_bytes(logits.size());
   DeviceBuffer device_argmax_workspace{context, argmax_workspace_bytes};
 
-  brt::kernels::qwen35_argmax_typed(
+  raftinfer::kernels::qwen35_argmax_typed(
       device_logits.data(),
       static_cast<std::int32_t *>(device_reference_index.data()), logits.size(),
       DTypeTraits<T>::dtype, context.stream());
-  brt::kernels::qwen35_parallel_argmax_typed(
+  raftinfer::kernels::qwen35_parallel_argmax_typed(
       device_logits.data(),
       static_cast<std::int32_t *>(device_parallel_index.data()),
       logits.size(), DTypeTraits<T>::dtype, device_argmax_workspace.data(),
@@ -503,12 +503,12 @@ void run_parallel_argmax_dtype_test(brt::ExecutionContext &context) {
   assert(parallel_index[0] == 17);
 }
 
-void run_argmax_test(brt::ExecutionContext &context) {
+void run_argmax_test(raftinfer::ExecutionContext &context) {
   const std::vector<float> logits{-1.0F, 3.0F, -7.0F, 4.5F,
                                   4.5F,  2.0F, -0.0F, -0.0F};
   const auto device_logits = upload(context, std::span{logits});
   DeviceBuffer device_index{context, sizeof(std::int32_t)};
-  brt::kernels::qwen35_argmax(static_cast<const float *>(device_logits.data()),
+  raftinfer::kernels::qwen35_argmax(static_cast<const float *>(device_logits.data()),
                               static_cast<std::int32_t *>(device_index.data()),
                               logits.size(), context.stream());
   const auto actual =
@@ -522,35 +522,35 @@ void run_argmax_test(brt::ExecutionContext &context) {
 
 void run_token_validator_tests() {
   const std::vector<std::int32_t> valid{0, 2, 4};
-  brt::kernels::qwen35_validate_token_ids(valid, 5);
+  raftinfer::kernels::qwen35_validate_token_ids(valid, 5);
   expect_primitive_error([&] {
-    brt::kernels::qwen35_validate_token_ids(std::span<const std::int32_t>{}, 5);
+    raftinfer::kernels::qwen35_validate_token_ids(std::span<const std::int32_t>{}, 5);
   });
   expect_primitive_error(
-      [&] { brt::kernels::qwen35_validate_token_ids(valid, 0); });
+      [&] { raftinfer::kernels::qwen35_validate_token_ids(valid, 0); });
   expect_primitive_error([&] {
     const std::vector<std::int32_t> negative{0, -1, 2};
-    brt::kernels::qwen35_validate_token_ids(negative, 5);
+    raftinfer::kernels::qwen35_validate_token_ids(negative, 5);
   });
   expect_primitive_error([&] {
     const std::vector<std::int32_t> out_of_range{0, 5};
-    brt::kernels::qwen35_validate_token_ids(out_of_range, 5);
+    raftinfer::kernels::qwen35_validate_token_ids(out_of_range, 5);
   });
 }
 
 void run_embedding_invalid_device_id_zeroes_output(
-    brt::ExecutionContext &context) {
+    raftinfer::ExecutionContext &context) {
   const std::vector<std::int32_t> tokens{-1, 3};
   const auto table_f32 = sequence(3 * 4, 0.031F, -0.2F);
   const auto table = encode<__half>(table_f32);
   const auto device_tokens = upload(context, std::span{tokens});
   const auto device_table = upload(context, std::span{table});
   DeviceBuffer device_output{context, tokens.size() * 4 * sizeof(__half)};
-  brt::kernels::qwen35_embedding(
+  raftinfer::kernels::qwen35_embedding(
       static_cast<const std::int32_t *>(device_tokens.data()),
       device_table.data(), device_output.data(),
-      brt::kernels::EmbeddingShape{tokens.size(), 4, 3}, BRT_DTYPE_F16,
-      BRT_DTYPE_F16, context.stream());
+      raftinfer::kernels::EmbeddingShape{tokens.size(), 4, 3}, RAFTINFER_DTYPE_F16,
+      RAFTINFER_DTYPE_F16, context.stream());
   const auto actual =
       download<__half>(context, device_output.data(), tokens.size() * 4);
   for (const __half value : actual) {
@@ -558,7 +558,7 @@ void run_embedding_invalid_device_id_zeroes_output(
   }
 }
 
-void run_invalid_shape_tests(brt::ExecutionContext &context) {
+void run_invalid_shape_tests(raftinfer::ExecutionContext &context) {
   auto *pointer = reinterpret_cast<void *>(0x1000);
   auto *const_pointer = reinterpret_cast<const void *>(0x1000);
   auto *tokens = reinterpret_cast<const std::int32_t *>(0x1000);
@@ -566,114 +566,114 @@ void run_invalid_shape_tests(brt::ExecutionContext &context) {
   auto *logits = reinterpret_cast<const float *>(0x1000);
 
   expect_primitive_error([&] {
-    brt::kernels::qwen35_embedding(
-        nullptr, const_pointer, pointer, brt::kernels::EmbeddingShape{1, 1, 1},
-        BRT_DTYPE_F16, BRT_DTYPE_F16, context.stream());
+    raftinfer::kernels::qwen35_embedding(
+        nullptr, const_pointer, pointer, raftinfer::kernels::EmbeddingShape{1, 1, 1},
+        RAFTINFER_DTYPE_F16, RAFTINFER_DTYPE_F16, context.stream());
   });
   expect_primitive_error([&] {
-    brt::kernels::qwen35_embedding(
-        tokens, const_pointer, pointer, brt::kernels::EmbeddingShape{0, 1, 1},
-        BRT_DTYPE_F16, BRT_DTYPE_F16, context.stream());
+    raftinfer::kernels::qwen35_embedding(
+        tokens, const_pointer, pointer, raftinfer::kernels::EmbeddingShape{0, 1, 1},
+        RAFTINFER_DTYPE_F16, RAFTINFER_DTYPE_F16, context.stream());
   });
   expect_primitive_error([&] {
-    brt::kernels::qwen35_embedding(
+    raftinfer::kernels::qwen35_embedding(
         tokens, const_pointer, pointer,
-        brt::kernels::EmbeddingShape{
+        raftinfer::kernels::EmbeddingShape{
             1, 2, std::numeric_limits<std::size_t>::max() / std::size_t{2} + 1},
-        BRT_DTYPE_F16, BRT_DTYPE_F16, context.stream());
+        RAFTINFER_DTYPE_F16, RAFTINFER_DTYPE_F16, context.stream());
   });
   expect_primitive_error([&] {
-    brt::kernels::qwen35_rms_norm(
-        const_pointer, const_pointer, pointer, brt::kernels::RmsNormShape{1, 0},
-        1.0e-5F, BRT_DTYPE_F16, BRT_DTYPE_F16, context.stream());
+    raftinfer::kernels::qwen35_rms_norm(
+        const_pointer, const_pointer, pointer, raftinfer::kernels::RmsNormShape{1, 0},
+        1.0e-5F, RAFTINFER_DTYPE_F16, RAFTINFER_DTYPE_F16, context.stream());
   });
   expect_primitive_error([&] {
-    brt::kernels::qwen35_rms_norm(
-        const_pointer, const_pointer, pointer, brt::kernels::RmsNormShape{1, 1},
-        -1.0F, BRT_DTYPE_F16, BRT_DTYPE_F16, context.stream());
+    raftinfer::kernels::qwen35_rms_norm(
+        const_pointer, const_pointer, pointer, raftinfer::kernels::RmsNormShape{1, 1},
+        -1.0F, RAFTINFER_DTYPE_F16, RAFTINFER_DTYPE_F16, context.stream());
   });
   expect_primitive_error([&] {
-    brt::kernels::qwen35_rms_norm(
-        const_pointer, const_pointer, pointer, brt::kernels::RmsNormShape{1, 1},
-        std::numeric_limits<float>::infinity(), BRT_DTYPE_F16, BRT_DTYPE_F16,
+    raftinfer::kernels::qwen35_rms_norm(
+        const_pointer, const_pointer, pointer, raftinfer::kernels::RmsNormShape{1, 1},
+        std::numeric_limits<float>::infinity(), RAFTINFER_DTYPE_F16, RAFTINFER_DTYPE_F16,
         context.stream());
   });
   expect_primitive_error([&] {
-    brt::kernels::qwen35_rms_norm(
-        const_pointer, const_pointer, pointer, brt::kernels::RmsNormShape{1, 1},
-        std::numeric_limits<float>::quiet_NaN(), BRT_DTYPE_F16, BRT_DTYPE_F16,
+    raftinfer::kernels::qwen35_rms_norm(
+        const_pointer, const_pointer, pointer, raftinfer::kernels::RmsNormShape{1, 1},
+        std::numeric_limits<float>::quiet_NaN(), RAFTINFER_DTYPE_F16, RAFTINFER_DTYPE_F16,
         context.stream());
   });
   expect_primitive_error([&] {
-    brt::kernels::qwen35_qk_norm_rope(
+    raftinfer::kernels::qwen35_qk_norm_rope(
         const_pointer, const_pointer, pointer,
-        brt::kernels::QkNormRopeShape{1, 1, 7, 9, 0, 10000.0F}, 1.0e-5F,
-        BRT_DTYPE_F16, BRT_DTYPE_F16, context.stream());
+        raftinfer::kernels::QkNormRopeShape{1, 1, 7, 9, 0, 10000.0F}, 1.0e-5F,
+        RAFTINFER_DTYPE_F16, RAFTINFER_DTYPE_F16, context.stream());
   });
   expect_primitive_error([&] {
-    brt::kernels::qwen35_qk_norm_rope(
+    raftinfer::kernels::qwen35_qk_norm_rope(
         const_pointer, const_pointer, pointer,
-        brt::kernels::QkNormRopeShape{1, 1, 8, 5, 0, 10000.0F}, 1.0e-5F,
-        BRT_DTYPE_F16, BRT_DTYPE_F16, context.stream());
+        raftinfer::kernels::QkNormRopeShape{1, 1, 8, 5, 0, 10000.0F}, 1.0e-5F,
+        RAFTINFER_DTYPE_F16, RAFTINFER_DTYPE_F16, context.stream());
   });
   expect_primitive_error([&] {
-    brt::kernels::qwen35_qk_norm_rope(
+    raftinfer::kernels::qwen35_qk_norm_rope(
         const_pointer, const_pointer, pointer,
-        brt::kernels::QkNormRopeShape{1, 1, 8, 0, 0, 10000.0F}, 1.0e-5F,
-        BRT_DTYPE_F16, BRT_DTYPE_F16, context.stream());
+        raftinfer::kernels::QkNormRopeShape{1, 1, 8, 0, 0, 10000.0F}, 1.0e-5F,
+        RAFTINFER_DTYPE_F16, RAFTINFER_DTYPE_F16, context.stream());
   });
   expect_primitive_error([&] {
-    brt::kernels::qwen35_qk_norm_rope(
+    raftinfer::kernels::qwen35_qk_norm_rope(
         const_pointer, const_pointer, pointer,
-        brt::kernels::QkNormRopeShape{1, 1, 8, 4, 0,
+        raftinfer::kernels::QkNormRopeShape{1, 1, 8, 4, 0,
                                       std::numeric_limits<float>::infinity()},
-        1.0e-5F, BRT_DTYPE_F16, BRT_DTYPE_F16, context.stream());
+        1.0e-5F, RAFTINFER_DTYPE_F16, RAFTINFER_DTYPE_F16, context.stream());
   });
   expect_primitive_error([&] {
-    brt::kernels::qwen35_qk_norm_rope(
+    raftinfer::kernels::qwen35_qk_norm_rope(
         const_pointer, const_pointer, pointer,
-        brt::kernels::QkNormRopeShape{1, 1, 8, 4, 0,
+        raftinfer::kernels::QkNormRopeShape{1, 1, 8, 4, 0,
                                       std::numeric_limits<float>::quiet_NaN()},
-        1.0e-5F, BRT_DTYPE_F16, BRT_DTYPE_F16, context.stream());
+        1.0e-5F, RAFTINFER_DTYPE_F16, RAFTINFER_DTYPE_F16, context.stream());
   });
   expect_primitive_error([&] {
-    brt::kernels::qwen35_qk_norm_rope(
+    raftinfer::kernels::qwen35_qk_norm_rope(
         const_pointer, const_pointer, pointer,
-        brt::kernels::QkNormRopeShape{1, 1, 8, 4, 0, 10000.0F},
-        std::numeric_limits<float>::infinity(), BRT_DTYPE_F16, BRT_DTYPE_F16,
+        raftinfer::kernels::QkNormRopeShape{1, 1, 8, 4, 0, 10000.0F},
+        std::numeric_limits<float>::infinity(), RAFTINFER_DTYPE_F16, RAFTINFER_DTYPE_F16,
         context.stream());
   });
   expect_primitive_error([&] {
-    brt::kernels::qwen35_qk_norm_rope(
+    raftinfer::kernels::qwen35_qk_norm_rope(
         const_pointer, const_pointer, pointer,
-        brt::kernels::QkNormRopeShape{1, 1, 8, 4, 0, 10000.0F},
-        std::numeric_limits<float>::quiet_NaN(), BRT_DTYPE_F16, BRT_DTYPE_F16,
+        raftinfer::kernels::QkNormRopeShape{1, 1, 8, 4, 0, 10000.0F},
+        std::numeric_limits<float>::quiet_NaN(), RAFTINFER_DTYPE_F16, RAFTINFER_DTYPE_F16,
         context.stream());
   });
   expect_primitive_error([&] {
-    brt::kernels::qwen35_qk_norm_rope(
+    raftinfer::kernels::qwen35_qk_norm_rope(
         const_pointer, const_pointer, pointer,
-        brt::kernels::QkNormRopeShape{
+        raftinfer::kernels::QkNormRopeShape{
             2, 1, 8, 4, std::numeric_limits<std::size_t>::max(), 10000.0F},
-        1.0e-5F, BRT_DTYPE_F16, BRT_DTYPE_F16, context.stream());
+        1.0e-5F, RAFTINFER_DTYPE_F16, RAFTINFER_DTYPE_F16, context.stream());
   });
   expect_primitive_error([&] {
-    brt::kernels::qwen35_residual_add(const_pointer, const_pointer, pointer, 0,
-                                      BRT_DTYPE_F16, context.stream());
+    raftinfer::kernels::qwen35_residual_add(const_pointer, const_pointer, pointer, 0,
+                                      RAFTINFER_DTYPE_F16, context.stream());
   });
   expect_primitive_error([&] {
-    brt::kernels::qwen35_residual_add(
+    raftinfer::kernels::qwen35_residual_add(
         const_pointer, const_pointer, pointer,
         (static_cast<std::size_t>(std::numeric_limits<int>::max()) + 1) *
             std::size_t{256},
-        BRT_DTYPE_F16, context.stream());
+        RAFTINFER_DTYPE_F16, context.stream());
   });
   expect_primitive_error([&] {
-    brt::kernels::qwen35_swiglu(const_pointer, const_pointer, pointer, 1,
-                                BRT_DTYPE_Q4_K, context.stream());
+    raftinfer::kernels::qwen35_swiglu(const_pointer, const_pointer, pointer, 1,
+                                RAFTINFER_DTYPE_Q4_K, context.stream());
   });
   expect_primitive_error(
-      [&] { brt::kernels::qwen35_argmax(logits, index, 0, context.stream()); });
+      [&] { raftinfer::kernels::qwen35_argmax(logits, index, 0, context.stream()); });
 }
 
 } // namespace

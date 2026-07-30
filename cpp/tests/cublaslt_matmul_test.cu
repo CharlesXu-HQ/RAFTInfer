@@ -67,13 +67,13 @@ private:
 template <typename T> struct DTypeTraits;
 
 template <> struct DTypeTraits<__half> {
-  static constexpr BrtDataType dtype = BRT_DTYPE_F16;
+  static constexpr RaftInferDataType dtype = RAFTINFER_DTYPE_F16;
   static __half encode(float value) { return __float2half_rn(value); }
   static float decode(__half value) { return __half2float(value); }
 };
 
 template <> struct DTypeTraits<__nv_bfloat16> {
-  static constexpr BrtDataType dtype = BRT_DTYPE_BF16;
+  static constexpr RaftInferDataType dtype = RAFTINFER_DTYPE_BF16;
   static __nv_bfloat16 encode(float value) {
     return __float2bfloat16_rn(value);
   }
@@ -81,7 +81,7 @@ template <> struct DTypeTraits<__nv_bfloat16> {
 };
 
 template <> struct DTypeTraits<float> {
-  static constexpr BrtDataType dtype = BRT_DTYPE_F32;
+  static constexpr RaftInferDataType dtype = RAFTINFER_DTYPE_F32;
   static float encode(float value) { return value; }
   static float decode(float value) { return value; }
 };
@@ -139,7 +139,7 @@ std::vector<float> transpose(std::span<const float> input, std::size_t rows,
 
 std::vector<float> reference_matmul(std::span<const float> logical_input,
                                     std::span<const float> logical_weight,
-                                    const brt::CublasLtMatmulShape &shape) {
+                                    const raftinfer::CublasLtMatmulShape &shape) {
   std::vector<float> output(shape.m * shape.n);
   for (std::size_t row = 0; row < shape.m; ++row) {
     for (std::size_t col = 0; col < shape.n; ++col) {
@@ -158,28 +158,28 @@ void expect_matmul_error(auto &&fn) {
   bool thrown = false;
   try {
     fn();
-  } catch (const brt::CublasLtMatmulError &) {
+  } catch (const raftinfer::CublasLtMatmulError &) {
     thrown = true;
   }
   assert(thrown);
 }
 
-brt::CublasLtMatmulConfig
-config_for(brt::CublasLtMatmulShape shape, BrtDataType dtype,
+raftinfer::CublasLtMatmulConfig
+config_for(raftinfer::CublasLtMatmulShape shape, RaftInferDataType dtype,
            std::size_t workspace_budget = 4U * 1024U * 1024U) {
-  return brt::CublasLtMatmulConfig{
+  return raftinfer::CublasLtMatmulConfig{
       .shape = shape,
       .input_dtype = dtype,
       .weight_dtype = dtype,
       .output_dtype = dtype,
-      .input_order = brt::CublasLtMatrixOrder::RowMajor,
-      .weight_order = brt::CublasLtMatrixOrder::RowMajor,
-      .output_order = brt::CublasLtMatrixOrder::RowMajor,
+      .input_order = raftinfer::CublasLtMatrixOrder::RowMajor,
+      .weight_order = raftinfer::CublasLtMatrixOrder::RowMajor,
+      .output_order = raftinfer::CublasLtMatrixOrder::RowMajor,
       .workspace_budget_bytes = workspace_budget,
   };
 }
 
-template <typename T> void check_shape(brt::CublasLtMatmulShape shape) {
+template <typename T> void check_shape(raftinfer::CublasLtMatmulShape shape) {
   const auto logical_input = sequence(shape.m * shape.k, 0.007F, 0.03F);
   const auto logical_weight = sequence(shape.k * shape.n, -0.005F, 0.01F);
   const auto physical_input = shape.transpose_input
@@ -193,7 +193,7 @@ template <typename T> void check_shape(brt::CublasLtMatmulShape shape) {
   const auto expected = reference_matmul(logical_input, logical_weight, shape);
 
   auto plan =
-      brt::CublasLtMatmulPlan::create(config_for(shape, DTypeTraits<T>::dtype));
+      raftinfer::CublasLtMatmulPlan::create(config_for(shape, DTypeTraits<T>::dtype));
   assert(plan != nullptr);
   assert(plan->algorithm_id() >= 0);
   assert(plan->input_bytes() == input.size() * sizeof(T));
@@ -225,7 +225,7 @@ template <typename T> void check_shape(brt::CublasLtMatmulShape shape) {
 }
 
 template <typename Input>
-void check_f32_output_shape(brt::CublasLtMatmulShape shape) {
+void check_f32_output_shape(raftinfer::CublasLtMatmulShape shape) {
   const auto logical_input = sequence(shape.m * shape.k, 0.007F, 0.03F);
   const auto logical_weight = sequence(shape.k * shape.n, -0.005F, 0.01F);
   const auto physical_input = shape.transpose_input
@@ -238,8 +238,8 @@ void check_f32_output_shape(brt::CublasLtMatmulShape shape) {
   const auto weight = encode<Input>(physical_weight);
   const auto expected = reference_matmul(logical_input, logical_weight, shape);
   auto config = config_for(shape, DTypeTraits<Input>::dtype);
-  config.output_dtype = BRT_DTYPE_F32;
-  auto plan = brt::CublasLtMatmulPlan::create(config);
+  config.output_dtype = RAFTINFER_DTYPE_F32;
+  auto plan = raftinfer::CublasLtMatmulPlan::create(config);
   assert(plan->input_bytes() == input.size() * sizeof(Input));
   assert(plan->weight_bytes() == weight.size() * sizeof(Input));
   assert(plan->output_bytes() == expected.size() * sizeof(float));
@@ -262,7 +262,7 @@ void check_f32_output_shape(brt::CublasLtMatmulShape shape) {
 }
 
 void check_validation() {
-  const auto valid_shape = brt::CublasLtMatmulShape{
+  const auto valid_shape = raftinfer::CublasLtMatmulShape{
       .m = 17,
       .n = 13,
       .k = 19,
@@ -270,67 +270,67 @@ void check_validation() {
       .transpose_weight = true,
   };
   for (const auto shape : {
-           brt::CublasLtMatmulShape{0, 1, 1, false, true},
-           brt::CublasLtMatmulShape{1, 0, 1, false, true},
-           brt::CublasLtMatmulShape{1, 1, 0, false, true},
+           raftinfer::CublasLtMatmulShape{0, 1, 1, false, true},
+           raftinfer::CublasLtMatmulShape{1, 0, 1, false, true},
+           raftinfer::CublasLtMatmulShape{1, 1, 0, false, true},
        }) {
     expect_matmul_error([&] {
-      (void)brt::CublasLtMatmulPlan::create(config_for(shape, BRT_DTYPE_F16));
+      (void)raftinfer::CublasLtMatmulPlan::create(config_for(shape, RAFTINFER_DTYPE_F16));
     });
   }
 
-  auto bad_dtype = config_for(valid_shape, BRT_DTYPE_F16);
-  bad_dtype.weight_dtype = BRT_DTYPE_Q4_K;
+  auto bad_dtype = config_for(valid_shape, RAFTINFER_DTYPE_F16);
+  bad_dtype.weight_dtype = RAFTINFER_DTYPE_Q4_K;
   expect_matmul_error(
-      [&] { (void)brt::CublasLtMatmulPlan::create(bad_dtype); });
+      [&] { (void)raftinfer::CublasLtMatmulPlan::create(bad_dtype); });
 
-  auto mixed_output = config_for(valid_shape, BRT_DTYPE_F16);
-  mixed_output.output_dtype = BRT_DTYPE_BF16;
+  auto mixed_output = config_for(valid_shape, RAFTINFER_DTYPE_F16);
+  mixed_output.output_dtype = RAFTINFER_DTYPE_BF16;
   expect_matmul_error(
-      [&] { (void)brt::CublasLtMatmulPlan::create(mixed_output); });
+      [&] { (void)raftinfer::CublasLtMatmulPlan::create(mixed_output); });
 
-  auto mixed_weight = config_for(valid_shape, BRT_DTYPE_F16);
-  mixed_weight.weight_dtype = BRT_DTYPE_BF16;
+  auto mixed_weight = config_for(valid_shape, RAFTINFER_DTYPE_F16);
+  mixed_weight.weight_dtype = RAFTINFER_DTYPE_BF16;
   expect_matmul_error(
-      [&] { (void)brt::CublasLtMatmulPlan::create(mixed_weight); });
+      [&] { (void)raftinfer::CublasLtMatmulPlan::create(mixed_weight); });
 
-  auto bad_layout = config_for(valid_shape, BRT_DTYPE_F16);
-  bad_layout.weight_order = static_cast<brt::CublasLtMatrixOrder>(99);
+  auto bad_layout = config_for(valid_shape, RAFTINFER_DTYPE_F16);
+  bad_layout.weight_order = static_cast<raftinfer::CublasLtMatrixOrder>(99);
   expect_matmul_error(
-      [&] { (void)brt::CublasLtMatmulPlan::create(bad_layout); });
+      [&] { (void)raftinfer::CublasLtMatmulPlan::create(bad_layout); });
 
-  auto overflowing = config_for(valid_shape, BRT_DTYPE_F16);
+  auto overflowing = config_for(valid_shape, RAFTINFER_DTYPE_F16);
   overflowing.shape.m = std::numeric_limits<std::size_t>::max();
   expect_matmul_error(
-      [&] { (void)brt::CublasLtMatmulPlan::create(overflowing); });
+      [&] { (void)raftinfer::CublasLtMatmulPlan::create(overflowing); });
 
   const auto descriptor_limit =
       static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max());
-  brt::detail::validate_cublaslt_shape(
-      brt::CublasLtMatmulShape{descriptor_limit, 1, 1, false, true});
+  raftinfer::detail::validate_cublaslt_shape(
+      raftinfer::CublasLtMatmulShape{descriptor_limit, 1, 1, false, true});
   expect_matmul_error([&] {
-    brt::detail::validate_cublaslt_shape(
-        brt::CublasLtMatmulShape{descriptor_limit + 1, 1, 1, false, true});
+    raftinfer::detail::validate_cublaslt_shape(
+        raftinfer::CublasLtMatmulShape{descriptor_limit + 1, 1, 1, false, true});
   });
   expect_matmul_error([&] {
-    brt::detail::validate_cublaslt_shape(
-        brt::CublasLtMatmulShape{1, descriptor_limit + 1, 1, false, true});
+    raftinfer::detail::validate_cublaslt_shape(
+        raftinfer::CublasLtMatmulShape{1, descriptor_limit + 1, 1, false, true});
   });
   expect_matmul_error([&] {
-    brt::detail::validate_cublaslt_shape(
-        brt::CublasLtMatmulShape{1, 1, descriptor_limit + 1, false, true});
+    raftinfer::detail::validate_cublaslt_shape(
+        raftinfer::CublasLtMatmulShape{1, 1, descriptor_limit + 1, false, true});
   });
 }
 
 void check_run_validation() {
-  const auto shape = brt::CublasLtMatmulShape{
+  const auto shape = raftinfer::CublasLtMatmulShape{
       .m = 17,
       .n = 13,
       .k = 19,
       .transpose_input = false,
       .transpose_weight = true,
   };
-  auto plan = brt::CublasLtMatmulPlan::create(config_for(shape, BRT_DTYPE_F16));
+  auto plan = raftinfer::CublasLtMatmulPlan::create(config_for(shape, RAFTINFER_DTYPE_F16));
   DeviceBuffer input{plan->input_bytes()};
   DeviceBuffer weight{plan->weight_bytes()};
   DeviceBuffer output{plan->output_bytes()};
@@ -380,7 +380,7 @@ void check_run_validation() {
 }
 
 void check_deterministic_workspace_validation() {
-  const auto buffers = brt::detail::CublasLtRunBuffers{
+  const auto buffers = raftinfer::detail::CublasLtRunBuffers{
       .input = reinterpret_cast<const void *>(0x1000),
       .input_bytes = 128,
       .weight = reinterpret_cast<const void *>(0x2000),
@@ -390,29 +390,29 @@ void check_deterministic_workspace_validation() {
       .workspace = reinterpret_cast<void *>(0x4000),
       .workspace_bytes = 4096,
   };
-  const auto requirements = brt::detail::CublasLtBufferRequirements{
+  const auto requirements = raftinfer::detail::CublasLtBufferRequirements{
       .input_bytes = 128,
       .weight_bytes = 256,
       .output_bytes = 64,
       .workspace_bytes = 4096,
   };
-  brt::detail::validate_cublaslt_run_buffers(buffers, requirements);
+  raftinfer::detail::validate_cublaslt_run_buffers(buffers, requirements);
 
   auto undersized = buffers;
   undersized.workspace_bytes = requirements.workspace_bytes - 1;
   expect_matmul_error([&] {
-    brt::detail::validate_cublaslt_run_buffers(undersized, requirements);
+    raftinfer::detail::validate_cublaslt_run_buffers(undersized, requirements);
   });
 
   auto missing = buffers;
   missing.workspace = nullptr;
   expect_matmul_error([&] {
-    brt::detail::validate_cublaslt_run_buffers(missing, requirements);
+    raftinfer::detail::validate_cublaslt_run_buffers(missing, requirements);
   });
 }
 
 template <typename T> void check_candidate_selection_shape() {
-  const auto shape = brt::CublasLtMatmulShape{
+  const auto shape = raftinfer::CublasLtMatmulShape{
       .m = 128,
       .n = 96,
       .k = 64,
@@ -420,9 +420,9 @@ template <typename T> void check_candidate_selection_shape() {
       .transpose_weight = true,
   };
   auto config = config_for(shape, DTypeTraits<T>::dtype);
-  const auto candidates = brt::enumerate_cublaslt_candidates(config, 16);
+  const auto candidates = raftinfer::enumerate_cublaslt_candidates(config, 16);
   const auto oversized_request =
-      brt::enumerate_cublaslt_candidates(config, 128);
+      raftinfer::enumerate_cublaslt_candidates(config, 128);
   assert(!candidates.empty());
   assert(candidates.size() <= 16);
   assert(!oversized_request.empty());
@@ -437,8 +437,8 @@ template <typename T> void check_candidate_selection_shape() {
   const auto input = encode<T>(logical_input);
   const auto weight = encode<T>(transpose(logical_weight, shape.k, shape.n));
 
-  auto first_heuristic = brt::CublasLtMatmulPlan::create(config);
-  auto tuned = brt::CublasLtMatmulPlan::create(config);
+  auto first_heuristic = raftinfer::CublasLtMatmulPlan::create(config);
+  auto tuned = raftinfer::CublasLtMatmulPlan::create(config);
   assert(first_heuristic->algorithm_id() == candidates.front().algorithm_id);
 
   Stream stream;
@@ -475,10 +475,10 @@ int main() {
   assert(properties.major == 12 && properties.minor == 0);
 
   for (const auto shape : {
-           brt::CublasLtMatmulShape{1, 1, 1, false, true},
-           brt::CublasLtMatmulShape{3, 5, 7, false, true},
-           brt::CublasLtMatmulShape{17, 13, 19, false, true},
-           brt::CublasLtMatmulShape{5, 7, 3, true, false},
+           raftinfer::CublasLtMatmulShape{1, 1, 1, false, true},
+           raftinfer::CublasLtMatmulShape{3, 5, 7, false, true},
+           raftinfer::CublasLtMatmulShape{17, 13, 19, false, true},
+           raftinfer::CublasLtMatmulShape{5, 7, 3, true, false},
        }) {
     check_shape<__half>(shape);
     check_shape<__nv_bfloat16>(shape);

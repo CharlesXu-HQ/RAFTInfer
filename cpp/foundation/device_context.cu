@@ -24,9 +24,9 @@
 #include <string>
 #include <utility>
 
-extern void brt_launch_smoke(uint32_t* values, uint32_t count, cudaStream_t stream);
+extern void raftinfer_launch_smoke(uint32_t* values, uint32_t count, cudaStream_t stream);
 
-namespace brt {
+namespace raftinfer {
 
 namespace {
 
@@ -265,7 +265,7 @@ std::uint64_t DeviceContext::peak_allocated_bytes() {
   return peak;
 }
 
-BrtSmokeResult DeviceContext::run_smoke() {
+RaftInferSmokeResult DeviceContext::run_smoke() {
   constexpr uint32_t count = 1024;
   DeviceGuard device_guard{device_id_};
   ExecutionContext execution_context = resources_->execution_context(device_id_);
@@ -273,7 +273,7 @@ BrtSmokeResult DeviceContext::run_smoke() {
   resources_->probe_workspace();
   uint32_t* device_values =
       static_cast<uint32_t*>(workspace.allocate(count * sizeof(uint32_t), alignof(uint32_t)));
-  brt_launch_smoke(device_values, count, execution_context.stream());
+  raftinfer_launch_smoke(device_values, count, execution_context.stream());
   cudaError_t error = cudaGetLastError();
   if (error != cudaSuccess) {
     const std::string message = cudaGetErrorString(error);
@@ -293,7 +293,7 @@ BrtSmokeResult DeviceContext::run_smoke() {
   }
   workspace.reset();
   uint64_t checksum = std::accumulate(host.begin(), host.end(), uint64_t{0});
-  BrtSmokeResult result{device_id_, count, checksum};
+  RaftInferSmokeResult result{device_id_, count, checksum};
   device_guard.restore();
   return result;
 }
@@ -315,4 +315,4 @@ DeviceContext::upload_qwen35_weights_for_tests(
   return plan;
 }
 
-}  // namespace brt
+}  // namespace raftinfer

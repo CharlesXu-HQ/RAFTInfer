@@ -1,5 +1,5 @@
-add_library(brt_cpp ${BRT_NATIVE_LIBRARY_TYPE} src/status.cpp)
-target_sources(brt_cpp PRIVATE
+add_library(raftinfer_cpp ${RAFTINFER_NATIVE_LIBRARY_TYPE} src/status.cpp)
+target_sources(raftinfer_cpp PRIVATE
   src/c_api.cpp
   src/engine.cpp
   operators/tensor_validation.cpp
@@ -9,25 +9,25 @@ target_sources(brt_cpp PRIVATE
   model/qwen35_manifest.cpp
   execution/session.cpp
   execution/qwen35_state.cpp)
-target_sources(brt_cpp PRIVATE registry/operator_registry.cpp)
-target_sources(brt_cpp PRIVATE benchmarks/benchmark_record.cpp)
-target_compile_features(brt_cpp PUBLIC cxx_std_20)
-target_include_directories(brt_cpp PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-target_compile_definitions(brt_cpp PUBLIC BRT_ENABLE_CUDA=$<BOOL:${BRT_ENABLE_CUDA}>)
+target_sources(raftinfer_cpp PRIVATE registry/operator_registry.cpp)
+target_sources(raftinfer_cpp PRIVATE benchmarks/benchmark_record.cpp)
+target_compile_features(raftinfer_cpp PUBLIC cxx_std_20)
+target_include_directories(raftinfer_cpp PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_compile_definitions(raftinfer_cpp PUBLIC RAFTINFER_ENABLE_CUDA=$<BOOL:${RAFTINFER_ENABLE_CUDA}>)
 
-add_library(brt_reference STATIC
+add_library(raftinfer_reference STATIC
   reference/operators.cpp
   reference/correctness.cpp
   reference/qwen35.cpp
   reference/qwen35_executor.cpp)
-target_compile_features(brt_reference PUBLIC cxx_std_20)
-target_include_directories(brt_reference PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/reference)
+target_compile_features(raftinfer_reference PUBLIC cxx_std_20)
+target_include_directories(raftinfer_reference PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/reference)
 
-if(BRT_ENABLE_CUDA)
+if(RAFTINFER_ENABLE_CUDA)
   find_package(CUDAToolkit REQUIRED)
   find_package(raft 26.06 CONFIG REQUIRED)
   find_package(rmm 26.06 CONFIG REQUIRED)
-  target_sources(brt_cpp PRIVATE
+  target_sources(raftinfer_cpp PRIVATE
     execution/cublaslt_matmul.cu
     execution/cuda_graph_decode.cu
     execution/workspace_arena.cu
@@ -39,33 +39,33 @@ if(BRT_ENABLE_CUDA)
     kernels/qwen35_primitives.cu
     execution/qwen35_executor.cu
     kernels/smoke.cu)
-  target_link_libraries(brt_cpp PUBLIC raft::raft rmm::rmm CUDA::cudart CUDA::cublasLt)
-  target_compile_options(brt_cpp PRIVATE
+  target_link_libraries(raftinfer_cpp PUBLIC raft::raft rmm::rmm CUDA::cudart CUDA::cublasLt)
+  target_compile_options(raftinfer_cpp PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--expt-extended-lambda --expt-relaxed-constexpr>)
 
-  add_executable(brt-qwen35-logits tools/qwen35_logits_probe.cpp)
-  target_link_libraries(brt-qwen35-logits PRIVATE brt_cpp)
+  add_executable(raftinfer-qwen35-logits tools/qwen35_logits_probe.cpp)
+  target_link_libraries(raftinfer-qwen35-logits PRIVATE raftinfer_cpp)
 endif()
 
 include(GNUInstallDirs)
-install(TARGETS brt_cpp
+install(TARGETS raftinfer_cpp
   ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
   LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
   RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 
-add_executable(brt-smoke tools/brt_smoke.cpp)
-target_link_libraries(brt-smoke PRIVATE brt_cpp)
+add_executable(raftinfer-smoke tools/raftinfer_smoke.cpp)
+target_link_libraries(raftinfer-smoke PRIVATE raftinfer_cpp)
 
-if(BRT_BUILD_TESTS)
+if(RAFTINFER_BUILD_TESTS)
   # Keep executor launch accounting out of release binaries.  The CUDA test
   # declares the internal seam directly, so this definition need not be part
   # of the installed public interface.
-  target_compile_definitions(brt_cpp PRIVATE BRT_QWEN35_EXECUTOR_TESTING=1)
+  target_compile_definitions(raftinfer_cpp PRIVATE RAFTINFER_QWEN35_EXECUTOR_TESTING=1)
 
   enable_testing()
 
-  function(brt_add_assert_test target)
+  function(raftinfer_add_assert_test target)
     add_executable(${target} ${ARGN})
     target_compile_options(${target} PRIVATE
       $<$<CXX_COMPILER_ID:MSVC>:/UNDEBUG>
@@ -73,53 +73,53 @@ if(BRT_BUILD_TESTS)
     add_test(NAME ${target} COMMAND ${target})
   endfunction()
 
-  brt_add_assert_test(brt_c_api_test tests/c_api_test.cpp)
-  target_link_libraries(brt_c_api_test PRIVATE brt_cpp)
-  target_compile_definitions(brt_c_api_test PRIVATE
-    BRT_TEST_CUDA_ENABLED=$<BOOL:${BRT_ENABLE_CUDA}>)
-  if(BRT_ENABLE_CUDA)
-    set_tests_properties(brt_c_api_test PROPERTIES SKIP_RETURN_CODE 77)
+  raftinfer_add_assert_test(raftinfer_c_api_test tests/c_api_test.cpp)
+  target_link_libraries(raftinfer_c_api_test PRIVATE raftinfer_cpp)
+  target_compile_definitions(raftinfer_c_api_test PRIVATE
+    RAFTINFER_TEST_CUDA_ENABLED=$<BOOL:${RAFTINFER_ENABLE_CUDA}>)
+  if(RAFTINFER_ENABLE_CUDA)
+    set_tests_properties(raftinfer_c_api_test PROPERTIES SKIP_RETURN_CODE 77)
   endif()
-  brt_add_assert_test(brt_tensor_validation_test tests/tensor_validation_test.cpp)
-  target_link_libraries(brt_tensor_validation_test PRIVATE brt_cpp)
-  brt_add_assert_test(brt_workspace_layout_test tests/workspace_layout_test.cpp)
-  target_link_libraries(brt_workspace_layout_test PRIVATE brt_cpp)
-  brt_add_assert_test(brt_operator_registry_test tests/operator_registry_test.cpp)
-  target_link_libraries(brt_operator_registry_test PRIVATE brt_cpp)
-  brt_add_assert_test(brt_reference_operators_test tests/reference_operators_test.cpp)
-  target_link_libraries(brt_reference_operators_test PRIVATE brt_reference)
-  brt_add_assert_test(brt_qwen35_reference_test tests/qwen35_reference_test.cpp)
-  target_link_libraries(brt_qwen35_reference_test PRIVATE brt_reference brt_cpp)
-  brt_add_assert_test(brt_qwen35_executor_reference_test
+  raftinfer_add_assert_test(raftinfer_tensor_validation_test tests/tensor_validation_test.cpp)
+  target_link_libraries(raftinfer_tensor_validation_test PRIVATE raftinfer_cpp)
+  raftinfer_add_assert_test(raftinfer_workspace_layout_test tests/workspace_layout_test.cpp)
+  target_link_libraries(raftinfer_workspace_layout_test PRIVATE raftinfer_cpp)
+  raftinfer_add_assert_test(raftinfer_operator_registry_test tests/operator_registry_test.cpp)
+  target_link_libraries(raftinfer_operator_registry_test PRIVATE raftinfer_cpp)
+  raftinfer_add_assert_test(raftinfer_reference_operators_test tests/reference_operators_test.cpp)
+  target_link_libraries(raftinfer_reference_operators_test PRIVATE raftinfer_reference)
+  raftinfer_add_assert_test(raftinfer_qwen35_reference_test tests/qwen35_reference_test.cpp)
+  target_link_libraries(raftinfer_qwen35_reference_test PRIVATE raftinfer_reference raftinfer_cpp)
+  raftinfer_add_assert_test(raftinfer_qwen35_executor_reference_test
     tests/qwen35_executor_reference_test.cpp)
-  target_link_libraries(brt_qwen35_executor_reference_test
-    PRIVATE brt_reference brt_cpp)
-  brt_add_assert_test(brt_qwen35_fixture_test tests/qwen35_fixture_test.cpp)
-  target_link_libraries(brt_qwen35_fixture_test PRIVATE brt_reference brt_cpp)
-  target_compile_definitions(brt_qwen35_fixture_test PRIVATE
-    BRT_QWEN35_FIXTURE_PATH="${CMAKE_SOURCE_DIR}/tests/fixtures/qwen35/tiny-layer-v1.bin")
-  brt_add_assert_test(brt_correctness_test tests/correctness_test.cpp)
-  target_link_libraries(brt_correctness_test PRIVATE brt_reference)
-  brt_add_assert_test(brt_benchmark_record_test
+  target_link_libraries(raftinfer_qwen35_executor_reference_test
+    PRIVATE raftinfer_reference raftinfer_cpp)
+  raftinfer_add_assert_test(raftinfer_qwen35_fixture_test tests/qwen35_fixture_test.cpp)
+  target_link_libraries(raftinfer_qwen35_fixture_test PRIVATE raftinfer_reference raftinfer_cpp)
+  target_compile_definitions(raftinfer_qwen35_fixture_test PRIVATE
+    RAFTINFER_QWEN35_FIXTURE_PATH="${CMAKE_SOURCE_DIR}/tests/fixtures/qwen35/tiny-layer-v1.bin")
+  raftinfer_add_assert_test(raftinfer_correctness_test tests/correctness_test.cpp)
+  target_link_libraries(raftinfer_correctness_test PRIVATE raftinfer_reference)
+  raftinfer_add_assert_test(raftinfer_benchmark_record_test
     tests/benchmark_record_test.cpp)
-  target_link_libraries(brt_benchmark_record_test PRIVATE brt_cpp)
-  brt_add_assert_test(brt_gguf_reader_test tests/gguf_reader_test.cpp)
-  target_link_libraries(brt_gguf_reader_test PRIVATE brt_cpp)
-  brt_add_assert_test(brt_qwen35_config_test tests/qwen35_config_test.cpp)
-  target_link_libraries(brt_qwen35_config_test PRIVATE brt_cpp)
-  brt_add_assert_test(brt_qwen35_manifest_test tests/qwen35_manifest_test.cpp)
-  target_link_libraries(brt_qwen35_manifest_test PRIVATE brt_cpp)
-  brt_add_assert_test(brt_qwen35_state_test tests/qwen35_state_test.cpp)
-  target_link_libraries(brt_qwen35_state_test PRIVATE brt_cpp)
-  brt_add_assert_test(brt_session_test tests/session_test.cpp)
-  target_link_libraries(brt_session_test PRIVATE brt_cpp)
+  target_link_libraries(raftinfer_benchmark_record_test PRIVATE raftinfer_cpp)
+  raftinfer_add_assert_test(raftinfer_gguf_reader_test tests/gguf_reader_test.cpp)
+  target_link_libraries(raftinfer_gguf_reader_test PRIVATE raftinfer_cpp)
+  raftinfer_add_assert_test(raftinfer_qwen35_config_test tests/qwen35_config_test.cpp)
+  target_link_libraries(raftinfer_qwen35_config_test PRIVATE raftinfer_cpp)
+  raftinfer_add_assert_test(raftinfer_qwen35_manifest_test tests/qwen35_manifest_test.cpp)
+  target_link_libraries(raftinfer_qwen35_manifest_test PRIVATE raftinfer_cpp)
+  raftinfer_add_assert_test(raftinfer_qwen35_state_test tests/qwen35_state_test.cpp)
+  target_link_libraries(raftinfer_qwen35_state_test PRIVATE raftinfer_cpp)
+  raftinfer_add_assert_test(raftinfer_session_test tests/session_test.cpp)
+  target_link_libraries(raftinfer_session_test PRIVATE raftinfer_cpp)
   add_test(
-    NAME brt_c_api_source_test
+    NAME raftinfer_c_api_source_test
     COMMAND ${CMAKE_COMMAND}
       -DC_API_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/c_api.cpp
       -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/c_api_source_test.cmake)
   add_test(
-    NAME brt_device_context_source_test
+    NAME raftinfer_device_context_source_test
     COMMAND ${CMAKE_COMMAND}
       -DDEVICE_CONTEXT_HEADER=${CMAKE_CURRENT_SOURCE_DIR}/foundation/device_context.hpp
       -DDEVICE_CONTEXT_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/foundation/device_context.cu
@@ -130,50 +130,50 @@ if(BRT_BUILD_TESTS)
       -DCUDA_WEIGHTS_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/model/cuda_weights.cu
       -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/device_context_source_test.cmake)
   add_test(
-    NAME brt_qwen35_executor_source_test
+    NAME raftinfer_qwen35_executor_source_test
     COMMAND ${CMAKE_COMMAND}
       -DQWEN35_EXECUTOR_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/execution/qwen35_executor.cu
       -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/qwen35_executor_source_test.cmake)
-  if(BRT_ENABLE_CUDA)
-    brt_add_assert_test(brt_cublaslt_matmul_test
+  if(RAFTINFER_ENABLE_CUDA)
+    raftinfer_add_assert_test(raftinfer_cublaslt_matmul_test
       tests/cublaslt_matmul_test.cu)
-    target_link_libraries(brt_cublaslt_matmul_test PRIVATE brt_cpp)
-    target_compile_options(brt_cublaslt_matmul_test PRIVATE
+    target_link_libraries(raftinfer_cublaslt_matmul_test PRIVATE raftinfer_cpp)
+    target_compile_options(raftinfer_cublaslt_matmul_test PRIVATE
       $<$<COMPILE_LANGUAGE:CUDA>:--expt-extended-lambda --expt-relaxed-constexpr>)
-    brt_add_assert_test(brt_cuda_weights_test tests/cuda_weights_test.cu)
-    target_link_libraries(brt_cuda_weights_test PRIVATE brt_cpp)
-    target_compile_options(brt_cuda_weights_test PRIVATE
+    raftinfer_add_assert_test(raftinfer_cuda_weights_test tests/cuda_weights_test.cu)
+    target_link_libraries(raftinfer_cuda_weights_test PRIVATE raftinfer_cpp)
+    target_compile_options(raftinfer_cuda_weights_test PRIVATE
       $<$<COMPILE_LANGUAGE:CUDA>:--expt-extended-lambda --expt-relaxed-constexpr>)
-    brt_add_assert_test(brt_qwen35_cuda_primitives_test
+    raftinfer_add_assert_test(raftinfer_qwen35_cuda_primitives_test
       tests/qwen35_cuda_primitives_test.cu)
-    target_link_libraries(brt_qwen35_cuda_primitives_test PRIVATE brt_cpp brt_reference)
-    target_compile_options(brt_qwen35_cuda_primitives_test PRIVATE
+    target_link_libraries(raftinfer_qwen35_cuda_primitives_test PRIVATE raftinfer_cpp raftinfer_reference)
+    target_compile_options(raftinfer_qwen35_cuda_primitives_test PRIVATE
       $<$<COMPILE_LANGUAGE:CUDA>:--expt-extended-lambda --expt-relaxed-constexpr>)
-    brt_add_assert_test(brt_qwen35_cuda_attention_test
+    raftinfer_add_assert_test(raftinfer_qwen35_cuda_attention_test
       tests/qwen35_cuda_attention_test.cu)
-    target_link_libraries(brt_qwen35_cuda_attention_test PRIVATE brt_cpp brt_reference)
-    target_compile_options(brt_qwen35_cuda_attention_test PRIVATE
+    target_link_libraries(raftinfer_qwen35_cuda_attention_test PRIVATE raftinfer_cpp raftinfer_reference)
+    target_compile_options(raftinfer_qwen35_cuda_attention_test PRIVATE
       $<$<COMPILE_LANGUAGE:CUDA>:--expt-extended-lambda --expt-relaxed-constexpr>)
-    brt_add_assert_test(brt_qwen35_cuda_delta_test
+    raftinfer_add_assert_test(raftinfer_qwen35_cuda_delta_test
       tests/qwen35_cuda_delta_test.cu)
-    target_link_libraries(brt_qwen35_cuda_delta_test PRIVATE brt_cpp brt_reference)
-    target_compile_options(brt_qwen35_cuda_delta_test PRIVATE
+    target_link_libraries(raftinfer_qwen35_cuda_delta_test PRIVATE raftinfer_cpp raftinfer_reference)
+    target_compile_options(raftinfer_qwen35_cuda_delta_test PRIVATE
       $<$<COMPILE_LANGUAGE:CUDA>:--expt-extended-lambda --expt-relaxed-constexpr>)
-    brt_add_assert_test(brt_qwen35_executor_test
+    raftinfer_add_assert_test(raftinfer_qwen35_executor_test
       tests/qwen35_executor_test.cu)
-    target_link_libraries(brt_qwen35_executor_test PRIVATE brt_reference brt_cpp)
-    target_compile_options(brt_qwen35_executor_test PRIVATE
+    target_link_libraries(raftinfer_qwen35_executor_test PRIVATE raftinfer_reference raftinfer_cpp)
+    target_compile_options(raftinfer_qwen35_executor_test PRIVATE
       $<$<COMPILE_LANGUAGE:CUDA>:--expt-extended-lambda --expt-relaxed-constexpr>)
-    set_tests_properties(brt_qwen35_executor_test PROPERTIES
+    set_tests_properties(raftinfer_qwen35_executor_test PROPERTIES
       SKIP_RETURN_CODE 77)
-    brt_add_assert_test(brt_qwen35_cuda_graph_test
+    raftinfer_add_assert_test(raftinfer_qwen35_cuda_graph_test
       tests/qwen35_cuda_graph_test.cu)
-    target_link_libraries(brt_qwen35_cuda_graph_test PRIVATE brt_cpp)
-    target_compile_definitions(brt_qwen35_cuda_graph_test PRIVATE
-      BRT_QWEN35_EXECUTOR_TESTING=1)
-    target_compile_options(brt_qwen35_cuda_graph_test PRIVATE
+    target_link_libraries(raftinfer_qwen35_cuda_graph_test PRIVATE raftinfer_cpp)
+    target_compile_definitions(raftinfer_qwen35_cuda_graph_test PRIVATE
+      RAFTINFER_QWEN35_EXECUTOR_TESTING=1)
+    target_compile_options(raftinfer_qwen35_cuda_graph_test PRIVATE
       $<$<COMPILE_LANGUAGE:CUDA>:--expt-extended-lambda --expt-relaxed-constexpr>)
-    set_tests_properties(brt_qwen35_cuda_graph_test PROPERTIES
+    set_tests_properties(raftinfer_qwen35_cuda_graph_test PROPERTIES
       SKIP_RETURN_CODE 77)
   endif()
 endif()

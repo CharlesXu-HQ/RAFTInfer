@@ -6,7 +6,7 @@
 #include <cstdint>
 #include <span>
 
-namespace brt::reference {
+namespace raftinfer::reference {
 
 struct AddShape {
   std::size_t elements;
@@ -91,4 +91,4 @@ void swiglu(
     std::span<float> output,
     SwiGluShape shape);
 
-}  // namespace brt::reference
+}  // namespace raftinfer::reference

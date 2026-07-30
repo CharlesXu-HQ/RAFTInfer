@@ -9,7 +9,7 @@
 #include <limits>
 #include <string>
 
-namespace brt::kernels {
+namespace raftinfer::kernels {
 namespace {
 
 constexpr int kBlockSize = 256;
@@ -20,9 +20,9 @@ void require(bool condition, const char *message) {
   }
 }
 
-void require_dtype(BrtDataType dtype) {
-  require(dtype == BRT_DTYPE_F32 || dtype == BRT_DTYPE_F16 ||
-              dtype == BRT_DTYPE_BF16,
+void require_dtype(RaftInferDataType dtype) {
+  require(dtype == RAFTINFER_DTYPE_F32 || dtype == RAFTINFER_DTYPE_F16 ||
+              dtype == RAFTINFER_DTYPE_BF16,
           "unsupported Qwen3.5 attention dtype");
 }
 
@@ -80,16 +80,16 @@ __device__ void store_from_float<__nv_bfloat16>(void *data, std::size_t index,
 }
 
 template <typename KernelLauncher>
-void launch_by_dtype(BrtDataType dtype, KernelLauncher launcher) {
-  if (dtype == BRT_DTYPE_F32) {
+void launch_by_dtype(RaftInferDataType dtype, KernelLauncher launcher) {
+  if (dtype == RAFTINFER_DTYPE_F32) {
     launcher.template operator()<float>();
     return;
   }
-  if (dtype == BRT_DTYPE_F16) {
+  if (dtype == RAFTINFER_DTYPE_F16) {
     launcher.template operator()<__half>();
     return;
   }
-  if (dtype == BRT_DTYPE_BF16) {
+  if (dtype == RAFTINFER_DTYPE_BF16) {
     launcher.template operator()<__nv_bfloat16>();
     return;
   }
@@ -381,33 +381,33 @@ namespace {
 
 void validate_launch_policy(Qwen35AttentionLaunchPolicy policy) {
   switch (policy.implementation) {
-  case brt::Qwen35AttentionImplementation::materialized_reference:
-  case brt::Qwen35AttentionImplementation::online_tiled:
+  case raftinfer::Qwen35AttentionImplementation::materialized_reference:
+  case raftinfer::Qwen35AttentionImplementation::online_tiled:
     break;
   default:
     require(false, "unsupported Qwen3.5 attention implementation");
   }
   switch (policy.kv_cache_dtype) {
-  case brt::Qwen35KvCacheDType::f32:
-  case brt::Qwen35KvCacheDType::bf16:
+  case raftinfer::Qwen35KvCacheDType::f32:
+  case raftinfer::Qwen35KvCacheDType::bf16:
     break;
   default:
     require(false, "unsupported Qwen3.5 KV cache dtype");
   }
   switch (policy.kv_cache_layout) {
-  case brt::Qwen35KvCacheLayout::token_major:
-  case brt::Qwen35KvCacheLayout::head_major:
+  case raftinfer::Qwen35KvCacheLayout::token_major:
+  case raftinfer::Qwen35KvCacheLayout::head_major:
     break;
   default:
     require(false, "unsupported Qwen3.5 KV cache layout");
   }
 }
 
-std::size_t kv_cache_element_bytes(brt::Qwen35KvCacheDType dtype) {
+std::size_t kv_cache_element_bytes(raftinfer::Qwen35KvCacheDType dtype) {
   switch (dtype) {
-  case brt::Qwen35KvCacheDType::f32:
+  case raftinfer::Qwen35KvCacheDType::f32:
     return sizeof(float);
-  case brt::Qwen35KvCacheDType::bf16:
+  case raftinfer::Qwen35KvCacheDType::bf16:
     return sizeof(__nv_bfloat16);
   }
   require(false, "unsupported Qwen3.5 KV cache dtype");
@@ -450,9 +450,9 @@ qwen35_attention_workspace_bytes(Qwen35AttentionShape shape,
                                  Qwen35AttentionLaunchPolicy policy) {
   validate_launch_policy(policy);
   switch (policy.implementation) {
-  case brt::Qwen35AttentionImplementation::materialized_reference:
+  case raftinfer::Qwen35AttentionImplementation::materialized_reference:
     return qwen35_attention_workspace_bytes(shape);
-  case brt::Qwen35AttentionImplementation::online_tiled:
+  case raftinfer::Qwen35AttentionImplementation::online_tiled:
     validate_shape(shape);
     return qwen35_online_attention_workspace_bytes(shape);
   }
@@ -464,15 +464,15 @@ void qwen35_causal_attention_materialized(
     const void *query, const void *key, const void *value, const void *gate,
     void *output, void *kv_cache, std::size_t kv_cache_bytes, void *workspace,
     std::size_t workspace_bytes, Qwen35AttentionShape shape,
-    BrtDataType activation_dtype, brt::Qwen35KvCacheDType cache_dtype,
+    RaftInferDataType activation_dtype, raftinfer::Qwen35KvCacheDType cache_dtype,
     cudaStream_t stream) {
-  require(cache_dtype == brt::Qwen35KvCacheDType::f32,
+  require(cache_dtype == raftinfer::Qwen35KvCacheDType::f32,
           "materialized attention requires an F32 KV cache");
   const Qwen35AttentionLaunchPolicy materialized_policy{
       .implementation =
-          brt::Qwen35AttentionImplementation::materialized_reference,
+          raftinfer::Qwen35AttentionImplementation::materialized_reference,
       .kv_cache_dtype = cache_dtype,
-      .kv_cache_layout = brt::Qwen35KvCacheLayout::token_major,
+      .kv_cache_layout = raftinfer::Qwen35KvCacheLayout::token_major,
   };
   const std::size_t required_workspace =
       qwen35_attention_workspace_bytes(shape, materialized_policy);
@@ -567,7 +567,7 @@ void qwen35_causal_attention(const void *query, const void *key,
                              void *kv_cache, std::size_t kv_cache_bytes,
                              void *workspace, std::size_t workspace_bytes,
                              Qwen35AttentionShape shape,
-                             BrtDataType activation_dtype,
+                             RaftInferDataType activation_dtype,
                              Qwen35AttentionLaunchPolicy policy,
                              cudaStream_t stream) {
   const std::size_t required_workspace =
@@ -581,15 +581,15 @@ void qwen35_causal_attention(const void *query, const void *key,
   require_dtype(activation_dtype);
 
   switch (policy.implementation) {
-  case brt::Qwen35AttentionImplementation::materialized_reference:
-    require(policy.kv_cache_layout == brt::Qwen35KvCacheLayout::token_major,
+  case raftinfer::Qwen35AttentionImplementation::materialized_reference:
+    require(policy.kv_cache_layout == raftinfer::Qwen35KvCacheLayout::token_major,
             "materialized attention requires a token-major KV cache");
     qwen35_causal_attention_materialized(
         query, key, value, gate, output, kv_cache, kv_cache_bytes, workspace,
         workspace_bytes, shape, activation_dtype, policy.kv_cache_dtype,
         stream);
     return;
-  case brt::Qwen35AttentionImplementation::online_tiled:
+  case raftinfer::Qwen35AttentionImplementation::online_tiled:
     require(workspace == nullptr && workspace_bytes == 0,
             "online tiled attention forbids logits workspace");
     if (shape.tokens == 1) {
@@ -616,13 +616,13 @@ void qwen35_causal_attention(const void *query, const void *key,
                              const void *value, const void *gate, void *output,
                              float *kv_cache, float *logits_workspace,
                              std::size_t logits_workspace_floats,
-                             Qwen35AttentionShape shape, BrtDataType dtype,
+                             Qwen35AttentionShape shape, RaftInferDataType dtype,
                              cudaStream_t stream) {
   const Qwen35AttentionLaunchPolicy policy{
       .implementation =
-          brt::Qwen35AttentionImplementation::materialized_reference,
-      .kv_cache_dtype = brt::Qwen35KvCacheDType::f32,
-      .kv_cache_layout = brt::Qwen35KvCacheLayout::token_major,
+          raftinfer::Qwen35AttentionImplementation::materialized_reference,
+      .kv_cache_dtype = raftinfer::Qwen35KvCacheDType::f32,
+      .kv_cache_layout = raftinfer::Qwen35KvCacheLayout::token_major,
   };
   qwen35_causal_attention(query, key, value, gate, output, kv_cache,
                           qwen35_attention_cache_bytes(shape, policy),
@@ -632,4 +632,4 @@ void qwen35_causal_attention(const void *query, const void *key,
                           shape, dtype, policy, stream);
 }
 
-} // namespace brt::kernels
+} // namespace raftinfer::kernels

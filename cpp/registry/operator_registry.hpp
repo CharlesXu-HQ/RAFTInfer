@@ -1,6 +1,6 @@
 #pragma once
 
-#include <brt/tensor.h>
+#include <raftinfer/tensor.h>
 
 #include <cstddef>
 #include <cstdint>
@@ -13,7 +13,7 @@
 #include <unordered_set>
 #include <vector>
 
-namespace brt {
+namespace raftinfer {
 
 enum class OperatorKind {
   Unspecified,
@@ -62,8 +62,8 @@ enum class KernelProvenance {
 };
 
 struct TensorSignature {
-  BrtDataType dtype{};
-  BrtQuantFormat quant{};
+  RaftInferDataType dtype{};
+  RaftInferQuantFormat quant{};
   std::uint32_t rank{};
   std::size_t alignment{};
   std::vector<std::int64_t> shape;
@@ -72,8 +72,8 @@ struct TensorSignature {
 };
 
 struct TensorConstraint {
-  BrtDataType dtype{};
-  BrtQuantFormat quant{};
+  RaftInferDataType dtype{};
+  RaftInferQuantFormat quant{};
   std::uint32_t rank{};
   std::size_t alignment{};
   std::vector<std::int64_t> min_shape;
@@ -93,19 +93,19 @@ struct OperatorSignature {
   bool operator==(const OperatorSignature&) const = default;
 };
 
-}  // namespace brt
+}  // namespace raftinfer
 
 template <>
-struct std::hash<brt::TensorSignature> {
-  std::size_t operator()(const brt::TensorSignature& signature) const noexcept;
+struct std::hash<raftinfer::TensorSignature> {
+  std::size_t operator()(const raftinfer::TensorSignature& signature) const noexcept;
 };
 
 template <>
-struct std::hash<brt::OperatorSignature> {
-  std::size_t operator()(const brt::OperatorSignature& signature) const noexcept;
+struct std::hash<raftinfer::OperatorSignature> {
+  std::size_t operator()(const raftinfer::OperatorSignature& signature) const noexcept;
 };
 
-namespace brt {
+namespace raftinfer {
 
 struct KernelCapability {
   std::string name;
@@ -161,4 +161,4 @@ class OperatorRegistry {
   mutable std::unordered_map<OperatorSignature, const KernelRegistration*> cache_;
 };
 
-}  // namespace brt
+}  // namespace raftinfer

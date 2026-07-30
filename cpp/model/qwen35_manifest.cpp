@@ -5,7 +5,7 @@
 #include <utility>
 #include <vector>
 
-namespace brt::model {
+namespace raftinfer::model {
 namespace {
 
 const gguf::TensorInfo *
@@ -139,4 +139,4 @@ Qwen35Manifest validate_qwen35_manifest(const gguf::Catalog &catalog,
   return manifest;
 }
 
-} // namespace brt::model
+} // namespace raftinfer::model

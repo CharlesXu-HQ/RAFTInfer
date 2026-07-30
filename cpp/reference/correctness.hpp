@@ -4,7 +4,7 @@
 #include <optional>
 #include <span>
 
-namespace brt::reference {
+namespace raftinfer::reference {
 
 struct CorrectnessMetrics {
   double max_absolute_error;
@@ -46,4 +46,4 @@ bool indices_equal(const CandidateIndices& candidate, const ReferenceIndices& re
   return true;
 }
 
-}  // namespace brt::reference
+}  // namespace raftinfer::reference

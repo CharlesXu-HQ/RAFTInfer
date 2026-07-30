@@ -10,7 +10,7 @@
 #include <string>
 #include <type_traits>
 
-namespace brt::kernels {
+namespace raftinfer::kernels {
 namespace {
 
 constexpr int kWarpSize = 32;
@@ -29,7 +29,7 @@ bool multiplication_fits(std::size_t lhs, std::size_t rhs) noexcept {
 }
 
 bool online_prefill_signature_supported(
-    Qwen35AttentionShape shape, BrtDataType activation_dtype,
+    Qwen35AttentionShape shape, RaftInferDataType activation_dtype,
     Qwen35KvCacheDType cache_dtype,
     Qwen35KvCacheLayout cache_layout) noexcept {
   if (shape.tokens <= 1 || shape.query_heads == 0 || shape.kv_heads == 0 ||
@@ -40,7 +40,7 @@ bool online_prefill_signature_supported(
       shape.tokens > shape.max_context_tokens - shape.past_tokens) {
     return false;
   }
-  if (activation_dtype != BRT_DTYPE_F32 && activation_dtype != BRT_DTYPE_BF16) {
+  if (activation_dtype != RAFTINFER_DTYPE_F32 && activation_dtype != RAFTINFER_DTYPE_BF16) {
     return false;
   }
 
@@ -91,7 +91,7 @@ bool online_prefill_signature_supported(
 }
 
 bool online_decode_signature_supported(
-    Qwen35AttentionShape shape, BrtDataType activation_dtype,
+    Qwen35AttentionShape shape, RaftInferDataType activation_dtype,
     Qwen35KvCacheDType cache_dtype,
     Qwen35KvCacheLayout cache_layout) noexcept {
   if (shape.tokens != 1 || shape.query_heads != kModelQueryHeads ||
@@ -100,7 +100,7 @@ bool online_decode_signature_supported(
       shape.past_tokens >= shape.max_context_tokens) {
     return false;
   }
-  if (activation_dtype != BRT_DTYPE_F32 && activation_dtype != BRT_DTYPE_BF16) {
+  if (activation_dtype != RAFTINFER_DTYPE_F32 && activation_dtype != RAFTINFER_DTYPE_BF16) {
     return false;
   }
 
@@ -784,7 +784,7 @@ void launch_decode_by_cache_dtype(const void *query, const void *key,
 } // namespace
 
 bool qwen35_online_attention_prefill_supported(
-    Qwen35AttentionShape shape, BrtDataType activation_dtype,
+    Qwen35AttentionShape shape, RaftInferDataType activation_dtype,
     Qwen35AttentionLaunchPolicy policy) noexcept {
   if (policy.implementation != Qwen35AttentionImplementation::online_tiled) {
     return false;
@@ -802,7 +802,7 @@ qwen35_online_attention_workspace_bytes(Qwen35AttentionShape shape) noexcept {
 void qwen35_online_attention_prefill(
     const void *query, const void *key, const void *value, const void *gate,
     void *output, void *kv_cache, std::size_t kv_cache_bytes,
-    Qwen35AttentionShape shape, BrtDataType activation_dtype,
+    Qwen35AttentionShape shape, RaftInferDataType activation_dtype,
     Qwen35KvCacheDType cache_dtype, Qwen35KvCacheLayout cache_layout,
     cudaStream_t stream) {
   require(query != nullptr, "online attention query pointer is null");
@@ -848,7 +848,7 @@ void qwen35_online_attention_prefill(
   require(kv_cache_bytes >= required_cache_bytes,
           "online attention KV cache is too small");
 
-  if (activation_dtype == BRT_DTYPE_F32) {
+  if (activation_dtype == RAFTINFER_DTYPE_F32) {
     launch_by_cache_dtype<float>(query, key, value, gate, output, kv_cache,
                                  shape, cache_dtype, cache_layout, stream);
     return;
@@ -861,7 +861,7 @@ void qwen35_online_attention_prefill(
 void qwen35_online_attention_decode(
     const void *query, const void *key, const void *value, const void *gate,
     void *output, void *kv_cache, std::size_t kv_cache_bytes,
-    Qwen35AttentionShape shape, BrtDataType activation_dtype,
+    Qwen35AttentionShape shape, RaftInferDataType activation_dtype,
     Qwen35KvCacheDType cache_dtype, Qwen35KvCacheLayout cache_layout,
     const std::uint32_t *device_position, cudaStream_t stream) {
   require(query != nullptr, "online decode query pointer is null");
@@ -906,7 +906,7 @@ void qwen35_online_attention_decode(
   require(kv_cache_bytes >= required_cache_bytes,
           "online decode KV cache is too small");
 
-  if (activation_dtype == BRT_DTYPE_F32) {
+  if (activation_dtype == RAFTINFER_DTYPE_F32) {
     launch_decode_by_cache_dtype<float>(query, key, value, gate, output,
                                         kv_cache, shape, cache_dtype,
                                         cache_layout, device_position, stream);
@@ -918,4 +918,4 @@ void qwen35_online_attention_decode(
                                               stream);
 }
 
-} // namespace brt::kernels
+} // namespace raftinfer::kernels

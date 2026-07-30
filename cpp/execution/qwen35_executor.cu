@@ -8,7 +8,7 @@
 #include "../kernels/qwen35_online_attention.cuh"
 #include "../kernels/qwen35_primitives.cuh"
 
-#include <brt/tensor.h>
+#include <raftinfer/tensor.h>
 
 #include <cuda_bf16.h>
 #include <cuda_fp16.h>
@@ -26,7 +26,7 @@
 #include <utility>
 #include <vector>
 
-namespace brt {
+namespace raftinfer {
 namespace {
 
 constexpr std::size_t kMaxPrefillTokens = 512;
@@ -45,18 +45,18 @@ __global__ void commit_decode_result(std::int32_t *next_token,
 }
 
 __global__ void fill_delta_tuning_input(void *input, std::size_t elements,
-                                        BrtDataType dtype) {
+                                        RaftInferDataType dtype) {
   const std::size_t index =
       static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   if (index >= elements)
     return;
   const int lane = static_cast<int>((index * 17U) % 37U) - 18;
   const float value = 0.0075F * static_cast<float>(lane);
-  if (dtype == BRT_DTYPE_F32) {
+  if (dtype == RAFTINFER_DTYPE_F32) {
     static_cast<float *>(input)[index] = value;
-  } else if (dtype == BRT_DTYPE_F16) {
+  } else if (dtype == RAFTINFER_DTYPE_F16) {
     static_cast<__half *>(input)[index] = __float2half_rn(value);
-  } else if (dtype == BRT_DTYPE_BF16) {
+  } else if (dtype == RAFTINFER_DTYPE_BF16) {
     static_cast<__nv_bfloat16 *>(input)[index] = __float2bfloat16_rn(value);
   }
 }
@@ -94,21 +94,21 @@ std::size_t checked_mul(std::size_t lhs, std::size_t rhs, const char *message) {
   return lhs * rhs;
 }
 
-std::size_t dtype_size(BrtDataType dtype) {
-  if (dtype == BRT_DTYPE_F32)
+std::size_t dtype_size(RaftInferDataType dtype) {
+  if (dtype == RAFTINFER_DTYPE_F32)
     return 4;
-  if (dtype == BRT_DTYPE_F16 || dtype == BRT_DTYPE_BF16)
+  if (dtype == RAFTINFER_DTYPE_F16 || dtype == RAFTINFER_DTYPE_BF16)
     return 2;
   throw Qwen35ExecutorError("Qwen3.5 executor weights must be F16 or BF16");
 }
 
-BrtDataType dtype_from_weight(model::CudaWeightType type) {
+RaftInferDataType dtype_from_weight(model::CudaWeightType type) {
   if (type == model::CudaWeightType::f32)
-    return BRT_DTYPE_F32;
+    return RAFTINFER_DTYPE_F32;
   if (type == model::CudaWeightType::f16)
-    return BRT_DTYPE_F16;
+    return RAFTINFER_DTYPE_F16;
   if (type == model::CudaWeightType::bf16)
-    return BRT_DTYPE_BF16;
+    return RAFTINFER_DTYPE_BF16;
   throw Qwen35ExecutorError("unsupported Qwen3.5 CUDA weight dtype");
 }
 
@@ -234,8 +234,8 @@ bool close_enough(float actual, float expected) {
 }
 
 CublasLtMatmulConfig matmul_config(std::size_t m, std::size_t n, std::size_t k,
-                                   BrtDataType activation_dtype,
-                                   BrtDataType weight_dtype) {
+                                   RaftInferDataType activation_dtype,
+                                   RaftInferDataType weight_dtype) {
   return CublasLtMatmulConfig{
       .shape = CublasLtMatmulShape{.m = m,
                                    .n = n,
@@ -434,7 +434,7 @@ resolve_execution_policy(const model::Qwen35Config &config,
             .max_context_tokens = max_context,
             .past_tokens = max_context - tokens,
         },
-        BRT_DTYPE_F32, attention_launch_policy(requested));
+        RAFTINFER_DTYPE_F32, attention_launch_policy(requested));
   }
   if (supported)
     return requested;
@@ -576,7 +576,7 @@ std::size_t workspace_estimate(const model::Qwen35Config &config,
 
 } // namespace
 
-#if defined(BRT_QWEN35_EXECUTOR_TESTING)
+#if defined(RAFTINFER_QWEN35_EXECUTOR_TESTING)
 namespace test {
 
 struct InputCastLaunches {
@@ -640,7 +640,7 @@ public:
       : context_(context), config_(config), weights_(weights),
         max_context_(max_context),
         policy_(resolve_execution_policy(config, max_context, policy)),
-        dtype_(BRT_DTYPE_F32),
+        dtype_(RAFTINFER_DTYPE_F32),
         weight_dtype_(dtype_from_weight(weights.token_embedding().type)),
         element_bytes_(dtype_size(dtype_)) {
     DeviceGuard guard{context_.device_id()};
@@ -805,7 +805,7 @@ public:
                "Qwen3.5 logits synchronization failed");
   }
 
-#if defined(BRT_QWEN35_EXECUTOR_TESTING)
+#if defined(RAFTINFER_QWEN35_EXECUTOR_TESTING)
   test::Qwen35ExecutorStateSnapshot state_snapshot_for_tests() const {
     DeviceGuard guard{context_.device_id()};
     test::Qwen35ExecutorStateSnapshot snapshot;
@@ -1468,11 +1468,11 @@ private:
                                              std::size_t elements,
                                              const char *message) {
     std::vector<float> host(elements);
-    if (dtype_ == BRT_DTYPE_F32) {
+    if (dtype_ == RAFTINFER_DTYPE_F32) {
       check_cuda(cudaMemcpyAsync(host.data(), device, elements * sizeof(float),
                                  cudaMemcpyDeviceToHost, context_.stream()),
                  message);
-    } else if (dtype_ == BRT_DTYPE_F16) {
+    } else if (dtype_ == RAFTINFER_DTYPE_F16) {
       std::vector<__half> raw(elements);
       check_cuda(cudaMemcpyAsync(raw.data(), device, elements * sizeof(__half),
                                  cudaMemcpyDeviceToHost, context_.stream()),
@@ -1481,7 +1481,7 @@ private:
       for (std::size_t index = 0; index < elements; ++index)
         host[index] = __half2float(raw[index]);
       return host;
-    } else if (dtype_ == BRT_DTYPE_BF16) {
+    } else if (dtype_ == RAFTINFER_DTYPE_BF16) {
       std::vector<__nv_bfloat16> raw(elements);
       check_cuda(cudaMemcpyAsync(raw.data(), device,
                                  elements * sizeof(__nv_bfloat16),
@@ -1683,7 +1683,7 @@ private:
     kernels::qwen35_cast_f32(static_cast<const float *>(f32_input),
                              matmul_input_, input_bytes / weight_element_bytes,
                              weight_dtype_, context_.stream());
-#if defined(BRT_QWEN35_EXECUTOR_TESTING)
+#if defined(RAFTINFER_QWEN35_EXECUTOR_TESTING)
     record_input_cast_launch();
 #endif
     for (const auto &binding : bindings) {
@@ -1767,7 +1767,7 @@ private:
       record_trace("attn_post_norm-" + std::to_string(layer), scratch,
                    hidden_elements);
       {
-#if defined(BRT_QWEN35_EXECUTOR_TESTING)
+#if defined(RAFTINFER_QWEN35_EXECUTOR_TESTING)
         InputCastGroupCounter ffn_casts{test::input_cast_launches.ffn_gate_up};
 #endif
         if (policy_.grouped_input_casts) {
@@ -1857,7 +1857,7 @@ private:
     const std::size_t kv_width = config_.full_attention_kv_head_count *
                                  config_.full_attention_head_dimension;
     {
-#if defined(BRT_QWEN35_EXECUTOR_TESTING)
+#if defined(RAFTINFER_QWEN35_EXECUTOR_TESTING)
       InputCastGroupCounter projection_casts{
           test::input_cast_launches.full_attention_projection};
 #endif
@@ -1950,7 +1950,7 @@ private:
     const std::size_t gate_width =
         config_.linear_value_head_count * config_.linear_head_dimension;
     {
-#if defined(BRT_QWEN35_EXECUTOR_TESTING)
+#if defined(RAFTINFER_QWEN35_EXECUTOR_TESTING)
       InputCastGroupCounter projection_casts{
           test::input_cast_launches.linear_attention_projection};
 #endif
@@ -2017,8 +2017,8 @@ private:
   const model::CudaWeightPlan &weights_;
   std::size_t max_context_{};
   Qwen35ExecutionPolicy policy_{};
-  BrtDataType dtype_{};
-  BrtDataType weight_dtype_{};
+  RaftInferDataType dtype_{};
+  RaftInferDataType weight_dtype_{};
   std::size_t element_bytes_{};
   std::size_t position_{};
   bool poisoned_{};
@@ -2147,11 +2147,11 @@ Qwen35ExecutionDiagnostics Qwen35Executor::diagnostics() const noexcept {
   return impl_->diagnostics();
 }
 
-#if defined(BRT_QWEN35_EXECUTOR_TESTING)
+#if defined(RAFTINFER_QWEN35_EXECUTOR_TESTING)
 test::Qwen35ExecutorStateSnapshot
 Qwen35Executor::state_snapshot_for_tests() const {
   return impl_->state_snapshot_for_tests();
 }
 #endif
 
-} // namespace brt
+} // namespace raftinfer

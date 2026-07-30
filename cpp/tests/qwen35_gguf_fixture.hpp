@@ -9,7 +9,7 @@
 #include <utility>
 #include <vector>
 
-namespace brt::test {
+namespace raftinfer::test {
 
 struct Qwen35GgufFixtureOptions {
   std::uint32_t vocabulary_size{16};
@@ -269,4 +269,4 @@ make_qwen35_mixed_f32_aux_gguf_fixture(std::uint32_t primary_tensor_type = 1) {
   return make_qwen35_gguf_fixture(primary_tensor_type, true);
 }
 
-} // namespace brt::test
+} // namespace raftinfer::test

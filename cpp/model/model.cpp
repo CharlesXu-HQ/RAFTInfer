@@ -22,7 +22,7 @@
 #include <utility>
 #include <vector>
 
-namespace brt::model {
+namespace raftinfer::model {
 namespace {
 
 bool checked_add_u64(std::uint64_t left, std::uint64_t right,
@@ -154,24 +154,24 @@ void append_scalar(std::vector<std::uint8_t> &bytes, gguf::MetadataType type,
 }
 
 gguf::MetadataType value_type(const gguf::MetadataValue &value) {
-#define BRT_GGUF_VALUE_TYPE(cpp_type, metadata_type)                           \
+#define RAFTINFER_GGUF_VALUE_TYPE(cpp_type, metadata_type)                           \
   if (value.get_if<cpp_type>() != nullptr) {                                   \
     return gguf::MetadataType::metadata_type;                                  \
   }
-  BRT_GGUF_VALUE_TYPE(std::uint8_t, uint8)
-  BRT_GGUF_VALUE_TYPE(std::int8_t, int8)
-  BRT_GGUF_VALUE_TYPE(std::uint16_t, uint16)
-  BRT_GGUF_VALUE_TYPE(std::int16_t, int16)
-  BRT_GGUF_VALUE_TYPE(std::uint32_t, uint32)
-  BRT_GGUF_VALUE_TYPE(std::int32_t, int32)
-  BRT_GGUF_VALUE_TYPE(float, float32)
-  BRT_GGUF_VALUE_TYPE(bool, boolean)
-  BRT_GGUF_VALUE_TYPE(std::string, string)
-  BRT_GGUF_VALUE_TYPE(gguf::MetadataArray, array)
-  BRT_GGUF_VALUE_TYPE(std::uint64_t, uint64)
-  BRT_GGUF_VALUE_TYPE(std::int64_t, int64)
-  BRT_GGUF_VALUE_TYPE(double, float64)
-#undef BRT_GGUF_VALUE_TYPE
+  RAFTINFER_GGUF_VALUE_TYPE(std::uint8_t, uint8)
+  RAFTINFER_GGUF_VALUE_TYPE(std::int8_t, int8)
+  RAFTINFER_GGUF_VALUE_TYPE(std::uint16_t, uint16)
+  RAFTINFER_GGUF_VALUE_TYPE(std::int16_t, int16)
+  RAFTINFER_GGUF_VALUE_TYPE(std::uint32_t, uint32)
+  RAFTINFER_GGUF_VALUE_TYPE(std::int32_t, int32)
+  RAFTINFER_GGUF_VALUE_TYPE(float, float32)
+  RAFTINFER_GGUF_VALUE_TYPE(bool, boolean)
+  RAFTINFER_GGUF_VALUE_TYPE(std::string, string)
+  RAFTINFER_GGUF_VALUE_TYPE(gguf::MetadataArray, array)
+  RAFTINFER_GGUF_VALUE_TYPE(std::uint64_t, uint64)
+  RAFTINFER_GGUF_VALUE_TYPE(std::int64_t, int64)
+  RAFTINFER_GGUF_VALUE_TYPE(double, float64)
+#undef RAFTINFER_GGUF_VALUE_TYPE
   throw ConfigError("tokenizer metadata has an unknown value type");
 }
 
@@ -320,4 +320,4 @@ void Model::attach_cuda(std::shared_ptr<DeviceContext> device,
   impl_->cuda_state = std::move(cuda_state);
 }
 
-} // namespace brt::model
+} // namespace raftinfer::model

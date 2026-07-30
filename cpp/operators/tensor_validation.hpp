@@ -1,9 +1,9 @@
 #pragma once
 
-#include <brt/tensor.h>
+#include <raftinfer/tensor.h>
 
-namespace brt {
+namespace raftinfer {
 
-void validate_tensor_desc(const BrtTensorDesc& desc);
+void validate_tensor_desc(const RaftInferTensorDesc& desc);
 
-}  // namespace brt
+}  // namespace raftinfer

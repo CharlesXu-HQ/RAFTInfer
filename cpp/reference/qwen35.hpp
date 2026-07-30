@@ -6,7 +6,7 @@
 #include <span>
 #include <vector>
 
-namespace brt::reference {
+namespace raftinfer::reference {
 
 struct FullAttentionReferenceArgs {
   std::size_t tokens;
@@ -86,4 +86,4 @@ void qwen35_gated_delta_prefill(std::span<const float> input,
                                 const GatedDeltaReferenceArgs &args,
                                 GatedDeltaReferenceState &state);
 
-} // namespace brt::reference
+} // namespace raftinfer::reference

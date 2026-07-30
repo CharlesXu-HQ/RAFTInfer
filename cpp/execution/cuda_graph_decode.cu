@@ -3,7 +3,7 @@
 #include <stdexcept>
 #include <string>
 
-namespace brt {
+namespace raftinfer {
 namespace {
 
 void check_cuda(cudaError_t status, const char *operation) {
@@ -92,4 +92,4 @@ bool CudaGraphDecode::captured() const noexcept {
   return graph_ != nullptr && exec_ != nullptr;
 }
 
-} // namespace brt
+} // namespace raftinfer

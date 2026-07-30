@@ -7,7 +7,7 @@
 #include <stdexcept>
 #include <string>
 
-namespace brt::gguf {
+namespace raftinfer::gguf {
 
 class ParseError : public std::runtime_error {
 public:
@@ -18,4 +18,4 @@ public:
 Catalog read_catalog(std::span<const std::uint8_t> bytes,
                      const ReaderLimits &limits = {});
 
-} // namespace brt::gguf
+} // namespace raftinfer::gguf

@@ -22,7 +22,7 @@ class TemporaryFile {
 public:
   explicit TemporaryFile(const std::vector<std::uint8_t> &bytes) {
     auto pattern =
-        (std::filesystem::temp_directory_path() / "brt-session-XXXXXX")
+        (std::filesystem::temp_directory_path() / "raftinfer-session-XXXXXX")
             .string();
     const int descriptor = mkstemp(pattern.data());
     assert(descriptor >= 0);
@@ -55,9 +55,9 @@ void assert_throws(Callable &&callable) {
 } // namespace
 
 int main() {
-  const TemporaryFile fixture(brt::test::make_qwen35_gguf_fixture());
-  auto model = std::make_shared<brt::model::Model>(fixture.path());
-  brt::Session session(model, 8);
+  const TemporaryFile fixture(raftinfer::test::make_qwen35_gguf_fixture());
+  auto model = std::make_shared<raftinfer::model::Model>(fixture.path());
+  raftinfer::Session session(model, 8);
 
   assert(!session.host_state().has_tensor_storage());
   assert(session.host_state().position() == 0);
@@ -67,7 +67,7 @@ int main() {
   assert(session.model().qwen35_config().blocks.size() == 4);
 
   const std::int32_t valid_tokens[] = {1, 2, 3};
-  assert_throws<brt::SessionUnavailableError>([&] {
+  assert_throws<raftinfer::SessionUnavailableError>([&] {
     (void)session.prefill(std::span<const std::int32_t>{valid_tokens});
   });
   assert(session.host_state().position() == 0);
@@ -78,7 +78,7 @@ int main() {
       [&] { (void)session.decode(16); });
   assert(session.host_state().position() == 0);
 
-  assert_throws<brt::SessionUnavailableError>(
+  assert_throws<raftinfer::SessionUnavailableError>(
       [&] { (void)session.decode(3); });
   assert(session.host_state().position() == 0);
 

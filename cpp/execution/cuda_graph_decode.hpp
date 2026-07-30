@@ -4,7 +4,7 @@
 
 #include <functional>
 
-namespace brt {
+namespace raftinfer {
 
 class CudaGraphDecode {
 public:
@@ -29,4 +29,4 @@ private:
   cudaGraphExec_t exec_{};
 };
 
-} // namespace brt
+} // namespace raftinfer

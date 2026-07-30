@@ -10,8 +10,8 @@
 
 namespace {
 
-brt::model::Qwen35Config small_config() {
-  return brt::model::Qwen35Config{
+raftinfer::model::Qwen35Config small_config() {
+  return raftinfer::model::Qwen35Config{
       .vocabulary_size = 16,
       .hidden_size = 8,
       .intermediate_size = 16,
@@ -28,17 +28,17 @@ brt::model::Qwen35Config small_config() {
       .rope_frequency_base = 10'000.0F,
       .blocks =
           {
-              {0, brt::model::Qwen35BlockKind::linear_attention},
-              {1, brt::model::Qwen35BlockKind::linear_attention},
-              {2, brt::model::Qwen35BlockKind::linear_attention},
-              {3, brt::model::Qwen35BlockKind::full_attention},
+              {0, raftinfer::model::Qwen35BlockKind::linear_attention},
+              {1, raftinfer::model::Qwen35BlockKind::linear_attention},
+              {2, raftinfer::model::Qwen35BlockKind::linear_attention},
+              {3, raftinfer::model::Qwen35BlockKind::full_attention},
           },
   };
 }
 
-void add_tensor(brt::gguf::Catalog &catalog, std::string name,
+void add_tensor(raftinfer::gguf::Catalog &catalog, std::string name,
                 std::vector<std::uint64_t> dimensions) {
-  catalog.tensors.push_back(brt::gguf::TensorInfo{
+  catalog.tensors.push_back(raftinfer::gguf::TensorInfo{
       .name = std::move(name),
       .dimensions = std::move(dimensions),
       .type = 1,
@@ -51,8 +51,8 @@ std::string block_name(std::uint32_t index, const std::string &suffix) {
   return "blk." + std::to_string(index) + "." + suffix;
 }
 
-brt::gguf::Catalog complete_manifest(const brt::model::Qwen35Config &config) {
-  brt::gguf::Catalog catalog;
+raftinfer::gguf::Catalog complete_manifest(const raftinfer::model::Qwen35Config &config) {
+  raftinfer::gguf::Catalog catalog;
   add_tensor(catalog, "token_embd.weight",
              {config.hidden_size, config.vocabulary_size});
   add_tensor(catalog, "output_norm.weight", {config.hidden_size});
@@ -80,7 +80,7 @@ brt::gguf::Catalog complete_manifest(const brt::model::Qwen35Config &config) {
     add_tensor(catalog, block_name(block.index, "ffn_up.weight"),
                {config.hidden_size, config.intermediate_size});
 
-    if (block.kind == brt::model::Qwen35BlockKind::full_attention) {
+    if (block.kind == raftinfer::model::Qwen35BlockKind::full_attention) {
       add_tensor(catalog, block_name(block.index, "attn_q.weight"),
                  {config.hidden_size, config.full_attention_head_count *
                                           config.full_attention_head_dimension *
@@ -125,7 +125,7 @@ template <class Fn> void expect_manifest_error(Fn &&fn) {
   bool thrown = false;
   try {
     fn();
-  } catch (const brt::model::ManifestError &) {
+  } catch (const raftinfer::model::ManifestError &) {
     thrown = true;
   }
   assert(thrown);
@@ -136,7 +136,7 @@ template <class Fn> void expect_manifest_error(Fn &&fn) {
 int main() {
   const auto config = small_config();
   const auto catalog = complete_manifest(config);
-  const auto manifest = brt::model::validate_qwen35_manifest(catalog, config);
+  const auto manifest = raftinfer::model::validate_qwen35_manifest(catalog, config);
 
   assert(manifest.token_embedding->name == "token_embd.weight");
   assert(manifest.output_norm->name == "output_norm.weight");
@@ -156,7 +156,7 @@ int main() {
   add_tensor(missing, "v.token_embd.weight",
              {config.hidden_size, config.vocabulary_size});
   expect_manifest_error(
-      [&] { (void)brt::model::validate_qwen35_manifest(missing, config); });
+      [&] { (void)raftinfer::model::validate_qwen35_manifest(missing, config); });
 
   auto wrong_shape = catalog;
   bool tensor_found = false;
@@ -169,5 +169,5 @@ int main() {
   }
   assert(tensor_found);
   expect_manifest_error(
-      [&] { (void)brt::model::validate_qwen35_manifest(wrong_shape, config); });
+      [&] { (void)raftinfer::model::validate_qwen35_manifest(wrong_shape, config); });
 }

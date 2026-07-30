@@ -7,7 +7,7 @@
 #include <span>
 #include <vector>
 
-namespace brt {
+namespace raftinfer {
 
 enum class Qwen35HostStorage {
   Full,
@@ -68,4 +68,4 @@ private:
   std::vector<float> full_kv_;
 };
 
-} // namespace brt
+} // namespace raftinfer

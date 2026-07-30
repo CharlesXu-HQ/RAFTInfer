@@ -35,8 +35,8 @@ void operator delete(void *pointer, std::size_t) noexcept { std::free(pointer); 
 
 namespace {
 
-brt::model::Qwen35Config small_hybrid_config() {
-  brt::model::Qwen35Config config;
+raftinfer::model::Qwen35Config small_hybrid_config() {
+  raftinfer::model::Qwen35Config config;
   config.hidden_size = 16;
   config.context_length = 16;
   config.full_attention_head_count = 4;
@@ -48,17 +48,17 @@ brt::model::Qwen35Config small_hybrid_config() {
   config.linear_convolution_width = 4;
   config.blocks = {
       {.index = 0,
-       .kind = brt::model::Qwen35BlockKind::linear_attention},
+       .kind = raftinfer::model::Qwen35BlockKind::linear_attention},
       {.index = 1,
-       .kind = brt::model::Qwen35BlockKind::linear_attention},
-      {.index = 2, .kind = brt::model::Qwen35BlockKind::full_attention},
+       .kind = raftinfer::model::Qwen35BlockKind::linear_attention},
+      {.index = 2, .kind = raftinfer::model::Qwen35BlockKind::full_attention},
       {.index = 3,
-       .kind = brt::model::Qwen35BlockKind::linear_attention},
+       .kind = raftinfer::model::Qwen35BlockKind::linear_attention},
   };
   return config;
 }
 
-brt::model::Qwen35Config official_shape_config() {
+raftinfer::model::Qwen35Config official_shape_config() {
   auto config = small_hybrid_config();
   config.hidden_size = 4096;
   config.context_length = 262144;
@@ -75,19 +75,19 @@ brt::model::Qwen35Config official_shape_config() {
     config.blocks.push_back(
         {.index = index,
          .kind = (index + 1) % 4 == 0
-                     ? brt::model::Qwen35BlockKind::full_attention
-                     : brt::model::Qwen35BlockKind::linear_attention});
+                     ? raftinfer::model::Qwen35BlockKind::full_attention
+                     : raftinfer::model::Qwen35BlockKind::linear_attention});
   }
   return config;
 }
 
-brt::model::Qwen35Config two_full_layer_config() {
+raftinfer::model::Qwen35Config two_full_layer_config() {
   auto config = small_hybrid_config();
   config.blocks = {
-      {.index = 0, .kind = brt::model::Qwen35BlockKind::full_attention},
+      {.index = 0, .kind = raftinfer::model::Qwen35BlockKind::full_attention},
       {.index = 1,
-       .kind = brt::model::Qwen35BlockKind::linear_attention},
-      {.index = 2, .kind = brt::model::Qwen35BlockKind::full_attention},
+       .kind = raftinfer::model::Qwen35BlockKind::linear_attention},
+      {.index = 2, .kind = raftinfer::model::Qwen35BlockKind::full_attention},
   };
   return config;
 }
@@ -112,8 +112,8 @@ void expect_all_zero(std::span<const float> values) {
   }
 }
 
-brt::Qwen35StateLayout valid_small_layout() {
-  return brt::Qwen35StateLayout::create(small_hybrid_config(), 8);
+raftinfer::Qwen35StateLayout valid_small_layout() {
+  return raftinfer::Qwen35StateLayout::create(small_hybrid_config(), 8);
 }
 
 } // namespace
@@ -134,7 +134,7 @@ int main() {
   assert(small_layout.full_kv_floats_per_layer == 128);
 
   const auto official_layout =
-      brt::Qwen35StateLayout::create(official_shape_config(), 1024);
+      raftinfer::Qwen35StateLayout::create(official_shape_config(), 1024);
   assert(official_layout.linear_layer_count == 24);
   assert(official_layout.full_layer_count == 8);
   assert(official_layout.linear_slots_by_block[0] == 0);
@@ -147,70 +147,70 @@ int main() {
 
   expect_throw<std::invalid_argument>(
       "zero max context",
-      [] { (void)brt::Qwen35StateLayout::create(small_hybrid_config(), 0); });
+      [] { (void)raftinfer::Qwen35StateLayout::create(small_hybrid_config(), 0); });
   auto empty = small_hybrid_config();
   empty.blocks.clear();
   expect_throw<std::invalid_argument>(
       "empty block plan in layout create",
-      [&] { (void)brt::Qwen35StateLayout::create(empty, 8); });
+      [&] { (void)raftinfer::Qwen35StateLayout::create(empty, 8); });
   expect_throw<std::invalid_argument>(
       "empty layout in host state constructor",
-      [] { (void)brt::Qwen35HostState{brt::Qwen35StateLayout{}}; });
+      [] { (void)raftinfer::Qwen35HostState{raftinfer::Qwen35StateLayout{}}; });
   expect_throw<std::invalid_argument>(
       "unknown host storage mode",
       [&] {
-        (void)brt::Qwen35HostState{
-            small_layout, static_cast<brt::Qwen35HostStorage>(99)};
+        (void)raftinfer::Qwen35HostState{
+            small_layout, static_cast<raftinfer::Qwen35HostStorage>(99)};
       });
 
   auto zero_count_with_slot = valid_small_layout();
   zero_count_with_slot.linear_layer_count = 0;
   expect_throw<std::invalid_argument>(
       "host state rejects zero linear count with slots",
-      [&] { (void)brt::Qwen35HostState{zero_count_with_slot}; });
+      [&] { (void)raftinfer::Qwen35HostState{zero_count_with_slot}; });
 
   auto out_of_range_slot = valid_small_layout();
   out_of_range_slot.linear_slots_by_block[0] =
       out_of_range_slot.linear_layer_count;
   expect_throw<std::invalid_argument>(
       "host state rejects out-of-range linear slot",
-      [&] { (void)brt::Qwen35HostState{out_of_range_slot}; });
+      [&] { (void)raftinfer::Qwen35HostState{out_of_range_slot}; });
 
   auto duplicate_slot = valid_small_layout();
   duplicate_slot.linear_slots_by_block[1] = 0;
   expect_throw<std::invalid_argument>(
       "host state rejects duplicate linear slot",
-      [&] { (void)brt::Qwen35HostState{duplicate_slot}; });
+      [&] { (void)raftinfer::Qwen35HostState{duplicate_slot}; });
 
   auto non_exhaustive_slots = valid_small_layout();
   ++non_exhaustive_slots.linear_layer_count;
   expect_throw<std::invalid_argument>(
       "host state rejects non-exhaustive linear slots",
-      [&] { (void)brt::Qwen35HostState{non_exhaustive_slots}; });
+      [&] { (void)raftinfer::Qwen35HostState{non_exhaustive_slots}; });
 
   auto both_type_slots = valid_small_layout();
   both_type_slots.full_slots_by_block[0] = 0;
   expect_throw<std::invalid_argument>(
       "host state rejects block with both slot types",
-      [&] { (void)brt::Qwen35HostState{both_type_slots}; });
+      [&] { (void)raftinfer::Qwen35HostState{both_type_slots}; });
 
   auto neither_type_slot = valid_small_layout();
   neither_type_slot.linear_slots_by_block[0] = kNoSlot;
   expect_throw<std::invalid_argument>(
       "host state rejects block with neither slot type",
-      [&] { (void)brt::Qwen35HostState{neither_type_slot}; });
+      [&] { (void)raftinfer::Qwen35HostState{neither_type_slot}; });
 
   auto zero_context_layout = valid_small_layout();
   zero_context_layout.max_context_tokens = 0;
   expect_throw<std::invalid_argument>(
       "host state rejects zero context in public layout",
-      [&] { (void)brt::Qwen35HostState{zero_context_layout}; });
+      [&] { (void)raftinfer::Qwen35HostState{zero_context_layout}; });
 
   auto malformed_dimension_layout = valid_small_layout();
   malformed_dimension_layout.linear_head_dimension = 0;
   expect_throw<std::invalid_argument>(
       "host state rejects malformed public dimensions",
-      [&] { (void)brt::Qwen35HostState{malformed_dimension_layout}; });
+      [&] { (void)raftinfer::Qwen35HostState{malformed_dimension_layout}; });
 
   auto constructor_overflow_layout = valid_small_layout();
   constructor_overflow_layout.linear_key_head_count =
@@ -219,7 +219,7 @@ int main() {
       std::numeric_limits<std::uint32_t>::max();
   expect_throw<std::length_error>(
       "host state rejects constructor-side layout formula overflow",
-      [&] { (void)brt::Qwen35HostState{constructor_overflow_layout}; });
+      [&] { (void)raftinfer::Qwen35HostState{constructor_overflow_layout}; });
 
   auto too_large_vector_layout = valid_small_layout();
   too_large_vector_layout.max_context_tokens = std::uint32_t{1} << 31;
@@ -229,20 +229,20 @@ int main() {
   too_large_vector_layout.full_kv_floats_per_layer = std::size_t{1} << 62;
   expect_throw<std::length_error>(
       "host state rejects vector max_size overflow before allocation",
-      [&] { (void)brt::Qwen35HostState{too_large_vector_layout}; });
+      [&] { (void)raftinfer::Qwen35HostState{too_large_vector_layout}; });
 
   auto overflowing = small_hybrid_config();
   overflowing.blocks = {{.index = 0,
-                         .kind = brt::model::Qwen35BlockKind::full_attention}};
+                         .kind = raftinfer::model::Qwen35BlockKind::full_attention}};
   overflowing.full_attention_kv_head_count =
       std::numeric_limits<std::uint32_t>::max();
   overflowing.full_attention_head_dimension =
       std::numeric_limits<std::uint32_t>::max();
   expect_throw<std::length_error>(
       "full KV byte overflow",
-      [&] { (void)brt::Qwen35StateLayout::create(overflowing, 2); });
+      [&] { (void)raftinfer::Qwen35StateLayout::create(overflowing, 2); });
 
-  brt::Qwen35HostState state{small_layout};
+  raftinfer::Qwen35HostState state{small_layout};
   assert(state.has_tensor_storage());
   const auto *convolution_base = state.linear_convolution(0).data();
   const auto *recurrent_base = state.linear_recurrent(1).data();
@@ -292,8 +292,8 @@ int main() {
   assert(state.position() == 3);
   assert(state.full_kv_length(2) == 3);
 
-  brt::Qwen35HostState two_full_state{
-      brt::Qwen35StateLayout::create(two_full_layer_config(), 4)};
+  raftinfer::Qwen35HostState two_full_state{
+      raftinfer::Qwen35StateLayout::create(two_full_layer_config(), 4)};
   two_full_state.commit_tokens(3);
   assert(two_full_state.position() == 3);
   assert(two_full_state.full_kv_length(0) == 3);
@@ -319,8 +319,8 @@ int main() {
 
   auto logical_layout = valid_small_layout();
   g_allocation_count.store(0, std::memory_order_relaxed);
-  brt::Qwen35HostState logical_only{std::move(logical_layout),
-                                    brt::Qwen35HostStorage::LogicalOnly};
+  raftinfer::Qwen35HostState logical_only{std::move(logical_layout),
+                                    raftinfer::Qwen35HostStorage::LogicalOnly};
   assert(g_allocation_count.load(std::memory_order_relaxed) == 1);
   assert(!logical_only.has_tensor_storage());
   assert(logical_only.position() == 0);

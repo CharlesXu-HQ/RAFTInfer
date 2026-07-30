@@ -90,7 +90,7 @@ void print_top_logits(std::span<const float> logits, std::size_t top_k) {
 int main(int argc, char **argv) {
   try {
     if (argc < 5) {
-      std::cerr << "usage: brt-qwen35-logits MODEL CONTEXT TOP_K TOKEN...\n";
+      std::cerr << "usage: raftinfer-qwen35-logits MODEL CONTEXT TOP_K TOKEN...\n";
       return 2;
     }
     const std::string model_path{argv[1]};
@@ -105,15 +105,15 @@ int main(int argc, char **argv) {
       throw std::invalid_argument("token count exceeds context");
     }
 
-    brt::model::Model model{model_path};
-    brt::DeviceContext device{0, 256U * 1024U * 1024U};
+    raftinfer::model::Model model{model_path};
+    raftinfer::DeviceContext device{0, 256U * 1024U * 1024U};
     auto weights = device.upload_qwen35_weights(model);
     auto owner = device.create_execution_owner(
-        brt::Qwen35Executor::workspace_bytes(model.qwen35_config(), context));
+        raftinfer::Qwen35Executor::workspace_bytes(model.qwen35_config(), context));
     auto execution_context = owner->execution_context();
-    brt::Qwen35Executor executor{execution_context, model.qwen35_config(),
+    raftinfer::Qwen35Executor executor{execution_context, model.qwen35_config(),
                                  *weights, context};
-    const bool trace_enabled = std::getenv("BRT_QWEN35_TRACE") != nullptr;
+    const bool trace_enabled = std::getenv("RAFTINFER_QWEN35_TRACE") != nullptr;
     executor.enable_trace(trace_enabled);
 
     const auto prefill = executor.prefill(tokens);
@@ -130,7 +130,7 @@ int main(int argc, char **argv) {
     }
 
     executor.reset();
-    brt::Qwen35ExecutorResult stepped{};
+    raftinfer::Qwen35ExecutorResult stepped{};
     for (const auto token : tokens) {
       stepped = executor.decode(token);
     }
@@ -172,7 +172,7 @@ int main(int argc, char **argv) {
     std::cout << "}\n";
     return 0;
   } catch (const std::exception &error) {
-    std::cerr << "brt-qwen35-logits: " << error.what() << '\n';
+    std::cerr << "raftinfer-qwen35-logits: " << error.what() << '\n';
     return 1;
   }
 }

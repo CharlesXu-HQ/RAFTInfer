@@ -1,6 +1,6 @@
 #pragma once
 
-#include <brt/tensor.h>
+#include <raftinfer/tensor.h>
 
 #include <cuda_runtime_api.h>
 
@@ -10,7 +10,7 @@
 #include <stdexcept>
 #include <string>
 
-namespace brt::kernels {
+namespace raftinfer::kernels {
 
 class Qwen35PrimitiveError : public std::runtime_error {
 public:
@@ -44,58 +44,58 @@ void qwen35_validate_token_ids(std::span<const std::int32_t> tokens,
 // `tokens` must be validated with `qwen35_validate_token_ids` before uploading
 // or otherwise passing device-resident ids to this wrapper.
 void qwen35_embedding(const std::int32_t *tokens, const void *table,
-                      void *output, EmbeddingShape shape, BrtDataType dtype,
-                      BrtDataType table_dtype, cudaStream_t stream);
+                      void *output, EmbeddingShape shape, RaftInferDataType dtype,
+                      RaftInferDataType table_dtype, cudaStream_t stream);
 
 void qwen35_cast_f32(const float *input, void *output, std::size_t elements,
-                     BrtDataType output_dtype, cudaStream_t stream);
+                     RaftInferDataType output_dtype, cudaStream_t stream);
 
 void qwen35_rms_norm(const void *input, const void *weight, void *output,
-                     RmsNormShape shape, float epsilon, BrtDataType dtype,
-                     BrtDataType weight_dtype, cudaStream_t stream);
+                     RmsNormShape shape, float epsilon, RaftInferDataType dtype,
+                     RaftInferDataType weight_dtype, cudaStream_t stream);
 
 void qwen35_residual_add(const void *lhs, const void *rhs, void *output,
-                         std::size_t elements, BrtDataType dtype,
+                         std::size_t elements, RaftInferDataType dtype,
                          cudaStream_t stream);
 
 void qwen35_qk_norm_rope(const void *input, const void *weight, void *output,
                          QkNormRopeShape shape, float epsilon,
-                         BrtDataType dtype, BrtDataType weight_dtype,
+                         RaftInferDataType dtype, RaftInferDataType weight_dtype,
                          cudaStream_t stream,
                          const std::uint32_t *device_position = nullptr);
 
 void qwen35_sigmoid_gate(const void *values, const void *gates, void *output,
-                         std::size_t elements, BrtDataType dtype,
+                         std::size_t elements, RaftInferDataType dtype,
                          cudaStream_t stream);
 
 void qwen35_swiglu(const void *gate, const void *up, void *output,
-                   std::size_t elements, BrtDataType dtype,
+                   std::size_t elements, RaftInferDataType dtype,
                    cudaStream_t stream);
 
 void qwen35_argmax(const float *logits, std::int32_t *output_index,
                    std::size_t elements, cudaStream_t stream);
 
 void qwen35_argmax_typed(const void *logits, std::int32_t *output_index,
-                         std::size_t elements, BrtDataType dtype,
+                         std::size_t elements, RaftInferDataType dtype,
                          cudaStream_t stream);
 
 std::size_t qwen35_parallel_argmax_workspace_bytes(std::size_t elements);
 
 void qwen35_parallel_argmax_typed(const void *logits,
                                   std::int32_t *output_index,
-                                  std::size_t elements, BrtDataType dtype,
+                                  std::size_t elements, RaftInferDataType dtype,
                                   void *workspace, std::size_t workspace_bytes,
                                   cudaStream_t stream);
 
 void qwen35_split_full_query_gate(const void *query_gate, void *query,
                                   void *gate, std::size_t tokens,
                                   std::size_t heads, std::size_t head_dim,
-                                  BrtDataType dtype, cudaStream_t stream);
+                                  RaftInferDataType dtype, cudaStream_t stream);
 
 void qwen35_pack_linear_delta_input(
     const void *qkv, const void *beta, const void *alpha, const void *gate,
     void *packed, std::size_t tokens, std::size_t qkv_width,
     std::size_t beta_width, std::size_t alpha_width, std::size_t gate_width,
-    BrtDataType dtype, cudaStream_t stream);
+    RaftInferDataType dtype, cudaStream_t stream);
 
-} // namespace brt::kernels
+} // namespace raftinfer::kernels

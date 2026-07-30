@@ -32,10 +32,10 @@ void expect_invalid_argument(Fn&& fn) {
 }  // namespace
 
 int main() {
-  using brt::reference::Tolerance;
-  using brt::reference::compare;
-  using brt::reference::indices_equal;
-  using brt::reference::passes_tolerance;
+  using raftinfer::reference::Tolerance;
+  using raftinfer::reference::compare;
+  using raftinfer::reference::indices_equal;
+  using raftinfer::reference::passes_tolerance;
 
   {
     const std::array<float, 3> values{1.0F, -2.0F, 3.0F};

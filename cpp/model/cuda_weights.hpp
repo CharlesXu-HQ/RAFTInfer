@@ -10,12 +10,12 @@
 #include <string>
 #include <string_view>
 
-namespace brt {
+namespace raftinfer {
 class DeviceContext;
 class ExecutionContext;
-} // namespace brt
+} // namespace raftinfer
 
-namespace brt::model {
+namespace raftinfer::model {
 
 class Model;
 
@@ -101,7 +101,7 @@ private:
 
   std::unique_ptr<Impl> impl_;
 
-  friend class brt::DeviceContext;
+  friend class raftinfer::DeviceContext;
 };
 
-} // namespace brt::model
+} // namespace raftinfer::model

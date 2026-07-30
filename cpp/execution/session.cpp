@@ -1,6 +1,6 @@
 #include "session.hpp"
 
-#if BRT_ENABLE_CUDA
+#if RAFTINFER_ENABLE_CUDA
 #include "qwen35_executor.hpp"
 
 #include "../foundation/device_context.hpp"
@@ -10,7 +10,7 @@
 #include <stdexcept>
 #include <utility>
 
-namespace brt {
+namespace raftinfer {
 namespace {
 
 Qwen35StateLayout
@@ -57,7 +57,7 @@ Session::Session(std::shared_ptr<const model::Model> model,
       policy_(policy),
       state_(create_session_layout(model_, max_context_tokens),
              Qwen35HostStorage::LogicalOnly) {
-#if BRT_ENABLE_CUDA
+#if RAFTINFER_ENABLE_CUDA
   if (!model_->cuda_ready()) {
     return;
   }
@@ -92,7 +92,7 @@ const Qwen35HostState &Session::host_state() const noexcept { return state_; }
 SessionTokenResult
 Session::prefill(std::span<const std::int32_t> tokens) {
   validate_request(model_->qwen35_config(), state_, tokens);
-#if BRT_ENABLE_CUDA
+#if RAFTINFER_ENABLE_CUDA
   if (executor_) {
     try {
       const auto result = executor_->prefill(tokens);
@@ -113,7 +113,7 @@ Session::prefill(std::span<const std::int32_t> tokens) {
 SessionTokenResult Session::decode(std::int32_t token) {
   const std::span<const std::int32_t> tokens{&token, 1};
   validate_request(model_->qwen35_config(), state_, tokens);
-#if BRT_ENABLE_CUDA
+#if RAFTINFER_ENABLE_CUDA
   if (executor_) {
     try {
       const auto result = executor_->decode(token);
@@ -143,7 +143,7 @@ Session::decode_greedy(std::int32_t first_token,
   }
   const std::span<const std::int32_t> tokens{&first_token, 1};
   validate_request(model_->qwen35_config(), state_, tokens);
-#if BRT_ENABLE_CUDA
+#if RAFTINFER_ENABLE_CUDA
   if (executor_) {
     try {
       const auto result = executor_->decode_greedy(first_token, output_tokens);
@@ -162,7 +162,7 @@ Session::decode_greedy(std::int32_t first_token,
 }
 
 SessionDiagnostics Session::diagnostics() const {
-#if BRT_ENABLE_CUDA
+#if RAFTINFER_ENABLE_CUDA
   if (executor_) {
     const auto diagnostics = executor_->diagnostics();
     return SessionDiagnostics{
@@ -183,7 +183,7 @@ SessionDiagnostics Session::diagnostics() const {
 }
 
 void Session::reset() {
-#if BRT_ENABLE_CUDA
+#if RAFTINFER_ENABLE_CUDA
   if (executor_) {
     try {
       executor_->reset();
@@ -195,4 +195,4 @@ void Session::reset() {
   state_.reset();
 }
 
-} // namespace brt
+} // namespace raftinfer

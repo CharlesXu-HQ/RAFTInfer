@@ -4,7 +4,7 @@
 #include <cmath>
 #include <stdexcept>
 
-namespace brt::reference {
+namespace raftinfer::reference {
 
 namespace {
 
@@ -106,4 +106,4 @@ bool passes_tolerance(const CorrectnessMetrics& metrics, const Tolerance& tolera
   return true;
 }
 
-}  // namespace brt::reference
+}  // namespace raftinfer::reference

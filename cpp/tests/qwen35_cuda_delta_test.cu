@@ -42,10 +42,10 @@ public:
     cudaDeviceProp properties{};
     assert(cudaGetDeviceProperties(&properties, 0) == cudaSuccess);
     const auto stream = raft::resource::get_cuda_stream(resources_).value();
-    workspace_ = std::make_unique<brt::WorkspaceArena>(
+    workspace_ = std::make_unique<raftinfer::WorkspaceArena>(
         rmm::device_async_resource_ref{pool_}, cuda::stream_ref{stream}, stream,
         4 * 1024 * 1024);
-    context_ = std::make_unique<brt::ExecutionContext>(
+    context_ = std::make_unique<raftinfer::ExecutionContext>(
         resources_, rmm::device_async_resource_ref{pool_}, stream, *workspace_,
         0, properties.major, properties.minor, properties.sharedMemPerBlock);
   }
@@ -58,19 +58,19 @@ public:
     workspace_.reset();
   }
 
-  brt::ExecutionContext &context() noexcept { return *context_; }
+  raftinfer::ExecutionContext &context() noexcept { return *context_; }
 
 private:
   rmm::mr::cuda_memory_resource cuda_resource_;
   rmm::mr::pool_memory_resource pool_;
   raft::device_resources resources_;
-  std::unique_ptr<brt::WorkspaceArena> workspace_;
-  std::unique_ptr<brt::ExecutionContext> context_;
+  std::unique_ptr<raftinfer::WorkspaceArena> workspace_;
+  std::unique_ptr<raftinfer::ExecutionContext> context_;
 };
 
 class DeviceBuffer {
 public:
-  DeviceBuffer(brt::ExecutionContext &context, std::size_t bytes)
+  DeviceBuffer(raftinfer::ExecutionContext &context, std::size_t bytes)
       : resource_(context.memory_resource()), stream_ref_(context.stream()),
         stream_(context.stream()), bytes_(bytes == 0 ? 1 : bytes),
         data_(resource_.allocate(stream_ref_, bytes_,
@@ -108,13 +108,13 @@ private:
 template <typename T> struct DTypeTraits;
 
 template <> struct DTypeTraits<__half> {
-  static constexpr BrtDataType dtype = BRT_DTYPE_F16;
+  static constexpr RaftInferDataType dtype = RAFTINFER_DTYPE_F16;
   static __half from_float(float value) { return __float2half_rn(value); }
   static float to_float(__half value) { return __half2float(value); }
 };
 
 template <> struct DTypeTraits<__nv_bfloat16> {
-  static constexpr BrtDataType dtype = BRT_DTYPE_BF16;
+  static constexpr RaftInferDataType dtype = RAFTINFER_DTYPE_BF16;
   static __nv_bfloat16 from_float(float value) {
     return __float2bfloat16_rn(value);
   }
@@ -122,7 +122,7 @@ template <> struct DTypeTraits<__nv_bfloat16> {
 };
 
 template <> struct DTypeTraits<float> {
-  static constexpr BrtDataType dtype = BRT_DTYPE_F32;
+  static constexpr RaftInferDataType dtype = RAFTINFER_DTYPE_F32;
   static float from_float(float value) { return value; }
   static float to_float(float value) { return value; }
 };
@@ -142,7 +142,7 @@ template <typename T> std::vector<float> decode(std::span<const T> values) {
 }
 
 template <typename T>
-DeviceBuffer upload(brt::ExecutionContext &context, std::span<const T> host) {
+DeviceBuffer upload(raftinfer::ExecutionContext &context, std::span<const T> host) {
   DeviceBuffer buffer{context, host.size_bytes()};
   assert(cudaMemcpyAsync(buffer.data(), host.data(), host.size_bytes(),
                          cudaMemcpyHostToDevice,
@@ -151,7 +151,7 @@ DeviceBuffer upload(brt::ExecutionContext &context, std::span<const T> host) {
 }
 
 template <typename T>
-std::vector<T> download(brt::ExecutionContext &context, const void *device,
+std::vector<T> download(raftinfer::ExecutionContext &context, const void *device,
                         std::size_t elements) {
   std::vector<T> host(elements);
   assert(cudaMemcpyAsync(host.data(), device, elements * sizeof(T),
@@ -191,8 +191,8 @@ std::vector<float> sequence(std::size_t elements, float scale, float bias) {
   return values;
 }
 
-brt::kernels::GatedDeltaShape make_shape(std::size_t tokens) {
-  return brt::kernels::GatedDeltaShape{
+raftinfer::kernels::GatedDeltaShape make_shape(std::size_t tokens) {
+  return raftinfer::kernels::GatedDeltaShape{
       .tokens = tokens,
       .hidden_size = 28,
       .key_heads = 2,
@@ -204,9 +204,9 @@ brt::kernels::GatedDeltaShape make_shape(std::size_t tokens) {
   };
 }
 
-brt::reference::GatedDeltaReferenceArgs
-make_reference_args(const brt::kernels::GatedDeltaShape &shape) {
-  return brt::reference::GatedDeltaReferenceArgs{
+raftinfer::reference::GatedDeltaReferenceArgs
+make_reference_args(const raftinfer::kernels::GatedDeltaShape &shape) {
+  return raftinfer::reference::GatedDeltaReferenceArgs{
       .tokens = shape.tokens,
       .hidden_size = shape.hidden_size,
       .key_heads = shape.key_heads,
@@ -218,19 +218,19 @@ make_reference_args(const brt::kernels::GatedDeltaShape &shape) {
   };
 }
 
-std::size_t key_size(const brt::kernels::GatedDeltaShape &shape) {
+std::size_t key_size(const raftinfer::kernels::GatedDeltaShape &shape) {
   return shape.key_heads * shape.key_dim;
 }
 
-std::size_t value_size(const brt::kernels::GatedDeltaShape &shape) {
+std::size_t value_size(const raftinfer::kernels::GatedDeltaShape &shape) {
   return shape.value_heads * shape.value_dim;
 }
 
-std::size_t conv_dim(const brt::kernels::GatedDeltaShape &shape) {
+std::size_t conv_dim(const raftinfer::kernels::GatedDeltaShape &shape) {
   return 2 * key_size(shape) + value_size(shape);
 }
 
-std::size_t token_stride(const brt::kernels::GatedDeltaShape &shape) {
+std::size_t token_stride(const raftinfer::kernels::GatedDeltaShape &shape) {
   return conv_dim(shape) + 2 * shape.value_heads + shape.hidden_size;
 }
 
@@ -242,7 +242,7 @@ struct Fixture {
   std::vector<float> output_norm_weight;
 };
 
-Fixture make_fixture(const brt::kernels::GatedDeltaShape &shape) {
+Fixture make_fixture(const raftinfer::kernels::GatedDeltaShape &shape) {
   Fixture fixture{
       .input = sequence(shape.tokens * token_stride(shape), 0.017F, -0.03F),
       .conv_weight =
@@ -276,12 +276,12 @@ template <typename T> struct DeviceRun {
 };
 
 template <typename T, typename Weight = T>
-DeviceRun<T> run_cuda(brt::ExecutionContext &context,
-                      const brt::kernels::GatedDeltaShape &shape,
+DeviceRun<T> run_cuda(raftinfer::ExecutionContext &context,
+                      const raftinfer::kernels::GatedDeltaShape &shape,
                       const Fixture &fixture,
                       std::span<const float> initial_convolution = {},
                       std::span<const float> initial_recurrent = {},
-                      brt::kernels::GatedDeltaLaunchPolicy policy = {}) {
+                      raftinfer::kernels::GatedDeltaLaunchPolicy policy = {}) {
   const auto input = encode<T>(fixture.input);
   const auto conv_weight = encode<Weight>(fixture.conv_weight);
   const auto recurrent_a = encode<Weight>(fixture.recurrent_a);
@@ -300,7 +300,7 @@ DeviceRun<T> run_cuda(brt::ExecutionContext &context,
   DeviceBuffer recurrent_device{context, shape.value_heads * shape.key_dim *
                                              shape.value_dim * sizeof(float)};
   const std::size_t workspace_bytes =
-      brt::kernels::qwen35_gated_delta_workspace_bytes(shape);
+      raftinfer::kernels::qwen35_gated_delta_workspace_bytes(shape);
   DeviceBuffer workspace_device{context, workspace_bytes};
 
   if (initial_convolution.empty()) {
@@ -326,7 +326,7 @@ DeviceRun<T> run_cuda(brt::ExecutionContext &context,
                            context.stream()) == cudaSuccess);
   }
 
-  brt::kernels::qwen35_gated_delta(
+  raftinfer::kernels::qwen35_gated_delta(
       input_device.data(), conv_weight_device.data(), recurrent_a_device.data(),
       dt_bias_device.data(), output_norm_weight_device.data(),
       output_device.data(), static_cast<float *>(convolution_device.data()),
@@ -346,19 +346,19 @@ DeviceRun<T> run_cuda(brt::ExecutionContext &context,
 }
 
 template <typename T, typename Weight = T>
-brt::reference::GatedDeltaReferenceState run_reference(
-    const brt::kernels::GatedDeltaShape &shape, const Fixture &fixture,
+raftinfer::reference::GatedDeltaReferenceState run_reference(
+    const raftinfer::kernels::GatedDeltaShape &shape, const Fixture &fixture,
     std::span<float> output,
-    const brt::reference::GatedDeltaReferenceState *initial = nullptr) {
+    const raftinfer::reference::GatedDeltaReferenceState *initial = nullptr) {
   const auto quantized = quantize_fixture<T, Weight>(fixture);
   const auto args = make_reference_args(shape);
-  brt::reference::GatedDeltaReferenceState state{args};
+  raftinfer::reference::GatedDeltaReferenceState state{args};
   if (initial != nullptr) {
     state = *initial;
   }
-  brt::reference::qwen35_gated_delta_prefill(
+  raftinfer::reference::qwen35_gated_delta_prefill(
       quantized.input, output,
-      brt::reference::GatedDeltaReferenceWeights{
+      raftinfer::reference::GatedDeltaReferenceWeights{
           .conv_weight = quantized.conv_weight,
           .recurrent_a = quantized.recurrent_a,
           .dt_bias = quantized.dt_bias,
@@ -369,7 +369,7 @@ brt::reference::GatedDeltaReferenceState run_reference(
 }
 
 template <typename T>
-void check_prefill_length(brt::ExecutionContext &context, std::size_t tokens) {
+void check_prefill_length(raftinfer::ExecutionContext &context, std::size_t tokens) {
   const auto shape = make_shape(tokens);
   const auto fixture = make_fixture(shape);
   std::vector<float> expected_output(tokens * shape.hidden_size);
@@ -381,7 +381,7 @@ void check_prefill_length(brt::ExecutionContext &context, std::size_t tokens) {
 }
 
 template <typename T>
-void check_continued_prefill(brt::ExecutionContext &context) {
+void check_continued_prefill(raftinfer::ExecutionContext &context) {
   const auto first_shape = make_shape(4);
   const auto first_fixture = make_fixture(first_shape);
   std::vector<float> first_expected(first_shape.tokens *
@@ -412,7 +412,7 @@ void check_continued_prefill(brt::ExecutionContext &context) {
 }
 
 template <typename T>
-void check_decode_after_prefill(brt::ExecutionContext &context) {
+void check_decode_after_prefill(raftinfer::ExecutionContext &context) {
   const auto prefill_shape = make_shape(4);
   const auto prefill_fixture = make_fixture(prefill_shape);
   std::vector<float> prefill_expected(prefill_shape.tokens *
@@ -438,7 +438,7 @@ void check_decode_after_prefill(brt::ExecutionContext &context) {
   assert_matches(decode_actual.recurrent, decode_reference_state.recurrent);
 }
 
-template <typename T> void check_reset(brt::ExecutionContext &context) {
+template <typename T> void check_reset(raftinfer::ExecutionContext &context) {
   const auto shape = make_shape(4);
   const auto fixture = make_fixture(shape);
   const auto first = run_cuda<T>(context, shape, fixture);
@@ -449,7 +449,7 @@ template <typename T> void check_reset(brt::ExecutionContext &context) {
 }
 
 template <typename T>
-void check_device_resident_sequence(brt::ExecutionContext &context) {
+void check_device_resident_sequence(raftinfer::ExecutionContext &context) {
   const auto prefill_shape = make_shape(4);
   const auto decode_shape = make_shape(1);
   const auto continued_shape = make_shape(2);
@@ -513,7 +513,7 @@ void check_device_resident_sequence(brt::ExecutionContext &context) {
       context, prefill_shape.value_heads * prefill_shape.key_dim *
                    prefill_shape.value_dim * sizeof(float)};
   const std::size_t workspace_bytes =
-      brt::kernels::qwen35_gated_delta_workspace_bytes(prefill_shape);
+      raftinfer::kernels::qwen35_gated_delta_workspace_bytes(prefill_shape);
   DeviceBuffer workspace_device{context, workspace_bytes};
   assert(cudaMemsetAsync(convolution_device.data(), 0,
                          conv_dim(prefill_shape) *
@@ -525,8 +525,8 @@ void check_device_resident_sequence(brt::ExecutionContext &context) {
                          context.stream()) == cudaSuccess);
 
   const auto launch = [&](const void *input, void *output,
-                          brt::kernels::GatedDeltaShape shape) {
-    brt::kernels::qwen35_gated_delta(
+                          raftinfer::kernels::GatedDeltaShape shape) {
+    raftinfer::kernels::qwen35_gated_delta(
         input, conv_weight_device.data(), recurrent_a_device.data(),
         dt_bias_device.data(), output_norm_weight_device.data(), output,
         static_cast<float *>(convolution_device.data()),
@@ -566,7 +566,7 @@ void check_device_resident_sequence(brt::ExecutionContext &context) {
 }
 
 template <typename T>
-void check_saturation_edges(brt::ExecutionContext &context) {
+void check_saturation_edges(raftinfer::ExecutionContext &context) {
   const auto shape = make_shape(4);
   auto fixture = make_fixture(shape);
   fixture.recurrent_a = {-12.0F, -3.0F, -0.25F, -0.001F};
@@ -603,7 +603,7 @@ void check_saturation_edges(brt::ExecutionContext &context) {
 }
 
 template <typename T>
-void check_f32_auxiliary_weights(brt::ExecutionContext &context) {
+void check_f32_auxiliary_weights(raftinfer::ExecutionContext &context) {
   const auto shape = make_shape(4);
   const auto fixture = make_fixture(shape);
   std::vector<float> expected_output(shape.tokens * shape.hidden_size);
@@ -616,7 +616,7 @@ void check_f32_auxiliary_weights(brt::ExecutionContext &context) {
 }
 
 template <typename Weight>
-void check_f32_activations(brt::ExecutionContext &context) {
+void check_f32_activations(raftinfer::ExecutionContext &context) {
   const auto shape = make_shape(4);
   const auto fixture = make_fixture(shape);
   std::vector<float> expected_output(shape.tokens * shape.hidden_size);
@@ -628,8 +628,8 @@ void check_f32_activations(brt::ExecutionContext &context) {
   assert_matches(actual.recurrent, expected_state.recurrent);
 }
 
-void check_model_shape_register_path(brt::ExecutionContext &context) {
-  const brt::kernels::GatedDeltaShape shape{
+void check_model_shape_register_path(raftinfer::ExecutionContext &context) {
+  const raftinfer::kernels::GatedDeltaShape shape{
       .tokens = 3,
       .hidden_size = 512,
       .key_heads = 2,
@@ -649,9 +649,9 @@ void check_model_shape_register_path(brt::ExecutionContext &context) {
   assert_matches(actual.recurrent, expected_state.recurrent);
 }
 
-brt::kernels::GatedDeltaShape make_schedule_shape(std::size_t tokens,
+raftinfer::kernels::GatedDeltaShape make_schedule_shape(std::size_t tokens,
                                                   std::size_t dim) {
-  return brt::kernels::GatedDeltaShape{
+  return raftinfer::kernels::GatedDeltaShape{
       .tokens = tokens,
       .hidden_size = 4 * dim,
       .key_heads = 2,
@@ -663,23 +663,23 @@ brt::kernels::GatedDeltaShape make_schedule_shape(std::size_t tokens,
   };
 }
 
-void assert_schedule_policy(const brt::kernels::GatedDeltaLaunchPolicy &policy,
-                            brt::kernels::GatedDeltaSchedule schedule) {
+void assert_schedule_policy(const raftinfer::kernels::GatedDeltaLaunchPolicy &policy,
+                            raftinfer::kernels::GatedDeltaSchedule schedule) {
   assert(policy.schedule == schedule);
   assert(policy.warps_per_block == 4);
   assert(!policy.transposed_boundary_state);
 }
 
 template <typename T>
-void check_candidate_prefill_bucket(brt::ExecutionContext &context,
+void check_candidate_prefill_bucket(raftinfer::ExecutionContext &context,
                                     std::size_t dim, std::size_t tokens,
-                                    brt::kernels::GatedDeltaSchedule schedule) {
+                                    raftinfer::kernels::GatedDeltaSchedule schedule) {
   const auto shape = make_schedule_shape(tokens, dim);
   const auto fixture = make_fixture(shape);
   std::vector<float> expected_output(tokens * shape.hidden_size);
   const auto expected_state = run_reference<T>(shape, fixture, expected_output);
   const auto policy =
-      brt::kernels::GatedDeltaLaunchPolicy{.schedule = schedule,
+      raftinfer::kernels::GatedDeltaLaunchPolicy{.schedule = schedule,
                                            .warps_per_block = 4,
                                            .transposed_boundary_state = false};
   const auto actual = run_cuda<T>(context, shape, fixture, {}, {}, policy);
@@ -690,9 +690,9 @@ void check_candidate_prefill_bucket(brt::ExecutionContext &context,
 
 template <typename T>
 void check_candidate_continued_prefill_and_decode(
-    brt::ExecutionContext &context, std::size_t dim,
-    brt::kernels::GatedDeltaSchedule prefill_schedule,
-    brt::kernels::GatedDeltaSchedule decode_schedule) {
+    raftinfer::ExecutionContext &context, std::size_t dim,
+    raftinfer::kernels::GatedDeltaSchedule prefill_schedule,
+    raftinfer::kernels::GatedDeltaSchedule decode_schedule) {
   const auto first_shape = make_schedule_shape(17, dim);
   const auto first_fixture = make_fixture(first_shape);
   std::vector<float> first_expected(first_shape.tokens *
@@ -700,7 +700,7 @@ void check_candidate_continued_prefill_and_decode(
   const auto first_reference_state =
       run_reference<T>(first_shape, first_fixture, first_expected);
   const auto first_policy =
-      brt::kernels::GatedDeltaLaunchPolicy{.schedule = prefill_schedule,
+      raftinfer::kernels::GatedDeltaLaunchPolicy{.schedule = prefill_schedule,
                                            .warps_per_block = 4,
                                            .transposed_boundary_state = false};
   const auto first_actual =
@@ -737,7 +737,7 @@ void check_candidate_continued_prefill_and_decode(
     std::vector<float> decode_expected(decode_shape.hidden_size);
     reference_state = run_reference<T>(decode_shape, decode_fixture,
                                        decode_expected, &reference_state);
-    const auto decode_policy = brt::kernels::GatedDeltaLaunchPolicy{
+    const auto decode_policy = raftinfer::kernels::GatedDeltaLaunchPolicy{
         .schedule = decode_schedule,
         .warps_per_block = 4,
         .transposed_boundary_state = false};
@@ -753,22 +753,22 @@ void check_candidate_continued_prefill_and_decode(
 }
 
 template <typename T>
-void check_sm120_candidate_schedules(brt::ExecutionContext &context) {
+void check_sm120_candidate_schedules(raftinfer::ExecutionContext &context) {
   for (const std::size_t dim : {std::size_t{64}, std::size_t{128}}) {
-    const auto current = brt::kernels::qwen35_gated_delta_select_policy(
+    const auto current = raftinfer::kernels::qwen35_gated_delta_select_policy(
         make_schedule_shape(128, dim), 128);
     assert_schedule_policy(
-        current, brt::kernels::GatedDeltaSchedule::register_resident_current);
+        current, raftinfer::kernels::GatedDeltaSchedule::register_resident_current);
     for (const std::size_t tokens :
          {std::size_t{17}, std::size_t{128}, std::size_t{512}}) {
       check_candidate_prefill_bucket<T>(
           context, dim, tokens,
-          brt::kernels::GatedDeltaSchedule::register_resident_prefill_sm120);
+          raftinfer::kernels::GatedDeltaSchedule::register_resident_prefill_sm120);
     }
     check_candidate_continued_prefill_and_decode<T>(
         context, dim,
-        brt::kernels::GatedDeltaSchedule::register_resident_prefill_sm120,
-        brt::kernels::GatedDeltaSchedule::register_resident_decode_sm120);
+        raftinfer::kernels::GatedDeltaSchedule::register_resident_prefill_sm120,
+        raftinfer::kernels::GatedDeltaSchedule::register_resident_decode_sm120);
   }
 }
 
@@ -776,7 +776,7 @@ void expect_delta_error(auto &&fn) {
   bool thrown = false;
   try {
     fn();
-  } catch (const brt::kernels::Qwen35DeltaError &) {
+  } catch (const raftinfer::kernels::Qwen35DeltaError &) {
     thrown = true;
   }
   assert(thrown);
@@ -785,17 +785,17 @@ void expect_delta_error(auto &&fn) {
 void check_invalid_shapes(cudaStream_t stream) {
   auto shape = make_shape(1);
   const auto four_tokens = make_shape(4);
-  assert(brt::kernels::qwen35_gated_delta_workspace_bytes(four_tokens) ==
-         4 * brt::kernels::qwen35_gated_delta_workspace_bytes(shape));
+  assert(raftinfer::kernels::qwen35_gated_delta_workspace_bytes(four_tokens) ==
+         4 * raftinfer::kernels::qwen35_gated_delta_workspace_bytes(shape));
   int dummy = 0;
-  const auto launch = [&](brt::kernels::GatedDeltaShape candidate,
+  const auto launch = [&](raftinfer::kernels::GatedDeltaShape candidate,
                           std::size_t workspace_bytes =
                               std::numeric_limits<std::size_t>::max()) {
-    brt::kernels::qwen35_gated_delta(&dummy, &dummy, &dummy, &dummy, &dummy,
+    raftinfer::kernels::qwen35_gated_delta(&dummy, &dummy, &dummy, &dummy, &dummy,
                                      &dummy, reinterpret_cast<float *>(&dummy),
                                      reinterpret_cast<float *>(&dummy), &dummy,
-                                     workspace_bytes, candidate, BRT_DTYPE_F16,
-                                     BRT_DTYPE_F16, stream);
+                                     workspace_bytes, candidate, RAFTINFER_DTYPE_F16,
+                                     RAFTINFER_DTYPE_F16, stream);
   };
 
   auto zero_tokens = shape;
@@ -817,39 +817,39 @@ void check_invalid_shapes(cudaStream_t stream) {
   overflow.tokens = std::numeric_limits<std::size_t>::max();
   expect_delta_error([&] { launch(overflow); });
   expect_delta_error([&] {
-    launch(shape, brt::kernels::qwen35_gated_delta_workspace_bytes(shape) - 1);
+    launch(shape, raftinfer::kernels::qwen35_gated_delta_workspace_bytes(shape) - 1);
   });
   expect_delta_error([&] {
-    brt::kernels::qwen35_gated_delta(
+    raftinfer::kernels::qwen35_gated_delta(
         nullptr, &dummy, &dummy, &dummy, &dummy, &dummy,
         reinterpret_cast<float *>(&dummy), reinterpret_cast<float *>(&dummy),
-        &dummy, brt::kernels::qwen35_gated_delta_workspace_bytes(shape), shape,
-        BRT_DTYPE_F16, BRT_DTYPE_F16, stream);
+        &dummy, raftinfer::kernels::qwen35_gated_delta_workspace_bytes(shape), shape,
+        RAFTINFER_DTYPE_F16, RAFTINFER_DTYPE_F16, stream);
   });
   expect_delta_error([&] {
-    brt::kernels::qwen35_gated_delta(
+    raftinfer::kernels::qwen35_gated_delta(
         &dummy, &dummy, &dummy, &dummy, &dummy, &dummy,
         reinterpret_cast<float *>(&dummy), reinterpret_cast<float *>(&dummy),
-        &dummy, brt::kernels::qwen35_gated_delta_workspace_bytes(shape), shape,
-        BRT_DTYPE_Q4_K, BRT_DTYPE_Q4_K, stream);
+        &dummy, raftinfer::kernels::qwen35_gated_delta_workspace_bytes(shape), shape,
+        RAFTINFER_DTYPE_Q4_K, RAFTINFER_DTYPE_Q4_K, stream);
   });
   expect_delta_error([&] {
-    brt::kernels::qwen35_gated_delta(
+    raftinfer::kernels::qwen35_gated_delta(
         &dummy, &dummy, &dummy, &dummy, &dummy, &dummy,
         reinterpret_cast<float *>(&dummy), reinterpret_cast<float *>(&dummy),
-        &dummy, brt::kernels::qwen35_gated_delta_workspace_bytes(shape), shape,
-        brt::kernels::GatedDeltaLaunchPolicy{
-            .schedule = static_cast<brt::kernels::GatedDeltaSchedule>(99),
+        &dummy, raftinfer::kernels::qwen35_gated_delta_workspace_bytes(shape), shape,
+        raftinfer::kernels::GatedDeltaLaunchPolicy{
+            .schedule = static_cast<raftinfer::kernels::GatedDeltaSchedule>(99),
             .warps_per_block = 4,
             .transposed_boundary_state = false},
-        BRT_DTYPE_F16, BRT_DTYPE_F16, stream);
+        RAFTINFER_DTYPE_F16, RAFTINFER_DTYPE_F16, stream);
   });
 }
 
 void check_misaligned_pointers(cudaStream_t stream) {
   const auto shape = make_shape(1);
   const std::size_t workspace_bytes =
-      brt::kernels::qwen35_gated_delta_workspace_bytes(shape);
+      raftinfer::kernels::qwen35_gated_delta_workspace_bytes(shape);
   alignas(16) std::array<std::byte, 1024> storage{};
   void *const aligned = storage.data();
   void *const misaligned = storage.data() + 1;
@@ -860,14 +860,14 @@ void check_misaligned_pointers(cudaStream_t stream) {
                           const void *recurrent_a, const void *dt_bias,
                           const void *output_norm_weight, void *output,
                           float *convolution_state, float *recurrent_state,
-                          void *workspace, BrtDataType dtype) {
-    brt::kernels::qwen35_gated_delta(
+                          void *workspace, RaftInferDataType dtype) {
+    raftinfer::kernels::qwen35_gated_delta(
         input, conv_weight, recurrent_a, dt_bias, output_norm_weight, output,
         convolution_state, recurrent_state, workspace, workspace_bytes, shape,
         dtype, dtype, stream);
   };
 
-  for (const BrtDataType dtype : {BRT_DTYPE_F16, BRT_DTYPE_BF16}) {
+  for (const RaftInferDataType dtype : {RAFTINFER_DTYPE_F16, RAFTINFER_DTYPE_BF16}) {
     expect_delta_error([&] {
       invoke(misaligned, aligned, aligned, aligned, aligned, aligned,
              aligned_float, aligned_float, aligned, dtype);
@@ -895,19 +895,19 @@ void check_misaligned_pointers(cudaStream_t stream) {
   }
   expect_delta_error([&] {
     invoke(aligned, aligned, aligned, aligned, aligned, aligned,
-           misaligned_float, aligned_float, aligned, BRT_DTYPE_F16);
+           misaligned_float, aligned_float, aligned, RAFTINFER_DTYPE_F16);
   });
   expect_delta_error([&] {
     invoke(aligned, aligned, aligned, aligned, aligned, aligned, aligned_float,
-           misaligned_float, aligned, BRT_DTYPE_F16);
+           misaligned_float, aligned, RAFTINFER_DTYPE_F16);
   });
   expect_delta_error([&] {
     invoke(aligned, aligned, aligned, aligned, aligned, aligned, aligned_float,
-           aligned_float, misaligned, BRT_DTYPE_F16);
+           aligned_float, misaligned, RAFTINFER_DTYPE_F16);
   });
 }
 
-template <typename T> void run_dtype_suite(brt::ExecutionContext &context) {
+template <typename T> void run_dtype_suite(raftinfer::ExecutionContext &context) {
   for (const std::size_t tokens : {1U, 2U, 4U, 17U}) {
     check_prefill_length<T>(context, tokens);
   }

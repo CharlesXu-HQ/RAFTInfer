@@ -7,7 +7,7 @@
 #include <numeric>
 #include <stdexcept>
 
-namespace brt::reference {
+namespace raftinfer::reference {
 namespace {
 
 void require(bool condition, const char *message) {
@@ -548,4 +548,4 @@ void qwen35_gated_delta_prefill(std::span<const float> input,
   }
 }
 
-} // namespace brt::reference
+} // namespace raftinfer::reference

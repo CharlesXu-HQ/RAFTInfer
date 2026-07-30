@@ -1,6 +1,6 @@
 #pragma once
 
-#include <brt/tensor.h>
+#include <raftinfer/tensor.h>
 
 #include <cuda_runtime_api.h>
 
@@ -9,7 +9,7 @@
 #include <stdexcept>
 #include <string>
 
-namespace brt::kernels {
+namespace raftinfer::kernels {
 
 class Qwen35DeltaError : public std::runtime_error {
 public:
@@ -89,8 +89,8 @@ void qwen35_gated_delta(const void *input, const void *conv_weight,
                         const void *output_norm_weight, void *output,
                         float *convolution_state, float *recurrent_state,
                         void *workspace, std::size_t workspace_bytes,
-                        GatedDeltaShape shape, BrtDataType dtype,
-                        BrtDataType weight_dtype, cudaStream_t stream);
+                        GatedDeltaShape shape, RaftInferDataType dtype,
+                        RaftInferDataType weight_dtype, cudaStream_t stream);
 
 void qwen35_gated_delta(const void *input, const void *conv_weight,
                         const void *recurrent_a, const void *dt_bias,
@@ -98,7 +98,7 @@ void qwen35_gated_delta(const void *input, const void *conv_weight,
                         float *convolution_state, float *recurrent_state,
                         void *workspace, std::size_t workspace_bytes,
                         GatedDeltaShape shape, GatedDeltaLaunchPolicy policy,
-                        BrtDataType dtype, BrtDataType weight_dtype,
+                        RaftInferDataType dtype, RaftInferDataType weight_dtype,
                         cudaStream_t stream);
 
-} // namespace brt::kernels
+} // namespace raftinfer::kernels

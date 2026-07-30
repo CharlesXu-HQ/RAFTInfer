@@ -11,7 +11,7 @@
 #include <utility>
 #include <vector>
 
-namespace brt {
+namespace raftinfer {
 namespace {
 
 [[noreturn]] void throw_status(const char *operation, cublasStatus_t status) {
@@ -37,12 +37,12 @@ std::size_t checked_mul(std::size_t lhs, std::size_t rhs, const char *message) {
   return lhs * rhs;
 }
 
-std::size_t dtype_size(BrtDataType dtype) {
+std::size_t dtype_size(RaftInferDataType dtype) {
   switch (dtype) {
-  case BRT_DTYPE_F32:
+  case RAFTINFER_DTYPE_F32:
     return 4;
-  case BRT_DTYPE_F16:
-  case BRT_DTYPE_BF16:
+  case RAFTINFER_DTYPE_F16:
+  case RAFTINFER_DTYPE_BF16:
     return 2;
   default:
     throw CublasLtMatmulError(
@@ -50,13 +50,13 @@ std::size_t dtype_size(BrtDataType dtype) {
   }
 }
 
-cudaDataType_t cuda_dtype(BrtDataType dtype) {
+cudaDataType_t cuda_dtype(RaftInferDataType dtype) {
   switch (dtype) {
-  case BRT_DTYPE_F32:
+  case RAFTINFER_DTYPE_F32:
     return CUDA_R_32F;
-  case BRT_DTYPE_F16:
+  case RAFTINFER_DTYPE_F16:
     return CUDA_R_16F;
-  case BRT_DTYPE_BF16:
+  case RAFTINFER_DTYPE_BF16:
     return CUDA_R_16BF;
   default:
     throw CublasLtMatmulError(
@@ -282,7 +282,7 @@ CublasLtMatmulPlan::create(const CublasLtMatmulConfig &config) {
   require(config.weight_dtype == config.input_dtype,
           "cuBLASLt matmul input and weight dtypes must match");
   require(config.output_dtype == config.input_dtype ||
-              config.output_dtype == BRT_DTYPE_F32,
+              config.output_dtype == RAFTINFER_DTYPE_F32,
           "cuBLASLt matmul output must match inputs or be F32");
   const std::size_t input_element_bytes = dtype_size(config.input_dtype);
   const std::size_t weight_element_bytes = dtype_size(config.weight_dtype);
@@ -614,4 +614,4 @@ void CublasLtMatmulPlan::select_fastest(cudaStream_t stream, const void *input,
   impl_->workspace_bytes = best.workspace_bytes;
 }
 
-} // namespace brt
+} // namespace raftinfer

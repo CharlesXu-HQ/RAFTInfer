@@ -27,7 +27,7 @@ namespace {
 std::filesystem::path write_fixture(std::vector<std::uint8_t> bytes,
                                     const std::string &suffix) {
   const auto path = std::filesystem::temp_directory_path() /
-                    ("brt_cuda_weights_" + suffix + ".gguf");
+                    ("raftinfer_cuda_weights_" + suffix + ".gguf");
   std::ofstream output{path, std::ios::binary};
   output.write(reinterpret_cast<const char *>(bytes.data()),
                static_cast<std::streamsize>(bytes.size()));
@@ -39,8 +39,8 @@ std::filesystem::path write_fixture(std::vector<std::uint8_t> bytes,
 std::vector<std::uint8_t> filled_fixture(std::uint32_t tensor_type = 1,
                                          bool f32_auxiliary_tensors = false) {
   auto bytes =
-      brt::test::make_qwen35_gguf_fixture(tensor_type, f32_auxiliary_tensors);
-  const auto catalog = brt::gguf::read_catalog(std::span{bytes});
+      raftinfer::test::make_qwen35_gguf_fixture(tensor_type, f32_auxiliary_tensors);
+  const auto catalog = raftinfer::gguf::read_catalog(std::span{bytes});
   for (std::size_t tensor_index = 0; tensor_index < catalog.tensors.size();
        ++tensor_index) {
     const auto &tensor = catalog.tensors[tensor_index];
@@ -80,7 +80,7 @@ std::vector<std::uint8_t> read_device_bytes(const void *device,
   return bytes;
 }
 
-bool device_bytes_equal(const brt::model::CudaTensorView &view,
+bool device_bytes_equal(const raftinfer::model::CudaTensorView &view,
                         std::span<const std::uint8_t> expected) {
   const auto actual = read_device_bytes(view.device_data, view.bytes);
   return actual.size() == expected.size() &&
@@ -91,36 +91,36 @@ void expect_weight_error(auto &&fn) {
   bool thrown = false;
   try {
     fn();
-  } catch (const brt::model::CudaWeightError &) {
+  } catch (const raftinfer::model::CudaWeightError &) {
     thrown = true;
   }
   assert(thrown);
 }
 
-void expect_view_matches(const brt::model::CudaTensorView &view,
-                         const brt::gguf::TensorInfo &tensor,
-                         const brt::model::Model &model,
-                         brt::model::CudaWeightType expected_type) {
+void expect_view_matches(const raftinfer::model::CudaTensorView &view,
+                         const raftinfer::gguf::TensorInfo &tensor,
+                         const raftinfer::model::Model &model,
+                         raftinfer::model::CudaWeightType expected_type) {
   assert(view.device_data != nullptr);
   assert(view.bytes == tensor.byte_size);
   assert(view.type == expected_type);
   assert(device_bytes_equal(view, model.tensor_payload(tensor)));
 }
 
-void expect_f32_aux_preserved(const brt::model::CudaTensorView &view,
-                              const brt::gguf::TensorInfo &tensor,
-                              const brt::model::Model &model) {
+void expect_f32_aux_preserved(const raftinfer::model::CudaTensorView &view,
+                              const raftinfer::gguf::TensorInfo &tensor,
+                              const raftinfer::model::Model &model) {
   assert(tensor.type == 0);
   assert(view.device_data != nullptr);
   assert(view.bytes == tensor.byte_size);
-  assert(view.type == brt::model::CudaWeightType::f32);
+  assert(view.type == raftinfer::model::CudaWeightType::f32);
   assert(device_bytes_equal(view, model.tensor_payload(tensor)));
 }
 
 void expect_common_matches(
-    const brt::model::Qwen35CudaCommonLayerWeights &weights,
-    const brt::model::Qwen35CommonLayerTensors &tensors,
-    const brt::model::Model &model, brt::model::CudaWeightType expected_type) {
+    const raftinfer::model::Qwen35CudaCommonLayerWeights &weights,
+    const raftinfer::model::Qwen35CommonLayerTensors &tensors,
+    const raftinfer::model::Model &model, raftinfer::model::CudaWeightType expected_type) {
   expect_view_matches(weights.input_norm, *tensors.input_norm, model,
                       expected_type);
   expect_view_matches(weights.post_attention_norm, *tensors.post_attention_norm,
@@ -133,9 +133,9 @@ void expect_common_matches(
 }
 
 void expect_linear_matches(
-    const brt::model::Qwen35CudaLinearAttentionWeights &weights,
-    const brt::model::Qwen35LinearAttentionTensors &tensors,
-    const brt::model::Model &model, brt::model::CudaWeightType expected_type) {
+    const raftinfer::model::Qwen35CudaLinearAttentionWeights &weights,
+    const raftinfer::model::Qwen35LinearAttentionTensors &tensors,
+    const raftinfer::model::Model &model, raftinfer::model::CudaWeightType expected_type) {
   expect_view_matches(weights.qkv, *tensors.qkv, model, expected_type);
   expect_view_matches(weights.gate, *tensors.gate, model, expected_type);
   expect_view_matches(weights.convolution, *tensors.convolution, model,
@@ -152,9 +152,9 @@ void expect_linear_matches(
 }
 
 void expect_full_matches(
-    const brt::model::Qwen35CudaFullAttentionWeights &weights,
-    const brt::model::Qwen35FullAttentionTensors &tensors,
-    const brt::model::Model &model, brt::model::CudaWeightType expected_type) {
+    const raftinfer::model::Qwen35CudaFullAttentionWeights &weights,
+    const raftinfer::model::Qwen35FullAttentionTensors &tensors,
+    const raftinfer::model::Model &model, raftinfer::model::CudaWeightType expected_type) {
   expect_view_matches(weights.query, *tensors.query, model, expected_type);
   expect_view_matches(weights.key, *tensors.key, model, expected_type);
   expect_view_matches(weights.value, *tensors.value, model, expected_type);
@@ -168,7 +168,7 @@ void expect_full_matches(
 std::vector<std::uint8_t>
 fixture_with_tensor_type(std::vector<std::uint8_t> bytes,
                          std::uint32_t tensor_type) {
-  auto catalog = brt::gguf::read_catalog(std::span{bytes});
+  auto catalog = raftinfer::gguf::read_catalog(std::span{bytes});
   for (const auto &tensor : catalog.tensors) {
     auto name_position = std::search(bytes.begin(), bytes.end(),
                                      tensor.name.begin(), tensor.name.end());
@@ -188,13 +188,13 @@ fixture_with_tensor_type(std::vector<std::uint8_t> bytes,
 }
 
 void run_mixed_f32_auxiliary_case(std::uint32_t primary_tensor_type,
-                                  brt::model::CudaWeightType expected_type,
-                                  brt::DeviceContext &device) {
+                                  raftinfer::model::CudaWeightType expected_type,
+                                  raftinfer::DeviceContext &device) {
   const auto path = write_fixture(
       filled_fixture(primary_tensor_type, true),
-      expected_type == brt::model::CudaWeightType::f16 ? "mixed_f16_aux_f32"
+      expected_type == raftinfer::model::CudaWeightType::f16 ? "mixed_f16_aux_f32"
                                                        : "mixed_bf16_aux_f32");
-  brt::model::Model model{path.string()};
+  raftinfer::model::Model model{path.string()};
   const auto plan = device.upload_qwen35_weights(model);
   const auto &manifest = model.qwen35_manifest();
 
@@ -259,17 +259,17 @@ void run_mixed_f32_auxiliary_case(std::uint32_t primary_tensor_type,
 } // namespace
 
 int main() {
-  brt::DeviceContext device{0, 64 * 1024 * 1024};
+  raftinfer::DeviceContext device{0, 64 * 1024 * 1024};
 
   {
     const auto fixture = filled_fixture();
     const auto path = write_fixture(fixture, "f16");
-    brt::model::Model model{path.string()};
+    raftinfer::model::Model model{path.string()};
     const auto plan = device.upload_qwen35_weights(model);
     assert(plan->tensor_count() == 56);
     assert(plan->layer_count() == 4);
     const auto &token_embedding = plan->token_embedding();
-    assert(token_embedding.type == brt::model::CudaWeightType::f16);
+    assert(token_embedding.type == raftinfer::model::CudaWeightType::f16);
     assert(token_embedding.bytes == 256);
     assert(token_embedding.device_data != nullptr);
     assert(device_bytes_equal(
@@ -293,18 +293,18 @@ int main() {
       const auto &expected = manifest.layers[layer_index];
       assert(layer.index == expected.index);
       expect_common_matches(layer.common, expected.common, model,
-                            brt::model::CudaWeightType::f16);
+                            raftinfer::model::CudaWeightType::f16);
       if (layer_index == 3) {
         assert(layer.full_attention.has_value());
         assert(!layer.linear_attention.has_value());
         expect_full_matches(*layer.full_attention, *expected.full_attention,
-                            model, brt::model::CudaWeightType::f16);
+                            model, raftinfer::model::CudaWeightType::f16);
       } else {
         assert(!layer.full_attention.has_value());
         assert(layer.linear_attention.has_value());
         expect_linear_matches(*layer.linear_attention,
                               *expected.linear_attention, model,
-                              brt::model::CudaWeightType::f16);
+                              raftinfer::model::CudaWeightType::f16);
       }
     }
 
@@ -326,47 +326,47 @@ int main() {
   {
     const auto path =
         write_fixture(fixture_with_tensor_type(filled_fixture(), 30), "bf16");
-    brt::model::Model model{path.string()};
+    raftinfer::model::Model model{path.string()};
     const auto plan = device.upload_qwen35_weights(model);
-    assert(plan->token_embedding().type == brt::model::CudaWeightType::bf16);
+    assert(plan->token_embedding().type == raftinfer::model::CudaWeightType::bf16);
     assert(device_bytes_equal(
         plan->output_norm(),
         model.tensor_payload(*model.qwen35_manifest().output_norm)));
     const auto &manifest = model.qwen35_manifest();
     expect_view_matches(plan->token_embedding(), *manifest.token_embedding,
-                        model, brt::model::CudaWeightType::bf16);
+                        model, raftinfer::model::CudaWeightType::bf16);
     expect_view_matches(plan->output_norm(), *manifest.output_norm, model,
-                        brt::model::CudaWeightType::bf16);
+                        raftinfer::model::CudaWeightType::bf16);
     expect_view_matches(plan->output(), *manifest.output, model,
-                        brt::model::CudaWeightType::bf16);
+                        raftinfer::model::CudaWeightType::bf16);
     for (std::size_t layer_index = 0; layer_index < manifest.layers.size();
          ++layer_index) {
       const auto &layer = plan->layer(layer_index);
       const auto &expected = manifest.layers[layer_index];
       expect_common_matches(layer.common, expected.common, model,
-                            brt::model::CudaWeightType::bf16);
+                            raftinfer::model::CudaWeightType::bf16);
       if (expected.full_attention.has_value()) {
         expect_full_matches(*layer.full_attention, *expected.full_attention,
-                            model, brt::model::CudaWeightType::bf16);
+                            model, raftinfer::model::CudaWeightType::bf16);
       } else {
         expect_linear_matches(*layer.linear_attention,
                               *expected.linear_attention, model,
-                              brt::model::CudaWeightType::bf16);
+                              raftinfer::model::CudaWeightType::bf16);
       }
     }
   }
 
-  run_mixed_f32_auxiliary_case(1, brt::model::CudaWeightType::f16, device);
-  run_mixed_f32_auxiliary_case(30, brt::model::CudaWeightType::bf16, device);
+  run_mixed_f32_auxiliary_case(1, raftinfer::model::CudaWeightType::f16, device);
+  run_mixed_f32_auxiliary_case(30, raftinfer::model::CudaWeightType::bf16, device);
 
   {
-    brt::model::Model model{
+    raftinfer::model::Model model{
         write_fixture(filled_fixture(0), "f32_primary").string()};
     expect_weight_error([&] { (void)device.upload_qwen35_weights(model); });
   }
 
   {
-    brt::model::Model model{
+    raftinfer::model::Model model{
         write_fixture(filled_fixture(), "fake_f32_primary").string()};
     auto fake_manifest = model.qwen35_manifest();
     auto f32_token_embedding = *fake_manifest.token_embedding;
@@ -378,7 +378,7 @@ int main() {
   }
 
   {
-    brt::model::Model model{
+    raftinfer::model::Model model{
         write_fixture(filled_fixture(), "duplicate_name").string()};
     auto fake_manifest = model.qwen35_manifest();
     fake_manifest.output = fake_manifest.token_embedding;
@@ -388,7 +388,7 @@ int main() {
   }
 
   {
-    brt::model::Model model{
+    raftinfer::model::Model model{
         write_fixture(filled_fixture(), "branch_mismatch").string()};
     auto fake_manifest = model.qwen35_manifest();
     fake_manifest.layers[0].full_attention =
@@ -399,7 +399,7 @@ int main() {
   }
 
   {
-    brt::model::Model model{
+    raftinfer::model::Model model{
         write_fixture(filled_fixture(), "descriptor").string()};
     auto foreign = *model.qwen35_manifest().token_embedding;
     foreign.offset += 32;
@@ -412,11 +412,11 @@ int main() {
 
   {
     const auto path = write_fixture(filled_fixture(), "outlive");
-    brt::model::Model model{path.string()};
-    std::unique_ptr<brt::model::CudaWeightPlan> plan;
+    raftinfer::model::Model model{path.string()};
+    std::unique_ptr<raftinfer::model::CudaWeightPlan> plan;
     std::vector<std::uint8_t> expected;
     {
-      brt::DeviceContext scoped_device{0, 64 * 1024 * 1024};
+      raftinfer::DeviceContext scoped_device{0, 64 * 1024 * 1024};
       plan = scoped_device.upload_qwen35_weights(model);
       expected.assign(
           model.tensor_payload(*model.qwen35_manifest().output).begin(),

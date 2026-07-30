@@ -6,7 +6,7 @@
 #include <cstddef>
 #include <utility>
 
-namespace brt {
+namespace raftinfer {
 
 WorkspaceArena::WorkspaceArena(
     rmm::device_async_resource_ref resource,
@@ -43,4 +43,4 @@ std::size_t WorkspaceArena::used() const noexcept { return layout_.used(); }
 
 std::size_t WorkspaceArena::capacity() const noexcept { return layout_.capacity(); }
 
-}  // namespace brt
+}  // namespace raftinfer

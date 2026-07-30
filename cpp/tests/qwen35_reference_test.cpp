@@ -49,7 +49,7 @@ int main() {
     const std::array<float, 3> weight{1.0F, 2.0F, 0.5F};
     std::array<float, 6> output{};
 
-    brt::reference::qwen35_rms_norm(input, weight, output, 2, 3, 0.0F);
+    raftinfer::reference::qwen35_rms_norm(input, weight, output, 2, 3, 0.0F);
 
     expect_vector_near(output, std::array<float, 6>{1.0392305F, 2.7712812F,
                                                     0.0F, 0.5773503F,
@@ -57,7 +57,7 @@ int main() {
   }
 
   {
-    const brt::reference::FullAttentionReferenceArgs args{.tokens = 2,
+    const raftinfer::reference::FullAttentionReferenceArgs args{.tokens = 2,
                                                           .hidden_size = 4,
                                                           .query_heads = 2,
                                                           .kv_heads = 1,
@@ -77,9 +77,9 @@ int main() {
         0.5F, 1.0F,  -0.75F, 0.25F, 1.25F, -1.5F, 0.5F, 1.0F};
     std::array<float, 8> output{};
 
-    brt::reference::qwen35_gated_full_attention(
+    raftinfer::reference::qwen35_gated_full_attention(
         input, output,
-        brt::reference::FullAttentionReferenceWeights{
+        raftinfer::reference::FullAttentionReferenceWeights{
             .query_norm_weight = query_norm_weight,
             .key_norm_weight = key_norm_weight,
             .output_weight = output_weight},
@@ -93,7 +93,7 @@ int main() {
   }
 
   {
-    const brt::reference::GatedDeltaReferenceArgs args{.tokens = 3,
+    const raftinfer::reference::GatedDeltaReferenceArgs args{.tokens = 3,
                                                        .hidden_size = 4,
                                                        .key_heads = 1,
                                                        .value_heads = 2,
@@ -117,11 +117,11 @@ int main() {
     const std::array<float, 2> dt_bias{0.2F, -0.4F};
     const std::array<float, 2> output_norm_weight{1.25F, 0.75F};
     std::array<float, 12> prefill_output{};
-    brt::reference::GatedDeltaReferenceState prefill_state(args);
+    raftinfer::reference::GatedDeltaReferenceState prefill_state(args);
 
-    brt::reference::qwen35_gated_delta_prefill(
+    raftinfer::reference::qwen35_gated_delta_prefill(
         input, prefill_output,
-        brt::reference::GatedDeltaReferenceWeights{.conv_weight = conv_weight,
+        raftinfer::reference::GatedDeltaReferenceWeights{.conv_weight = conv_weight,
                                                    .recurrent_a = recurrent_a,
                                                    .dt_bias = dt_bias,
                                                    .output_norm_weight =
@@ -136,13 +136,13 @@ int main() {
                        1.0e-5F);
 
     std::array<float, 12> stepped_output{};
-    brt::reference::GatedDeltaReferenceState stepped_state(args);
+    raftinfer::reference::GatedDeltaReferenceState stepped_state(args);
     for (std::size_t token = 0; token < args.tokens; ++token) {
-      brt::reference::qwen35_gated_delta_step(
+      raftinfer::reference::qwen35_gated_delta_step(
           std::span<const float>(input).subspan(token * 16, 16),
           std::span<float>(stepped_output)
               .subspan(token * args.hidden_size, args.hidden_size),
-          brt::reference::GatedDeltaReferenceWeights{.conv_weight = conv_weight,
+          raftinfer::reference::GatedDeltaReferenceWeights{.conv_weight = conv_weight,
                                                      .recurrent_a = recurrent_a,
                                                      .dt_bias = dt_bias,
                                                      .output_norm_weight =
@@ -158,11 +158,11 @@ int main() {
   {
     std::array<float, 3> output{};
     expect_invalid_argument([&] {
-      brt::reference::qwen35_rms_norm(
+      raftinfer::reference::qwen35_rms_norm(
           std::array<float, 4>{}, std::array<float, 2>{}, output, 2, 2, -1.0F);
     });
     expect_invalid_argument([&] {
-      brt::reference::qwen35_rms_norm(std::span<const float>{},
+      raftinfer::reference::qwen35_rms_norm(std::span<const float>{},
                                       std::array<float, 2>{},
                                       std::span<float>{}, 0, 2, 0.0F);
     });

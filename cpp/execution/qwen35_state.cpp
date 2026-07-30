@@ -5,7 +5,7 @@
 #include <stdexcept>
 #include <utility>
 
-namespace brt {
+namespace raftinfer {
 namespace {
 
 constexpr std::uint32_t kNoSlot = std::numeric_limits<std::uint32_t>::max();
@@ -435,4 +435,4 @@ void Qwen35HostState::reset() noexcept {
   std::fill(full_kv_.begin(), full_kv_.end(), 0.0F);
 }
 
-} // namespace brt
+} // namespace raftinfer

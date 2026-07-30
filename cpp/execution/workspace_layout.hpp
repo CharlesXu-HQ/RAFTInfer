@@ -4,7 +4,7 @@
 #include <limits>
 #include <stdexcept>
 
-namespace brt {
+namespace raftinfer {
 
 class WorkspaceLayout {
  public:
@@ -42,4 +42,4 @@ class WorkspaceLayout {
   std::size_t used_{};
 };
 
-}  // namespace brt
+}  // namespace raftinfer

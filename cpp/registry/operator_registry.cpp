@@ -26,7 +26,7 @@ std::string join_reasons(const std::vector<std::string>& reasons) {
   return joined;
 }
 
-std::string build_dispatch_message(const std::vector<brt::KernelRejection>& rejections) {
+std::string build_dispatch_message(const std::vector<raftinfer::KernelRejection>& rejections) {
   std::ostringstream out;
   out << "no matching kernel";
   for (const auto& rejection : rejections) {
@@ -37,7 +37,7 @@ std::string build_dispatch_message(const std::vector<brt::KernelRejection>& reje
 
 }  // namespace
 
-namespace brt {
+namespace raftinfer {
 
 std::optional<std::string> KernelCapability::rejection_reason(
     const OperatorSignature& signature) const {
@@ -164,10 +164,10 @@ DispatchResult OperatorRegistry::resolve(const OperatorSignature& signature) con
   return DispatchResult{std::cref(*best)};
 }
 
-}  // namespace brt
+}  // namespace raftinfer
 
-std::size_t std::hash<brt::TensorSignature>::operator()(
-    const brt::TensorSignature& signature) const noexcept {
+std::size_t std::hash<raftinfer::TensorSignature>::operator()(
+    const raftinfer::TensorSignature& signature) const noexcept {
   std::size_t seed = 0;
   hash_combine(seed, static_cast<int>(signature.dtype));
   hash_combine(seed, static_cast<int>(signature.quant));
@@ -180,8 +180,8 @@ std::size_t std::hash<brt::TensorSignature>::operator()(
   return seed;
 }
 
-std::size_t std::hash<brt::OperatorSignature>::operator()(
-    const brt::OperatorSignature& signature) const noexcept {
+std::size_t std::hash<raftinfer::OperatorSignature>::operator()(
+    const raftinfer::OperatorSignature& signature) const noexcept {
   std::size_t seed = 0;
   hash_combine(seed, static_cast<int>(signature.op));
   hash_combine(seed, static_cast<int>(signature.regime));
@@ -192,7 +192,7 @@ std::size_t std::hash<brt::OperatorSignature>::operator()(
   hash_combine(seed, signature.workspace_bytes);
   hash_combine(seed, signature.inputs.size());
   for (const auto& input : signature.inputs) {
-    hash_combine(seed, std::hash<brt::TensorSignature>{}(input));
+    hash_combine(seed, std::hash<raftinfer::TensorSignature>{}(input));
   }
   return seed;
 }

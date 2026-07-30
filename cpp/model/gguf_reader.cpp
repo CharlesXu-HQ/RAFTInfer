@@ -10,7 +10,7 @@
 #include <utility>
 #include <vector>
 
-namespace brt::gguf {
+namespace raftinfer::gguf {
 namespace {
 
 template <class T> bool checked_add(T left, T right, T &result) {
@@ -400,4 +400,4 @@ Catalog read_catalog(std::span<const std::uint8_t> bytes,
   return catalog;
 }
 
-} // namespace brt::gguf
+} // namespace raftinfer::gguf

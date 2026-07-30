@@ -6,7 +6,7 @@
 #include <rmm/resource_ref.hpp>
 #include <cuda_runtime_api.h>
 
-namespace brt {
+namespace raftinfer {
 
 class ExecutionContext {
  public:
@@ -48,4 +48,4 @@ class ExecutionContext {
   int max_shared_memory_per_block_;
 };
 
-}  // namespace brt
+}  // namespace raftinfer

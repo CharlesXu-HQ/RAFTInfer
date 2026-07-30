@@ -10,7 +10,7 @@
 #include <variant>
 #include <vector>
 
-namespace brt::gguf {
+namespace raftinfer::gguf {
 
 enum class MetadataType : std::uint32_t {
   uint8 = 0,
@@ -135,4 +135,4 @@ struct ReaderLimits {
   std::uint32_t max_tensor_rank{4};
 };
 
-} // namespace brt::gguf
+} // namespace raftinfer::gguf

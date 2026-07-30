@@ -3,7 +3,7 @@
 #include <bit>
 #include <cstdint>
 
-namespace brt::reference {
+namespace raftinfer::reference {
 
 struct bf16_t {
   std::uint16_t bits{};
@@ -31,4 +31,4 @@ inline bf16_t float_to_bf16(float value) {
   return bf16_t{static_cast<std::uint16_t>(rounded >> 16U)};
 }
 
-}  // namespace brt::reference
+}  // namespace raftinfer::reference

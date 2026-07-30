@@ -7,7 +7,7 @@
 #include <cstdint>
 #include <limits>
 
-namespace brt::kernels {
+namespace raftinfer::kernels {
 namespace {
 
 constexpr int kBlockSize = 256;
@@ -46,16 +46,16 @@ int checked_block_count(std::size_t blocks, const char *message) {
   return static_cast<int>(blocks);
 }
 
-void require_dtype(BrtDataType dtype) {
-  require(dtype == BRT_DTYPE_F32 || dtype == BRT_DTYPE_F16 ||
-              dtype == BRT_DTYPE_BF16,
+void require_dtype(RaftInferDataType dtype) {
+  require(dtype == RAFTINFER_DTYPE_F32 || dtype == RAFTINFER_DTYPE_F16 ||
+              dtype == RAFTINFER_DTYPE_BF16,
           "unsupported Qwen3.5 gated-delta dtype");
 }
 
-void require_weight_dtype(BrtDataType dtype, BrtDataType weight_dtype) {
-  require(weight_dtype == BRT_DTYPE_F32 || weight_dtype == dtype ||
-              (dtype == BRT_DTYPE_F32 && (weight_dtype == BRT_DTYPE_F16 ||
-                                          weight_dtype == BRT_DTYPE_BF16)),
+void require_weight_dtype(RaftInferDataType dtype, RaftInferDataType weight_dtype) {
+  require(weight_dtype == RAFTINFER_DTYPE_F32 || weight_dtype == dtype ||
+              (dtype == RAFTINFER_DTYPE_F32 && (weight_dtype == RAFTINFER_DTYPE_F16 ||
+                                          weight_dtype == RAFTINFER_DTYPE_BF16)),
           "Qwen3.5 gated-delta weight dtype is incompatible with activations");
 }
 
@@ -799,8 +799,8 @@ void qwen35_gated_delta(const void *input, const void *conv_weight,
                         const void *output_norm_weight, void *output,
                         float *convolution_state, float *recurrent_state,
                         void *workspace, std::size_t workspace_bytes,
-                        GatedDeltaShape shape, BrtDataType dtype,
-                        BrtDataType weight_dtype, cudaStream_t stream) {
+                        GatedDeltaShape shape, RaftInferDataType dtype,
+                        RaftInferDataType weight_dtype, cudaStream_t stream) {
   qwen35_gated_delta(input, conv_weight, recurrent_a, dt_bias,
                      output_norm_weight, output, convolution_state,
                      recurrent_state, workspace, workspace_bytes, shape,
@@ -814,7 +814,7 @@ void qwen35_gated_delta(const void *input, const void *conv_weight,
                         float *convolution_state, float *recurrent_state,
                         void *workspace, std::size_t workspace_bytes,
                         GatedDeltaShape shape, GatedDeltaLaunchPolicy policy,
-                        BrtDataType dtype, BrtDataType weight_dtype,
+                        RaftInferDataType dtype, RaftInferDataType weight_dtype,
                         cudaStream_t stream) {
   const CheckedShape checked = validate_shape(shape);
   validate_policy(policy, shape);
@@ -837,13 +837,13 @@ void qwen35_gated_delta(const void *input, const void *conv_weight,
   require(workspace_bytes >= checked.workspace_bytes,
           "gated-delta workspace is too small");
   const std::size_t dtype_alignment =
-      dtype == BRT_DTYPE_F32
+      dtype == RAFTINFER_DTYPE_F32
           ? alignof(float)
-          : (dtype == BRT_DTYPE_F16 ? alignof(__half) : alignof(__nv_bfloat16));
+          : (dtype == RAFTINFER_DTYPE_F16 ? alignof(__half) : alignof(__nv_bfloat16));
   const std::size_t weight_alignment =
-      weight_dtype == BRT_DTYPE_F32
+      weight_dtype == RAFTINFER_DTYPE_F32
           ? alignof(float)
-          : (weight_dtype == BRT_DTYPE_F16 ? alignof(__half)
+          : (weight_dtype == RAFTINFER_DTYPE_F16 ? alignof(__half)
                                            : alignof(__nv_bfloat16));
   require_aligned(input, dtype_alignment,
                   "gated-delta input is not dtype-aligned");
@@ -870,12 +870,12 @@ void qwen35_gated_delta(const void *input, const void *conv_weight,
   auto *convolved = static_cast<float *>(workspace);
   auto *raw_output = convolved + shape.tokens * checked.conv_dim;
   const auto launch_for_weights = [&]<typename T>() {
-    if (weight_dtype == BRT_DTYPE_F32) {
+    if (weight_dtype == RAFTINFER_DTYPE_F32) {
       launch_typed<T, float>(input, conv_weight, recurrent_a, dt_bias,
                              output_norm_weight, output, convolution_state,
                              recurrent_state, convolved, raw_output, shape,
                              checked, policy, stream);
-    } else if (weight_dtype == BRT_DTYPE_F16) {
+    } else if (weight_dtype == RAFTINFER_DTYPE_F16) {
       launch_typed<T, __half>(input, conv_weight, recurrent_a, dt_bias,
                               output_norm_weight, output, convolution_state,
                               recurrent_state, convolved, raw_output, shape,
@@ -887,13 +887,13 @@ void qwen35_gated_delta(const void *input, const void *conv_weight,
           checked, policy, stream);
     }
   };
-  if (dtype == BRT_DTYPE_F32) {
+  if (dtype == RAFTINFER_DTYPE_F32) {
     launch_for_weights.template operator()<float>();
-  } else if (dtype == BRT_DTYPE_F16) {
+  } else if (dtype == RAFTINFER_DTYPE_F16) {
     launch_for_weights.template operator()<__half>();
   } else {
     launch_for_weights.template operator()<__nv_bfloat16>();
   }
 }
 
-} // namespace brt::kernels
+} // namespace raftinfer::kernels

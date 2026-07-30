@@ -10,12 +10,12 @@
 #include "qwen35_config.hpp"
 #include "qwen35_manifest.hpp"
 
-namespace brt {
+namespace raftinfer {
 class DeviceContext;
 class Engine;
-} // namespace brt
+} // namespace raftinfer
 
-namespace brt::model {
+namespace raftinfer::model {
 
 class CudaWeightPlan;
 
@@ -51,7 +51,7 @@ private:
   class Impl;
   std::unique_ptr<Impl> impl_;
 
-  friend class brt::Engine;
+  friend class raftinfer::Engine;
 };
 
-} // namespace brt::model
+} // namespace raftinfer::model

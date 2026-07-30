@@ -4,7 +4,7 @@
 #include <optional>
 #include <string>
 
-namespace brt {
+namespace raftinfer {
 
 struct BenchmarkRecord {
   std::string utc_timestamp;
@@ -36,4 +36,4 @@ struct BenchmarkRecord {
   std::string to_json_line() const;
 };
 
-}  // namespace brt
+}  // namespace raftinfer

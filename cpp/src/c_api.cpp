@@ -1,4 +1,4 @@
-#include <brt/c_api.h>
+#include <raftinfer/c_api.h>
 
 #include "../model/gguf_reader.hpp"
 #include "../model/model.hpp"
@@ -15,24 +15,24 @@
 #include <new>
 #include <stdexcept>
 
-struct BrtEngineHandle {
-  explicit BrtEngineHandle(const BrtEngineConfig &config) : engine(config) {}
+struct RaftInferEngineHandle {
+  explicit RaftInferEngineHandle(const RaftInferEngineConfig &config) : engine(config) {}
 
-  brt::Engine engine;
+  raftinfer::Engine engine;
 };
 
-struct BrtModelHandle {
-  explicit BrtModelHandle(std::shared_ptr<brt::model::Model> value)
+struct RaftInferModelHandle {
+  explicit RaftInferModelHandle(std::shared_ptr<raftinfer::model::Model> value)
       : model(std::move(value)) {}
 
-  std::shared_ptr<brt::model::Model> model;
+  std::shared_ptr<raftinfer::model::Model> model;
 };
 
-struct BrtSessionHandle {
-  explicit BrtSessionHandle(std::unique_ptr<brt::Session> value)
+struct RaftInferSessionHandle {
+  explicit RaftInferSessionHandle(std::unique_ptr<raftinfer::Session> value)
       : session(std::move(value)) {}
 
-  std::unique_ptr<brt::Session> session;
+  std::unique_ptr<raftinfer::Session> session;
 };
 
 namespace {
@@ -55,72 +55,72 @@ void set_last_error(const char *message) noexcept {
 void clear_last_error() noexcept { g_last_error.message[0] = '\0'; }
 
 constexpr std::size_t kLegacySessionConfigSize =
-    offsetof(BrtSessionConfig, qwen35_policy);
+    offsetof(RaftInferSessionConfig, qwen35_policy);
 constexpr std::size_t kSessionConfigPolicyPointerEnd =
-    offsetof(BrtSessionConfig, qwen35_policy) +
-    sizeof(const BrtQwen35ExecutionPolicy *);
+    offsetof(RaftInferSessionConfig, qwen35_policy) +
+    sizeof(const RaftInferQwen35ExecutionPolicy *);
 
-brt::Qwen35AttentionImplementation
+raftinfer::Qwen35AttentionImplementation
 to_attention_implementation(std::uint32_t value) {
   switch (value) {
-  case BRT_QWEN35_ATTENTION_MATERIALIZED_REFERENCE:
-    return brt::Qwen35AttentionImplementation::materialized_reference;
-  case BRT_QWEN35_ATTENTION_ONLINE_TILED:
-    return brt::Qwen35AttentionImplementation::online_tiled;
+  case RAFTINFER_QWEN35_ATTENTION_MATERIALIZED_REFERENCE:
+    return raftinfer::Qwen35AttentionImplementation::materialized_reference;
+  case RAFTINFER_QWEN35_ATTENTION_ONLINE_TILED:
+    return raftinfer::Qwen35AttentionImplementation::online_tiled;
   default:
     throw std::invalid_argument("unknown Qwen3.5 attention implementation");
   }
 }
 
-brt::Qwen35KvCacheDType to_kv_cache_dtype(std::uint32_t value) {
+raftinfer::Qwen35KvCacheDType to_kv_cache_dtype(std::uint32_t value) {
   switch (value) {
-  case BRT_QWEN35_KV_CACHE_F32:
-    return brt::Qwen35KvCacheDType::f32;
-  case BRT_QWEN35_KV_CACHE_BF16:
-    return brt::Qwen35KvCacheDType::bf16;
+  case RAFTINFER_QWEN35_KV_CACHE_F32:
+    return raftinfer::Qwen35KvCacheDType::f32;
+  case RAFTINFER_QWEN35_KV_CACHE_BF16:
+    return raftinfer::Qwen35KvCacheDType::bf16;
   default:
     throw std::invalid_argument("unknown Qwen3.5 KV cache dtype");
   }
 }
 
-brt::Qwen35KvCacheLayout to_kv_cache_layout(std::uint32_t value) {
+raftinfer::Qwen35KvCacheLayout to_kv_cache_layout(std::uint32_t value) {
   switch (value) {
-  case BRT_QWEN35_KV_CACHE_LAYOUT_TOKEN_MAJOR:
-    return brt::Qwen35KvCacheLayout::token_major;
-  case BRT_QWEN35_KV_CACHE_LAYOUT_HEAD_MAJOR:
-    return brt::Qwen35KvCacheLayout::head_major;
+  case RAFTINFER_QWEN35_KV_CACHE_LAYOUT_TOKEN_MAJOR:
+    return raftinfer::Qwen35KvCacheLayout::token_major;
+  case RAFTINFER_QWEN35_KV_CACHE_LAYOUT_HEAD_MAJOR:
+    return raftinfer::Qwen35KvCacheLayout::head_major;
   default:
     throw std::invalid_argument("unknown Qwen3.5 KV cache layout");
   }
 }
 
 std::uint32_t
-from_attention_implementation(brt::Qwen35AttentionImplementation value) {
+from_attention_implementation(raftinfer::Qwen35AttentionImplementation value) {
   switch (value) {
-  case brt::Qwen35AttentionImplementation::materialized_reference:
-    return BRT_QWEN35_ATTENTION_MATERIALIZED_REFERENCE;
-  case brt::Qwen35AttentionImplementation::online_tiled:
-    return BRT_QWEN35_ATTENTION_ONLINE_TILED;
+  case raftinfer::Qwen35AttentionImplementation::materialized_reference:
+    return RAFTINFER_QWEN35_ATTENTION_MATERIALIZED_REFERENCE;
+  case raftinfer::Qwen35AttentionImplementation::online_tiled:
+    return RAFTINFER_QWEN35_ATTENTION_ONLINE_TILED;
   }
   throw std::logic_error("unmapped Qwen3.5 attention implementation");
 }
 
-std::uint32_t from_kv_cache_dtype(brt::Qwen35KvCacheDType value) {
+std::uint32_t from_kv_cache_dtype(raftinfer::Qwen35KvCacheDType value) {
   switch (value) {
-  case brt::Qwen35KvCacheDType::f32:
-    return BRT_QWEN35_KV_CACHE_F32;
-  case brt::Qwen35KvCacheDType::bf16:
-    return BRT_QWEN35_KV_CACHE_BF16;
+  case raftinfer::Qwen35KvCacheDType::f32:
+    return RAFTINFER_QWEN35_KV_CACHE_F32;
+  case raftinfer::Qwen35KvCacheDType::bf16:
+    return RAFTINFER_QWEN35_KV_CACHE_BF16;
   }
   throw std::logic_error("unmapped Qwen3.5 KV cache dtype");
 }
 
-std::uint32_t from_kv_cache_layout(brt::Qwen35KvCacheLayout value) {
+std::uint32_t from_kv_cache_layout(raftinfer::Qwen35KvCacheLayout value) {
   switch (value) {
-  case brt::Qwen35KvCacheLayout::token_major:
-    return BRT_QWEN35_KV_CACHE_LAYOUT_TOKEN_MAJOR;
-  case brt::Qwen35KvCacheLayout::head_major:
-    return BRT_QWEN35_KV_CACHE_LAYOUT_HEAD_MAJOR;
+  case raftinfer::Qwen35KvCacheLayout::token_major:
+    return RAFTINFER_QWEN35_KV_CACHE_LAYOUT_TOKEN_MAJOR;
+  case raftinfer::Qwen35KvCacheLayout::head_major:
+    return RAFTINFER_QWEN35_KV_CACHE_LAYOUT_HEAD_MAJOR;
   }
   throw std::logic_error("unmapped Qwen3.5 KV cache layout");
 }
@@ -135,14 +135,14 @@ bool to_bool(int32_t value, const char *field_name) {
   throw std::invalid_argument(field_name);
 }
 
-brt::Qwen35ExecutionPolicy
-to_execution_policy(const BrtQwen35ExecutionPolicy *policy) {
-  brt::Qwen35ExecutionPolicy result{};
+raftinfer::Qwen35ExecutionPolicy
+to_execution_policy(const RaftInferQwen35ExecutionPolicy *policy) {
+  raftinfer::Qwen35ExecutionPolicy result{};
   if (policy == nullptr) {
     return result;
   }
-  if (policy->struct_size != sizeof(BrtQwen35ExecutionPolicy)) {
-    throw std::invalid_argument("BrtQwen35ExecutionPolicy size mismatch");
+  if (policy->struct_size != sizeof(RaftInferQwen35ExecutionPolicy)) {
+    throw std::invalid_argument("RaftInferQwen35ExecutionPolicy size mismatch");
   }
   result.attention = to_attention_implementation(policy->attention);
   result.kv_cache = to_kv_cache_dtype(policy->kv_cache_dtype);
@@ -156,154 +156,154 @@ to_execution_policy(const BrtQwen35ExecutionPolicy *policy) {
 
 } // namespace
 
-static BrtStatus fail(BrtStatusCode code, const char *message) noexcept {
+static RaftInferStatus fail(RaftInferStatusCode code, const char *message) noexcept {
   set_last_error(message);
-  return BrtStatus{code, g_last_error.message};
+  return RaftInferStatus{code, g_last_error.message};
 }
 
-extern "C" BrtStatus brt_engine_create(const BrtEngineConfig *config,
-                                       BrtEngineHandle **out_engine) {
+extern "C" RaftInferStatus raftinfer_engine_create(const RaftInferEngineConfig *config,
+                                       RaftInferEngineHandle **out_engine) {
   try {
     clear_last_error();
     if (out_engine == nullptr) {
-      return fail(BRT_STATUS_INVALID_ARGUMENT,
+      return fail(RAFTINFER_STATUS_INVALID_ARGUMENT,
                   "config and out_engine are required");
     }
     *out_engine = nullptr;
     if (config == nullptr) {
-      return fail(BRT_STATUS_INVALID_ARGUMENT,
+      return fail(RAFTINFER_STATUS_INVALID_ARGUMENT,
                   "config and out_engine are required");
     }
-    if (config->struct_size != sizeof(BrtEngineConfig)) {
-      return fail(BRT_STATUS_INVALID_ARGUMENT, "BrtEngineConfig size mismatch");
+    if (config->struct_size != sizeof(RaftInferEngineConfig)) {
+      return fail(RAFTINFER_STATUS_INVALID_ARGUMENT, "RaftInferEngineConfig size mismatch");
     }
-    auto handle = std::make_unique<BrtEngineHandle>(*config);
+    auto handle = std::make_unique<RaftInferEngineHandle>(*config);
     *out_engine = handle.release();
-    return BrtStatus{BRT_STATUS_OK, nullptr};
+    return RaftInferStatus{RAFTINFER_STATUS_OK, nullptr};
   } catch (const std::invalid_argument &error) {
-    return fail(BRT_STATUS_INVALID_ARGUMENT, error.what());
+    return fail(RAFTINFER_STATUS_INVALID_ARGUMENT, error.what());
   } catch (const std::exception &error) {
-    return fail(BRT_STATUS_INTERNAL, error.what());
+    return fail(RAFTINFER_STATUS_INTERNAL, error.what());
   } catch (...) {
-    return fail(BRT_STATUS_INTERNAL, "internal error");
+    return fail(RAFTINFER_STATUS_INTERNAL, "internal error");
   }
 }
 
-extern "C" void brt_engine_destroy(BrtEngineHandle *engine) {
+extern "C" void raftinfer_engine_destroy(RaftInferEngineHandle *engine) {
   try {
     delete engine;
   } catch (...) {
-    fail(BRT_STATUS_INTERNAL, "internal error");
+    fail(RAFTINFER_STATUS_INTERNAL, "internal error");
   }
 }
 
-extern "C" int32_t brt_engine_is_cuda_enabled(const BrtEngineHandle *engine) {
+extern "C" int32_t raftinfer_engine_is_cuda_enabled(const RaftInferEngineHandle *engine) {
   try {
     return engine != nullptr && engine->engine.cuda_enabled() ? 1 : 0;
   } catch (...) {
-    fail(BRT_STATUS_INTERNAL, "internal error");
+    fail(RAFTINFER_STATUS_INTERNAL, "internal error");
     return 0;
   }
 }
 
-extern "C" BrtStatus brt_engine_run_smoke(BrtEngineHandle *engine,
-                                          BrtSmokeResult *out_result) {
+extern "C" RaftInferStatus raftinfer_engine_run_smoke(RaftInferEngineHandle *engine,
+                                          RaftInferSmokeResult *out_result) {
   clear_last_error();
   if (engine == nullptr || out_result == nullptr) {
-    return fail(BRT_STATUS_INVALID_ARGUMENT,
+    return fail(RAFTINFER_STATUS_INVALID_ARGUMENT,
                 "engine and out_result are required");
   }
   if (!engine->engine.cuda_enabled()) {
-    return fail(BRT_STATUS_UNAVAILABLE, "CUDA backend is not enabled");
+    return fail(RAFTINFER_STATUS_UNAVAILABLE, "CUDA backend is not enabled");
   }
   try {
     *out_result = engine->engine.run_smoke();
-    return BrtStatus{BRT_STATUS_OK, nullptr};
+    return RaftInferStatus{RAFTINFER_STATUS_OK, nullptr};
   } catch (const std::exception &error) {
-    return fail(BRT_STATUS_CUDA_ERROR, error.what());
+    return fail(RAFTINFER_STATUS_CUDA_ERROR, error.what());
   } catch (...) {
-    return fail(BRT_STATUS_CUDA_ERROR, "CUDA error");
+    return fail(RAFTINFER_STATUS_CUDA_ERROR, "CUDA error");
   }
 }
 
-extern "C" BrtStatus brt_engine_peak_allocated_gpu_bytes(
-    BrtEngineHandle *engine, uint64_t *out_peak_allocated_gpu_bytes) {
+extern "C" RaftInferStatus raftinfer_engine_peak_allocated_gpu_bytes(
+    RaftInferEngineHandle *engine, uint64_t *out_peak_allocated_gpu_bytes) {
   clear_last_error();
   if (engine == nullptr || out_peak_allocated_gpu_bytes == nullptr) {
     return fail(
-        BRT_STATUS_INVALID_ARGUMENT,
+        RAFTINFER_STATUS_INVALID_ARGUMENT,
         "engine and out_peak_allocated_gpu_bytes are required");
   }
   if (!engine->engine.cuda_enabled()) {
-    return fail(BRT_STATUS_UNAVAILABLE, "CUDA backend is not enabled");
+    return fail(RAFTINFER_STATUS_UNAVAILABLE, "CUDA backend is not enabled");
   }
   try {
     *out_peak_allocated_gpu_bytes =
         engine->engine.peak_allocated_gpu_bytes();
-    return BrtStatus{BRT_STATUS_OK, nullptr};
+    return RaftInferStatus{RAFTINFER_STATUS_OK, nullptr};
   } catch (const std::exception &error) {
-    return fail(BRT_STATUS_CUDA_ERROR, error.what());
+    return fail(RAFTINFER_STATUS_CUDA_ERROR, error.what());
   } catch (...) {
-    return fail(BRT_STATUS_CUDA_ERROR, "CUDA error");
+    return fail(RAFTINFER_STATUS_CUDA_ERROR, "CUDA error");
   }
 }
 
-extern "C" BrtStatus brt_engine_load_model(BrtEngineHandle *engine,
+extern "C" RaftInferStatus raftinfer_engine_load_model(RaftInferEngineHandle *engine,
                                            const char *gguf_path,
-                                           BrtModelHandle **out_model) {
+                                           RaftInferModelHandle **out_model) {
   try {
     clear_last_error();
     if (out_model == nullptr) {
-      return fail(BRT_STATUS_INVALID_ARGUMENT, "out_model is required");
+      return fail(RAFTINFER_STATUS_INVALID_ARGUMENT, "out_model is required");
     }
     *out_model = nullptr;
     if (engine == nullptr || gguf_path == nullptr || gguf_path[0] == '\0') {
-      return fail(BRT_STATUS_INVALID_ARGUMENT,
+      return fail(RAFTINFER_STATUS_INVALID_ARGUMENT,
                   "engine, gguf_path, and out_model are required");
     }
     auto handle =
-        std::make_unique<BrtModelHandle>(engine->engine.load_model(gguf_path));
+        std::make_unique<RaftInferModelHandle>(engine->engine.load_model(gguf_path));
     *out_model = handle.release();
-    return BrtStatus{BRT_STATUS_OK, nullptr};
-  } catch (const brt::model::ModelIoError &error) {
-    return fail(BRT_STATUS_UNAVAILABLE, error.what());
-  } catch (const brt::gguf::ParseError &error) {
-    return fail(BRT_STATUS_UNSUPPORTED, error.what());
-  } catch (const brt::model::ConfigError &error) {
-    return fail(BRT_STATUS_UNSUPPORTED, error.what());
-  } catch (const brt::model::ManifestError &error) {
-    return fail(BRT_STATUS_UNSUPPORTED, error.what());
+    return RaftInferStatus{RAFTINFER_STATUS_OK, nullptr};
+  } catch (const raftinfer::model::ModelIoError &error) {
+    return fail(RAFTINFER_STATUS_UNAVAILABLE, error.what());
+  } catch (const raftinfer::gguf::ParseError &error) {
+    return fail(RAFTINFER_STATUS_UNSUPPORTED, error.what());
+  } catch (const raftinfer::model::ConfigError &error) {
+    return fail(RAFTINFER_STATUS_UNSUPPORTED, error.what());
+  } catch (const raftinfer::model::ManifestError &error) {
+    return fail(RAFTINFER_STATUS_UNSUPPORTED, error.what());
   } catch (const std::bad_alloc &) {
-    return fail(BRT_STATUS_RESOURCE_EXHAUSTED,
+    return fail(RAFTINFER_STATUS_RESOURCE_EXHAUSTED,
                 "model loading exhausted host memory");
   } catch (const std::exception &error) {
-    return fail(BRT_STATUS_INTERNAL, error.what());
+    return fail(RAFTINFER_STATUS_INTERNAL, error.what());
   } catch (...) {
-    return fail(BRT_STATUS_INTERNAL, "internal error");
+    return fail(RAFTINFER_STATUS_INTERNAL, "internal error");
   }
 }
 
-extern "C" void brt_model_destroy(BrtModelHandle *model) {
+extern "C" void raftinfer_model_destroy(RaftInferModelHandle *model) {
   try {
     delete model;
   } catch (...) {
-    fail(BRT_STATUS_INTERNAL, "internal error");
+    fail(RAFTINFER_STATUS_INTERNAL, "internal error");
   }
 }
 
-extern "C" BrtStatus brt_model_copy_tokenizer_spec(const BrtModelHandle *model,
-                                                   BrtOwnedBuffer *out_buffer) {
+extern "C" RaftInferStatus raftinfer_model_copy_tokenizer_spec(const RaftInferModelHandle *model,
+                                                   RaftInferOwnedBuffer *out_buffer) {
   try {
     clear_last_error();
     if (model == nullptr || out_buffer == nullptr) {
-      return fail(BRT_STATUS_INVALID_ARGUMENT,
+      return fail(RAFTINFER_STATUS_INVALID_ARGUMENT,
                   "model and out_buffer are required");
     }
-    if (out_buffer->struct_size != sizeof(BrtOwnedBuffer)) {
-      return fail(BRT_STATUS_INVALID_ARGUMENT, "BrtOwnedBuffer size mismatch");
+    if (out_buffer->struct_size != sizeof(RaftInferOwnedBuffer)) {
+      return fail(RAFTINFER_STATUS_INVALID_ARGUMENT, "RaftInferOwnedBuffer size mismatch");
     }
     if (out_buffer->data != nullptr || out_buffer->size != 0) {
-      return fail(BRT_STATUS_INVALID_ARGUMENT, "BrtOwnedBuffer must be empty");
+      return fail(RAFTINFER_STATUS_INVALID_ARGUMENT, "RaftInferOwnedBuffer must be empty");
     }
 
     const auto spec = model->model->tokenizer_spec();
@@ -312,145 +312,145 @@ extern "C" BrtStatus brt_model_copy_tokenizer_spec(const BrtModelHandle *model,
     out_buffer->version = 1;
     out_buffer->size = spec.size();
     out_buffer->data = data.release();
-    return BrtStatus{BRT_STATUS_OK, nullptr};
+    return RaftInferStatus{RAFTINFER_STATUS_OK, nullptr};
   } catch (const std::bad_alloc &) {
-    return fail(BRT_STATUS_RESOURCE_EXHAUSTED,
+    return fail(RAFTINFER_STATUS_RESOURCE_EXHAUSTED,
                 "tokenizer specification allocation failed");
   } catch (const std::exception &error) {
-    return fail(BRT_STATUS_INTERNAL, error.what());
+    return fail(RAFTINFER_STATUS_INTERNAL, error.what());
   } catch (...) {
-    return fail(BRT_STATUS_INTERNAL, "internal error");
+    return fail(RAFTINFER_STATUS_INTERNAL, "internal error");
   }
 }
 
-extern "C" BrtStatus brt_session_create(BrtModelHandle *model,
-                                         const BrtSessionConfig *config,
-                                         BrtSessionHandle **out_session) {
+extern "C" RaftInferStatus raftinfer_session_create(RaftInferModelHandle *model,
+                                         const RaftInferSessionConfig *config,
+                                         RaftInferSessionHandle **out_session) {
   try {
     clear_last_error();
     if (out_session == nullptr) {
-      return fail(BRT_STATUS_INVALID_ARGUMENT, "out_session is required");
+      return fail(RAFTINFER_STATUS_INVALID_ARGUMENT, "out_session is required");
     }
     *out_session = nullptr;
     if (model == nullptr || config == nullptr) {
-      return fail(BRT_STATUS_INVALID_ARGUMENT,
+      return fail(RAFTINFER_STATUS_INVALID_ARGUMENT,
                   "model, config, and out_session are required");
     }
     if (config->struct_size < kLegacySessionConfigSize ||
         (config->struct_size > kLegacySessionConfigSize &&
          config->struct_size < kSessionConfigPolicyPointerEnd)) {
-      return fail(BRT_STATUS_INVALID_ARGUMENT, "BrtSessionConfig size mismatch");
+      return fail(RAFTINFER_STATUS_INVALID_ARGUMENT, "RaftInferSessionConfig size mismatch");
     }
     if (config->max_context_tokens == 0) {
-      return fail(BRT_STATUS_INVALID_ARGUMENT,
+      return fail(RAFTINFER_STATUS_INVALID_ARGUMENT,
                   "max_context_tokens must be non-zero");
     }
     if (model->model == nullptr) {
-      return fail(BRT_STATUS_INVALID_ARGUMENT, "model is invalid");
+      return fail(RAFTINFER_STATUS_INVALID_ARGUMENT, "model is invalid");
     }
-    const BrtQwen35ExecutionPolicy *policy_config = nullptr;
+    const RaftInferQwen35ExecutionPolicy *policy_config = nullptr;
     if (config->struct_size >= kSessionConfigPolicyPointerEnd) {
       policy_config = config->qwen35_policy;
     }
     const auto policy = to_execution_policy(policy_config);
-    auto session = std::make_unique<BrtSessionHandle>(
-        std::make_unique<brt::Session>(model->model,
+    auto session = std::make_unique<RaftInferSessionHandle>(
+        std::make_unique<raftinfer::Session>(model->model,
                                        config->max_context_tokens, policy));
     *out_session = session.release();
-    return BrtStatus{BRT_STATUS_OK, nullptr};
+    return RaftInferStatus{RAFTINFER_STATUS_OK, nullptr};
   } catch (const std::bad_alloc &) {
-    return fail(BRT_STATUS_RESOURCE_EXHAUSTED,
+    return fail(RAFTINFER_STATUS_RESOURCE_EXHAUSTED,
                 "session allocation exhausted host memory");
   } catch (const std::invalid_argument &error) {
-    return fail(BRT_STATUS_INVALID_ARGUMENT, error.what());
+    return fail(RAFTINFER_STATUS_INVALID_ARGUMENT, error.what());
   } catch (const std::length_error &error) {
-    return fail(BRT_STATUS_RESOURCE_EXHAUSTED, error.what());
-  } catch (const brt::SessionCudaError &error) {
-    return fail(BRT_STATUS_CUDA_ERROR, error.what());
+    return fail(RAFTINFER_STATUS_RESOURCE_EXHAUSTED, error.what());
+  } catch (const raftinfer::SessionCudaError &error) {
+    return fail(RAFTINFER_STATUS_CUDA_ERROR, error.what());
   } catch (const std::exception &error) {
-    return fail(BRT_STATUS_INTERNAL, error.what());
+    return fail(RAFTINFER_STATUS_INTERNAL, error.what());
   } catch (...) {
-    return fail(BRT_STATUS_INTERNAL, "internal error");
+    return fail(RAFTINFER_STATUS_INTERNAL, "internal error");
   }
 }
 
-extern "C" BrtStatus brt_session_prefill(BrtSessionHandle *session,
+extern "C" RaftInferStatus raftinfer_session_prefill(RaftInferSessionHandle *session,
                                           const int32_t *tokens,
                                           size_t token_count,
-                                          BrtTokenResult *out_result) {
+                                          RaftInferTokenResult *out_result) {
   try {
     clear_last_error();
     if (session == nullptr || tokens == nullptr || out_result == nullptr) {
-      return fail(BRT_STATUS_INVALID_ARGUMENT,
+      return fail(RAFTINFER_STATUS_INVALID_ARGUMENT,
                   "session, tokens, and out_result are required");
     }
     if (token_count == 0) {
-      return fail(BRT_STATUS_INVALID_ARGUMENT,
+      return fail(RAFTINFER_STATUS_INVALID_ARGUMENT,
                   "prefill token_count must be non-zero");
     }
     const auto result =
         session->session->prefill({tokens, token_count});
     out_result->token_id = result.token_id;
     out_result->position = result.position;
-    return BrtStatus{BRT_STATUS_OK, nullptr};
+    return RaftInferStatus{RAFTINFER_STATUS_OK, nullptr};
   } catch (const std::invalid_argument &error) {
-    return fail(BRT_STATUS_INVALID_ARGUMENT, error.what());
-  } catch (const brt::SessionUnavailableError &error) {
-    return fail(BRT_STATUS_UNAVAILABLE, error.what());
-  } catch (const brt::SessionCudaError &error) {
-    return fail(BRT_STATUS_CUDA_ERROR, error.what());
+    return fail(RAFTINFER_STATUS_INVALID_ARGUMENT, error.what());
+  } catch (const raftinfer::SessionUnavailableError &error) {
+    return fail(RAFTINFER_STATUS_UNAVAILABLE, error.what());
+  } catch (const raftinfer::SessionCudaError &error) {
+    return fail(RAFTINFER_STATUS_CUDA_ERROR, error.what());
   } catch (const std::bad_alloc &) {
-    return fail(BRT_STATUS_RESOURCE_EXHAUSTED,
+    return fail(RAFTINFER_STATUS_RESOURCE_EXHAUSTED,
                 "prefill exhausted host memory");
   } catch (const std::exception &error) {
-    return fail(BRT_STATUS_INTERNAL, error.what());
+    return fail(RAFTINFER_STATUS_INTERNAL, error.what());
   } catch (...) {
-    return fail(BRT_STATUS_INTERNAL, "internal error");
+    return fail(RAFTINFER_STATUS_INTERNAL, "internal error");
   }
 }
 
-extern "C" BrtStatus brt_session_decode(BrtSessionHandle *session,
+extern "C" RaftInferStatus raftinfer_session_decode(RaftInferSessionHandle *session,
                                          int32_t token_id,
-                                         BrtTokenResult *out_result) {
+                                         RaftInferTokenResult *out_result) {
   try {
     clear_last_error();
     if (session == nullptr || out_result == nullptr) {
-      return fail(BRT_STATUS_INVALID_ARGUMENT,
+      return fail(RAFTINFER_STATUS_INVALID_ARGUMENT,
                   "session and out_result are required");
     }
     const auto result = session->session->decode(token_id);
     out_result->token_id = result.token_id;
     out_result->position = result.position;
-    return BrtStatus{BRT_STATUS_OK, nullptr};
+    return RaftInferStatus{RAFTINFER_STATUS_OK, nullptr};
   } catch (const std::invalid_argument &error) {
-    return fail(BRT_STATUS_INVALID_ARGUMENT, error.what());
-  } catch (const brt::SessionUnavailableError &error) {
-    return fail(BRT_STATUS_UNAVAILABLE, error.what());
-  } catch (const brt::SessionCudaError &error) {
-    return fail(BRT_STATUS_CUDA_ERROR, error.what());
+    return fail(RAFTINFER_STATUS_INVALID_ARGUMENT, error.what());
+  } catch (const raftinfer::SessionUnavailableError &error) {
+    return fail(RAFTINFER_STATUS_UNAVAILABLE, error.what());
+  } catch (const raftinfer::SessionCudaError &error) {
+    return fail(RAFTINFER_STATUS_CUDA_ERROR, error.what());
   } catch (const std::bad_alloc &) {
-    return fail(BRT_STATUS_RESOURCE_EXHAUSTED,
+    return fail(RAFTINFER_STATUS_RESOURCE_EXHAUSTED,
                 "decode exhausted host memory");
   } catch (const std::exception &error) {
-    return fail(BRT_STATUS_INTERNAL, error.what());
+    return fail(RAFTINFER_STATUS_INTERNAL, error.what());
   } catch (...) {
-    return fail(BRT_STATUS_INTERNAL, "internal error");
+    return fail(RAFTINFER_STATUS_INTERNAL, "internal error");
   }
 }
 
-extern "C" BrtStatus
-brt_session_decode_greedy(BrtSessionHandle *session, int32_t first_token_id,
+extern "C" RaftInferStatus
+raftinfer_session_decode_greedy(RaftInferSessionHandle *session, int32_t first_token_id,
                           int32_t *out_token_ids, size_t token_count,
-                          BrtTokenResult *out_result) {
+                          RaftInferTokenResult *out_result) {
   try {
     clear_last_error();
     if (session == nullptr || out_token_ids == nullptr ||
         out_result == nullptr) {
-      return fail(BRT_STATUS_INVALID_ARGUMENT,
+      return fail(RAFTINFER_STATUS_INVALID_ARGUMENT,
                   "session, out_token_ids, and out_result are required");
     }
     if (token_count == 0) {
-      return fail(BRT_STATUS_INVALID_ARGUMENT,
+      return fail(RAFTINFER_STATUS_INVALID_ARGUMENT,
                   "decode token_count must be non-zero");
     }
     const auto result =
@@ -458,35 +458,35 @@ brt_session_decode_greedy(BrtSessionHandle *session, int32_t first_token_id,
                                         {out_token_ids, token_count});
     out_result->token_id = result.token_id;
     out_result->position = result.position;
-    return BrtStatus{BRT_STATUS_OK, nullptr};
+    return RaftInferStatus{RAFTINFER_STATUS_OK, nullptr};
   } catch (const std::invalid_argument &error) {
-    return fail(BRT_STATUS_INVALID_ARGUMENT, error.what());
-  } catch (const brt::SessionUnavailableError &error) {
-    return fail(BRT_STATUS_UNAVAILABLE, error.what());
-  } catch (const brt::SessionCudaError &error) {
-    return fail(BRT_STATUS_CUDA_ERROR, error.what());
+    return fail(RAFTINFER_STATUS_INVALID_ARGUMENT, error.what());
+  } catch (const raftinfer::SessionUnavailableError &error) {
+    return fail(RAFTINFER_STATUS_UNAVAILABLE, error.what());
+  } catch (const raftinfer::SessionCudaError &error) {
+    return fail(RAFTINFER_STATUS_CUDA_ERROR, error.what());
   } catch (const std::bad_alloc &) {
-    return fail(BRT_STATUS_RESOURCE_EXHAUSTED,
+    return fail(RAFTINFER_STATUS_RESOURCE_EXHAUSTED,
                 "decode exhausted host memory");
   } catch (const std::exception &error) {
-    return fail(BRT_STATUS_INTERNAL, error.what());
+    return fail(RAFTINFER_STATUS_INTERNAL, error.what());
   } catch (...) {
-    return fail(BRT_STATUS_INTERNAL, "internal error");
+    return fail(RAFTINFER_STATUS_INTERNAL, "internal error");
   }
 }
 
-extern "C" BrtStatus
-brt_session_diagnostics(BrtSessionHandle *session,
-                        BrtSessionDiagnostics *out_diagnostics) {
+extern "C" RaftInferStatus
+raftinfer_session_diagnostics(RaftInferSessionHandle *session,
+                        RaftInferSessionDiagnostics *out_diagnostics) {
   try {
     clear_last_error();
     if (session == nullptr || out_diagnostics == nullptr) {
-      return fail(BRT_STATUS_INVALID_ARGUMENT,
+      return fail(RAFTINFER_STATUS_INVALID_ARGUMENT,
                   "session and out_diagnostics are required");
     }
-    if (out_diagnostics->struct_size != sizeof(BrtSessionDiagnostics)) {
-      return fail(BRT_STATUS_INVALID_ARGUMENT,
-                  "BrtSessionDiagnostics size mismatch");
+    if (out_diagnostics->struct_size != sizeof(RaftInferSessionDiagnostics)) {
+      return fail(RAFTINFER_STATUS_INVALID_ARGUMENT,
+                  "RaftInferSessionDiagnostics size mismatch");
     }
     const auto diagnostics = session->session->diagnostics();
     out_diagnostics->attention =
@@ -503,42 +503,42 @@ brt_session_diagnostics(BrtSessionHandle *session,
         diagnostics.decode_graph_replayed ? 1 : 0;
     out_diagnostics->attention_workspace_bytes =
         diagnostics.attention_workspace_bytes;
-    return BrtStatus{BRT_STATUS_OK, nullptr};
-  } catch (const brt::SessionUnavailableError &error) {
-    return fail(BRT_STATUS_UNAVAILABLE, error.what());
+    return RaftInferStatus{RAFTINFER_STATUS_OK, nullptr};
+  } catch (const raftinfer::SessionUnavailableError &error) {
+    return fail(RAFTINFER_STATUS_UNAVAILABLE, error.what());
   } catch (const std::exception &error) {
-    return fail(BRT_STATUS_INTERNAL, error.what());
+    return fail(RAFTINFER_STATUS_INTERNAL, error.what());
   } catch (...) {
-    return fail(BRT_STATUS_INTERNAL, "internal error");
+    return fail(RAFTINFER_STATUS_INTERNAL, "internal error");
   }
 }
 
-extern "C" BrtStatus brt_session_reset(BrtSessionHandle *session) {
+extern "C" RaftInferStatus raftinfer_session_reset(RaftInferSessionHandle *session) {
   try {
     clear_last_error();
     if (session == nullptr) {
-      return fail(BRT_STATUS_INVALID_ARGUMENT, "session is required");
+      return fail(RAFTINFER_STATUS_INVALID_ARGUMENT, "session is required");
     }
     session->session->reset();
-    return BrtStatus{BRT_STATUS_OK, nullptr};
-  } catch (const brt::SessionCudaError &error) {
-    return fail(BRT_STATUS_CUDA_ERROR, error.what());
+    return RaftInferStatus{RAFTINFER_STATUS_OK, nullptr};
+  } catch (const raftinfer::SessionCudaError &error) {
+    return fail(RAFTINFER_STATUS_CUDA_ERROR, error.what());
   } catch (const std::exception &error) {
-    return fail(BRT_STATUS_INTERNAL, error.what());
+    return fail(RAFTINFER_STATUS_INTERNAL, error.what());
   } catch (...) {
-    return fail(BRT_STATUS_INTERNAL, "internal error");
+    return fail(RAFTINFER_STATUS_INTERNAL, "internal error");
   }
 }
 
-extern "C" void brt_session_destroy(BrtSessionHandle *session) {
+extern "C" void raftinfer_session_destroy(RaftInferSessionHandle *session) {
   try {
     delete session;
   } catch (...) {
-    fail(BRT_STATUS_INTERNAL, "internal error");
+    fail(RAFTINFER_STATUS_INTERNAL, "internal error");
   }
 }
 
-extern "C" void brt_owned_buffer_free(BrtOwnedBuffer *buffer) {
+extern "C" void raftinfer_owned_buffer_free(RaftInferOwnedBuffer *buffer) {
   if (buffer == nullptr) {
     return;
   }
@@ -548,7 +548,7 @@ extern "C" void brt_owned_buffer_free(BrtOwnedBuffer *buffer) {
   buffer->size = 0;
 }
 
-extern "C" const char *brt_last_error_message(void) {
+extern "C" const char *raftinfer_last_error_message(void) {
   try {
     return g_last_error.message;
   } catch (...) {

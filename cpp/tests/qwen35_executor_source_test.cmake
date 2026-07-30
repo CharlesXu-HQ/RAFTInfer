@@ -7,6 +7,12 @@ endfunction()
 
 file(READ "${QWEN35_EXECUTOR_SOURCE}" source)
 
+# Production change caught: reintroducing the legacy namespace in executor
+# implementation after the RAFTInfer rename.
+if(source MATCHES "namespace[ \\t\\r\\n]+brt" OR source MATCHES "brt::")
+  message(FATAL_ERROR "Qwen3.5 executor source retains the legacy brt namespace")
+endif()
+
 require_match("${source}" "cudaFreeHost\\(ptr\\)"
               "CUDA pinned-host deleter")
 require_match("${source}" "CudaHostInt32 host_decode_token_;[ \n]+CudaHostInt32 host_decode_result_;"

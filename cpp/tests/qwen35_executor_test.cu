@@ -34,7 +34,7 @@
 #include <utility>
 #include <vector>
 
-namespace brt::test {
+namespace raftinfer::test {
 
 struct InputCastLaunches {
   std::size_t total{};
@@ -46,12 +46,12 @@ struct InputCastLaunches {
 void reset_qwen35_executor_input_cast_launches();
 InputCastLaunches qwen35_executor_input_cast_launches();
 
-} // namespace brt::test
+} // namespace raftinfer::test
 
 namespace {
 
-brt::model::Qwen35Config tiny_config() {
-  return brt::model::Qwen35Config{
+raftinfer::model::Qwen35Config tiny_config() {
+  return raftinfer::model::Qwen35Config{
       .vocabulary_size = 16,
       .hidden_size = 8,
       .intermediate_size = 16,
@@ -66,14 +66,14 @@ brt::model::Qwen35Config tiny_config() {
       .rotary_dimension = 2,
       .rms_norm_epsilon = 1.0e-6F,
       .rope_frequency_base = 10000.0F,
-      .blocks = {{0, brt::model::Qwen35BlockKind::linear_attention},
-                 {1, brt::model::Qwen35BlockKind::linear_attention},
-                 {2, brt::model::Qwen35BlockKind::linear_attention},
-                 {3, brt::model::Qwen35BlockKind::full_attention}},
+      .blocks = {{0, raftinfer::model::Qwen35BlockKind::linear_attention},
+                 {1, raftinfer::model::Qwen35BlockKind::linear_attention},
+                 {2, raftinfer::model::Qwen35BlockKind::linear_attention},
+                 {3, raftinfer::model::Qwen35BlockKind::full_attention}},
   };
 }
 
-brt::model::Qwen35Config release_attention_config() {
+raftinfer::model::Qwen35Config release_attention_config() {
   auto config = tiny_config();
   config.hidden_size = 4096;
   config.full_attention_head_count = 16;
@@ -83,22 +83,22 @@ brt::model::Qwen35Config release_attention_config() {
   config.linear_value_head_count = 16;
   config.linear_head_dimension = 256;
   config.rotary_dimension = 64;
-  config.blocks = {{0, brt::model::Qwen35BlockKind::full_attention}};
+  config.blocks = {{0, raftinfer::model::Qwen35BlockKind::full_attention}};
   return config;
 }
 
-brt::Qwen35ExecutionPolicy materialized_policy() {
-  auto policy = brt::Qwen35ExecutionPolicy{};
-  policy.attention = brt::Qwen35AttentionImplementation::materialized_reference;
+raftinfer::Qwen35ExecutionPolicy materialized_policy() {
+  auto policy = raftinfer::Qwen35ExecutionPolicy{};
+  policy.attention = raftinfer::Qwen35AttentionImplementation::materialized_reference;
   policy.decode_graph = false;
   policy.grouped_input_casts = false;
   return policy;
 }
 
-brt::Qwen35ExecutionPolicy online_policy(brt::Qwen35KvCacheDType dtype,
-                                         brt::Qwen35KvCacheLayout layout,
+raftinfer::Qwen35ExecutionPolicy online_policy(raftinfer::Qwen35KvCacheDType dtype,
+                                         raftinfer::Qwen35KvCacheLayout layout,
                                          bool decode_graph = true) {
-  auto policy = brt::Qwen35ExecutionPolicy{};
+  auto policy = raftinfer::Qwen35ExecutionPolicy{};
   policy.kv_cache = dtype;
   policy.kv_cache_layout = layout;
   policy.decode_graph = decode_graph;
@@ -118,20 +118,20 @@ make_release_attention_fixture(std::uint32_t context_length = 4) {
   std::vector<std::uint8_t> metadata;
   std::uint64_t metadata_count = 0;
   const auto u32 = [&](const std::string &key, std::uint32_t value) {
-    brt::test::detail::append_u32_metadata(metadata, key, value);
+    raftinfer::test::detail::append_u32_metadata(metadata, key, value);
     ++metadata_count;
   };
   const auto f32 = [&](const std::string &key, float value) {
-    brt::test::detail::append_float_metadata(metadata, key, value);
+    raftinfer::test::detail::append_float_metadata(metadata, key, value);
     ++metadata_count;
   };
   const auto string = [&](const std::string &key, const std::string &value) {
-    brt::test::detail::append_string_metadata(metadata, key, value);
+    raftinfer::test::detail::append_string_metadata(metadata, key, value);
     ++metadata_count;
   };
   const auto strings = [&](const std::string &key,
                            const std::vector<std::string> &values) {
-    brt::test::detail::append_string_array_metadata(metadata, key, values);
+    raftinfer::test::detail::append_string_array_metadata(metadata, key, values);
     ++metadata_count;
   };
 
@@ -162,11 +162,11 @@ make_release_attention_fixture(std::uint32_t context_length = 4) {
   u32("tokenizer.ggml.eos_token_id", 0);
   string("tokenizer.chat_template", "{{ messages }}");
 
-  std::vector<brt::test::detail::Tensor> tensors;
+  std::vector<raftinfer::test::detail::Tensor> tensors;
   std::uint64_t next_offset = 0;
   const auto add = [&](std::string name,
                        std::vector<std::uint64_t> dimensions) {
-    brt::test::detail::add_tensor(tensors, next_offset, std::move(name),
+    raftinfer::test::detail::add_tensor(tensors, next_offset, std::move(name),
                                   std::move(dimensions), tensor_type);
   };
   add("token_embd.weight", {hidden_size, vocabulary_size});
@@ -185,17 +185,17 @@ make_release_attention_fixture(std::uint32_t context_length = 4) {
   add("blk.0.attn_k_norm.weight", {head_dim});
 
   std::vector<std::uint8_t> bytes{'G', 'G', 'U', 'F'};
-  brt::test::detail::append<std::uint32_t>(bytes, 3);
-  brt::test::detail::append<std::uint64_t>(bytes, tensors.size());
-  brt::test::detail::append<std::uint64_t>(bytes, metadata_count);
+  raftinfer::test::detail::append<std::uint32_t>(bytes, 3);
+  raftinfer::test::detail::append<std::uint64_t>(bytes, tensors.size());
+  raftinfer::test::detail::append<std::uint64_t>(bytes, metadata_count);
   bytes.insert(bytes.end(), metadata.begin(), metadata.end());
   for (const auto &tensor : tensors) {
-    brt::test::detail::append_string(bytes, tensor.name);
-    brt::test::detail::append<std::uint32_t>(bytes, tensor.dimensions.size());
+    raftinfer::test::detail::append_string(bytes, tensor.name);
+    raftinfer::test::detail::append<std::uint32_t>(bytes, tensor.dimensions.size());
     for (const auto dimension : tensor.dimensions)
-      brt::test::detail::append(bytes, dimension);
-    brt::test::detail::append<std::uint32_t>(bytes, tensor.type);
-    brt::test::detail::append(bytes, tensor.offset);
+      raftinfer::test::detail::append(bytes, dimension);
+    raftinfer::test::detail::append<std::uint32_t>(bytes, tensor.type);
+    raftinfer::test::detail::append(bytes, tensor.offset);
   }
   while (bytes.size() % 32 != 0)
     bytes.push_back(0);
@@ -206,7 +206,7 @@ make_release_attention_fixture(std::uint32_t context_length = 4) {
 std::vector<std::uint8_t>
 make_nonzero_release_attention_fixture(std::uint32_t context_length) {
   auto bytes = make_release_attention_fixture(context_length);
-  const auto catalog = brt::gguf::read_catalog(bytes);
+  const auto catalog = raftinfer::gguf::read_catalog(bytes);
   for (std::size_t tensor_index = 0;
        tensor_index < catalog.tensors.size(); ++tensor_index) {
     const auto &tensor = catalog.tensors[tensor_index];
@@ -227,7 +227,7 @@ make_nonzero_release_attention_fixture(std::uint32_t context_length) {
           is_norm ? 1.0F + static_cast<float>(numerator) / 1024.0F
                   : static_cast<float>(numerator) / 256.0F;
       const std::uint16_t encoded =
-          brt::reference::float_to_bf16(value).bits;
+          raftinfer::reference::float_to_bf16(value).bits;
       const std::size_t offset =
           payload_offset + element * sizeof(std::uint16_t);
       bytes[offset] = static_cast<std::uint8_t>(encoded & 0xffU);
@@ -240,7 +240,7 @@ make_nonzero_release_attention_fixture(std::uint32_t context_length) {
 
 std::filesystem::path write_fixture(std::vector<std::uint8_t> bytes) {
   const auto path =
-      std::filesystem::temp_directory_path() / "brt_qwen35_executor.gguf";
+      std::filesystem::temp_directory_path() / "raftinfer_qwen35_executor.gguf";
   std::ofstream output{path, std::ios::binary};
   output.write(reinterpret_cast<const char *>(bytes.data()),
                static_cast<std::streamsize>(bytes.size()));
@@ -251,8 +251,8 @@ std::filesystem::path write_fixture(std::vector<std::uint8_t> bytes) {
 
 std::filesystem::path write_linear_delta_fixture(std::uint32_t head_dim) {
   return write_fixture(
-      brt::test::make_qwen35_gguf_fixture(30, true,
-                                          brt::test::Qwen35GgufFixtureOptions{
+      raftinfer::test::make_qwen35_gguf_fixture(30, true,
+                                          raftinfer::test::Qwen35GgufFixtureOptions{
                                               .vocabulary_size = 16,
                                               .hidden_size = 4U * head_dim,
                                               .intermediate_size = 16,
@@ -272,7 +272,7 @@ void expect_executor_error(auto &&fn) {
   bool thrown = false;
   try {
     fn();
-  } catch (const brt::Qwen35ExecutorError &) {
+  } catch (const raftinfer::Qwen35ExecutorError &) {
     thrown = true;
   }
   assert(thrown);
@@ -281,7 +281,7 @@ void expect_executor_error(auto &&fn) {
 void expect_executor_error_containing(auto &&fn, const std::string &expected) {
   try {
     fn();
-  } catch (const brt::Qwen35ExecutorError &error) {
+  } catch (const raftinfer::Qwen35ExecutorError &error) {
     assert(std::string{error.what()}.find(expected) != std::string::npos);
     return;
   }
@@ -291,7 +291,7 @@ void expect_executor_error_containing(auto &&fn, const std::string &expected) {
 void expect_primitive_error_containing(auto &&fn, const std::string &expected) {
   try {
     fn();
-  } catch (const brt::kernels::Qwen35PrimitiveError &error) {
+  } catch (const raftinfer::kernels::Qwen35PrimitiveError &error) {
     assert(std::string{error.what()}.find(expected) != std::string::npos);
     return;
   }
@@ -340,13 +340,13 @@ private:
 template <typename T> struct DTypeTraits;
 
 template <> struct DTypeTraits<__half> {
-  static constexpr BrtDataType dtype = BRT_DTYPE_F16;
+  static constexpr RaftInferDataType dtype = RAFTINFER_DTYPE_F16;
   static __half encode(float value) { return __float2half_rn(value); }
   static float decode(__half value) { return __half2float(value); }
 };
 
 template <> struct DTypeTraits<__nv_bfloat16> {
-  static constexpr BrtDataType dtype = BRT_DTYPE_BF16;
+  static constexpr RaftInferDataType dtype = RAFTINFER_DTYPE_BF16;
   static __nv_bfloat16 encode(float value) {
     return __float2bfloat16_rn(value);
   }
@@ -412,13 +412,13 @@ void assert_reference_close(const char *stage, std::span<const float> actual,
 
 void run_workspace_contract_tests() {
   const auto config = tiny_config();
-  const std::size_t bytes = brt::Qwen35Executor::workspace_bytes(config, 17);
+  const std::size_t bytes = raftinfer::Qwen35Executor::workspace_bytes(config, 17);
   assert(bytes > 0);
-  assert(bytes % brt::Qwen35Executor::workspace_alignment == 0);
-  assert(bytes == brt::Qwen35Executor::workspace_bytes(config, 17));
-  assert(bytes >= brt::Qwen35Executor::workspace_bytes(config, 4));
-  assert(brt::Qwen35Executor::workspace_bytes(config, 64) > bytes);
-  assert(bytes == brt::Qwen35Executor::workspace_bytes(config, 17,
+  assert(bytes % raftinfer::Qwen35Executor::workspace_alignment == 0);
+  assert(bytes == raftinfer::Qwen35Executor::workspace_bytes(config, 17));
+  assert(bytes >= raftinfer::Qwen35Executor::workspace_bytes(config, 4));
+  assert(raftinfer::Qwen35Executor::workspace_bytes(config, 64) > bytes);
+  assert(bytes == raftinfer::Qwen35Executor::workspace_bytes(config, 17,
                                                        materialized_policy()));
 
   auto thirty_two_argmax_blocks = config;
@@ -426,68 +426,68 @@ void run_workspace_contract_tests() {
   auto thirty_three_argmax_blocks = thirty_two_argmax_blocks;
   thirty_three_argmax_blocks.vocabulary_size = 8193;
   assert(
-      brt::Qwen35Executor::workspace_bytes(thirty_three_argmax_blocks, 17) -
-          brt::Qwen35Executor::workspace_bytes(thirty_two_argmax_blocks, 17) ==
-      2 * brt::Qwen35Executor::workspace_alignment);
+      raftinfer::Qwen35Executor::workspace_bytes(thirty_three_argmax_blocks, 17) -
+          raftinfer::Qwen35Executor::workspace_bytes(thirty_two_argmax_blocks, 17) ==
+      2 * raftinfer::Qwen35Executor::workspace_alignment);
 
   const auto release = release_attention_config();
   const auto reference = materialized_policy();
-  const auto online = brt::Qwen35ExecutionPolicy{};
+  const auto online = raftinfer::Qwen35ExecutionPolicy{};
   const std::size_t reference_bytes =
-      brt::Qwen35Executor::workspace_bytes(release, 17, reference);
+      raftinfer::Qwen35Executor::workspace_bytes(release, 17, reference);
   const std::size_t online_bytes =
-      brt::Qwen35Executor::workspace_bytes(release, 17, online);
+      raftinfer::Qwen35Executor::workspace_bytes(release, 17, online);
   assert(online_bytes < reference_bytes);
   assert(reference_bytes - online_bytes ==
          ((17 * release.full_attention_head_count * 17 * sizeof(float) +
-           brt::Qwen35Executor::workspace_alignment - 1) /
-          brt::Qwen35Executor::workspace_alignment) *
-             brt::Qwen35Executor::workspace_alignment);
+           raftinfer::Qwen35Executor::workspace_alignment - 1) /
+          raftinfer::Qwen35Executor::workspace_alignment) *
+             raftinfer::Qwen35Executor::workspace_alignment);
   auto invalid_reference = reference;
-  invalid_reference.kv_cache = brt::Qwen35KvCacheDType::bf16;
+  invalid_reference.kv_cache = raftinfer::Qwen35KvCacheDType::bf16;
   expect_executor_error([&] {
-    (void)brt::Qwen35Executor::workspace_bytes(release, 17, invalid_reference);
+    (void)raftinfer::Qwen35Executor::workspace_bytes(release, 17, invalid_reference);
   });
   for (const auto dtype :
-       {brt::Qwen35KvCacheDType::f32, brt::Qwen35KvCacheDType::bf16}) {
-    for (const auto layout : {brt::Qwen35KvCacheLayout::token_major,
-                              brt::Qwen35KvCacheLayout::head_major}) {
+       {raftinfer::Qwen35KvCacheDType::f32, raftinfer::Qwen35KvCacheDType::bf16}) {
+    for (const auto layout : {raftinfer::Qwen35KvCacheLayout::token_major,
+                              raftinfer::Qwen35KvCacheLayout::head_major}) {
       const auto candidate = online_policy(dtype, layout);
-      assert(brt::Qwen35Executor::workspace_bytes(release, 17, candidate) <
+      assert(raftinfer::Qwen35Executor::workspace_bytes(release, 17, candidate) <
              reference_bytes);
-      assert(brt::Qwen35Executor::workspace_bytes(release, 1, candidate) <
-             brt::Qwen35Executor::workspace_bytes(release, 1, reference));
+      assert(raftinfer::Qwen35Executor::workspace_bytes(release, 1, candidate) <
+             raftinfer::Qwen35Executor::workspace_bytes(release, 1, reference));
     }
   }
 
   auto invalid = config;
   invalid.hidden_size = 0;
   expect_executor_error(
-      [&] { (void)brt::Qwen35Executor::workspace_bytes(invalid, 17); });
+      [&] { (void)raftinfer::Qwen35Executor::workspace_bytes(invalid, 17); });
   expect_executor_error(
-      [&] { (void)brt::Qwen35Executor::workspace_bytes(config, 0); });
+      [&] { (void)raftinfer::Qwen35Executor::workspace_bytes(config, 0); });
   expect_executor_error(
-      [&] { (void)brt::Qwen35Executor::workspace_bytes(config, 129); });
+      [&] { (void)raftinfer::Qwen35Executor::workspace_bytes(config, 129); });
 
   invalid = config;
   invalid.full_attention_head_dimension = 3;
   expect_executor_error(
-      [&] { (void)brt::Qwen35Executor::workspace_bytes(invalid, 17); });
+      [&] { (void)raftinfer::Qwen35Executor::workspace_bytes(invalid, 17); });
   invalid = config;
   invalid.linear_value_head_count = 1;
   expect_executor_error(
-      [&] { (void)brt::Qwen35Executor::workspace_bytes(invalid, 17); });
+      [&] { (void)raftinfer::Qwen35Executor::workspace_bytes(invalid, 17); });
   invalid = config;
   invalid.linear_key_head_count = 2;
   invalid.linear_value_head_count = 3;
   invalid.hidden_size =
       invalid.linear_value_head_count * invalid.linear_head_dimension;
   expect_executor_error(
-      [&] { (void)brt::Qwen35Executor::workspace_bytes(invalid, 17); });
+      [&] { (void)raftinfer::Qwen35Executor::workspace_bytes(invalid, 17); });
   invalid = config;
   invalid.blocks[1].index = 7;
   expect_executor_error(
-      [&] { (void)brt::Qwen35Executor::workspace_bytes(invalid, 17); });
+      [&] { (void)raftinfer::Qwen35Executor::workspace_bytes(invalid, 17); });
 
   invalid = config;
   invalid.hidden_size = std::numeric_limits<std::uint32_t>::max();
@@ -502,7 +502,7 @@ void run_workspace_contract_tests() {
   invalid.context_length = std::numeric_limits<std::uint32_t>::max();
   expect_executor_error_containing(
       [&] {
-        (void)brt::Qwen35Executor::workspace_bytes(
+        (void)raftinfer::Qwen35Executor::workspace_bytes(
             invalid, std::numeric_limits<std::uint32_t>::max());
       },
       "attention cache shape overflow");
@@ -512,24 +512,24 @@ void run_host_validation_tests() {
   const auto config = tiny_config();
   const std::vector<int32_t> first_token{1};
   const std::vector<int32_t> last_token{15};
-  brt::Qwen35Executor::validate_request(config, 0, first_token);
-  brt::Qwen35Executor::validate_request(config, 127, last_token);
+  raftinfer::Qwen35Executor::validate_request(config, 0, first_token);
+  raftinfer::Qwen35Executor::validate_request(config, 127, last_token);
 
   expect_executor_error([&] {
-    brt::Qwen35Executor::validate_request(config, 0,
+    raftinfer::Qwen35Executor::validate_request(config, 0,
                                           std::span<const int32_t>{});
   });
   expect_executor_error([&] {
     const std::vector<int32_t> tokens{-1};
-    brt::Qwen35Executor::validate_request(config, 0, tokens);
+    raftinfer::Qwen35Executor::validate_request(config, 0, tokens);
   });
   expect_executor_error([&] {
     const std::vector<int32_t> tokens{16};
-    brt::Qwen35Executor::validate_request(config, 0, tokens);
+    raftinfer::Qwen35Executor::validate_request(config, 0, tokens);
   });
   expect_executor_error([&] {
     const std::vector<int32_t> tokens{1, 2};
-    brt::Qwen35Executor::validate_request(config, 127, tokens);
+    raftinfer::Qwen35Executor::validate_request(config, 127, tokens);
   });
 }
 
@@ -539,7 +539,7 @@ template <typename T> void run_support_kernel_dtype_tests(cudaStream_t stream) {
     const auto typed = encode<T>(logits);
     auto device_logits = upload<T>(typed, stream);
     DeviceBuffer device_index{sizeof(std::int32_t)};
-    brt::kernels::qwen35_argmax_typed(
+    raftinfer::kernels::qwen35_argmax_typed(
         device_logits.data(), static_cast<std::int32_t *>(device_index.data()),
         logits.size(), DTypeTraits<T>::dtype, stream);
     const auto actual = download<std::int32_t>(device_index, 1, stream);
@@ -558,7 +558,7 @@ template <typename T> void run_support_kernel_dtype_tests(cudaStream_t stream) {
     auto device_input = upload<T>(typed, stream);
     DeviceBuffer device_query{tokens * hidden * sizeof(T)};
     DeviceBuffer device_gate{tokens * hidden * sizeof(T)};
-    brt::kernels::qwen35_split_full_query_gate(
+    raftinfer::kernels::qwen35_split_full_query_gate(
         device_input.data(), device_query.data(), device_gate.data(), tokens,
         heads, head_dim, DTypeTraits<T>::dtype, stream);
     const auto query = download<T>(device_query, tokens * hidden, stream);
@@ -588,7 +588,7 @@ template <typename T> void run_support_kernel_dtype_tests(cudaStream_t stream) {
     auto device_alpha = upload<T>(encode<T>(alpha), stream);
     auto device_gate = upload<T>(encode<T>(gate), stream);
     DeviceBuffer device_packed{tokens * packed_width * sizeof(T)};
-    brt::kernels::qwen35_pack_linear_delta_input(
+    raftinfer::kernels::qwen35_pack_linear_delta_input(
         device_qkv.data(), device_beta.data(), device_alpha.data(),
         device_gate.data(), device_packed.data(), tokens, qkv_width, beta_width,
         alpha_width, gate_width, DTypeTraits<T>::dtype, stream);
@@ -607,7 +607,7 @@ template <typename T> void run_support_kernel_dtype_tests(cudaStream_t stream) {
     auto stream_value = reinterpret_cast<cudaStream_t>(0x1000);
     expect_primitive_error_containing(
         [&] {
-          brt::kernels::qwen35_pack_linear_delta_input(
+          raftinfer::kernels::qwen35_pack_linear_delta_input(
               pointer, pointer, pointer, pointer, pointer, 1, width, width,
               width, width, DTypeTraits<T>::dtype, stream_value);
         },
@@ -624,20 +624,20 @@ void run_support_kernel_tests() {
 
 void run_executor_fixture_smoke() {
   assert(cudaSetDevice(0) == cudaSuccess);
-  const auto path = write_fixture(brt::test::make_qwen35_gguf_fixture());
-  brt::model::Model model{path.string()};
+  const auto path = write_fixture(raftinfer::test::make_qwen35_gguf_fixture());
+  raftinfer::model::Model model{path.string()};
   const std::size_t max_context = 128;
   const std::size_t workspace =
-      brt::Qwen35Executor::workspace_bytes(model.qwen35_config(), max_context);
-  brt::DeviceContext device{0, 256U * 1024U * 1024U};
+      raftinfer::Qwen35Executor::workspace_bytes(model.qwen35_config(), max_context);
+  raftinfer::DeviceContext device{0, 256U * 1024U * 1024U};
   auto weights = device.upload_qwen35_weights(model);
   auto owner = device.create_execution_owner(workspace);
   auto context = owner->execution_context();
-  brt::Qwen35Executor executor{context, model.qwen35_config(), *weights,
+  raftinfer::Qwen35Executor executor{context, model.qwen35_config(), *weights,
                                max_context};
   const auto diagnostics = executor.diagnostics();
   assert(diagnostics.attention ==
-         brt::Qwen35AttentionImplementation::materialized_reference);
+         raftinfer::Qwen35AttentionImplementation::materialized_reference);
   assert(diagnostics.attention_workspace_bytes > 0);
 
   const std::vector<std::int32_t> prompt{1, 2, 3, 4, 5};
@@ -671,7 +671,7 @@ void run_executor_fixture_smoke() {
   const auto long_prefill = executor.prefill(long_prompt);
   assert(long_prefill.position == long_prompt.size() - 1);
   assert(std::count_if(executor.trace().begin(), executor.trace().end(),
-                       [](const brt::Qwen35TraceEntry &entry) {
+                       [](const raftinfer::Qwen35TraceEntry &entry) {
                          return entry.name == "model.input_embed";
                        }) == 1);
   executor.enable_trace(false);
@@ -680,17 +680,17 @@ void run_executor_fixture_smoke() {
 void run_executor_f32_auxiliary_smoke() {
   assert(cudaSetDevice(0) == cudaSuccess);
   const auto path =
-      write_fixture(brt::test::make_qwen35_gguf_fixture(30, true));
-  brt::model::Model model{path.string()};
+      write_fixture(raftinfer::test::make_qwen35_gguf_fixture(30, true));
+  raftinfer::model::Model model{path.string()};
   constexpr std::size_t max_context = 64;
   const std::size_t workspace =
-      brt::Qwen35Executor::workspace_bytes(model.qwen35_config(), max_context);
-  brt::DeviceContext device{0, 256U * 1024U * 1024U};
+      raftinfer::Qwen35Executor::workspace_bytes(model.qwen35_config(), max_context);
+  raftinfer::DeviceContext device{0, 256U * 1024U * 1024U};
   auto weights = device.upload_qwen35_weights(model);
-  assert(weights->output_norm().type == brt::model::CudaWeightType::f32);
+  assert(weights->output_norm().type == raftinfer::model::CudaWeightType::f32);
   auto owner = device.create_execution_owner(workspace);
   auto context = owner->execution_context();
-  brt::Qwen35Executor executor{context, model.qwen35_config(), *weights,
+  raftinfer::Qwen35Executor executor{context, model.qwen35_config(), *weights,
                                max_context};
   const std::vector<std::int32_t> prompt{1, 2, 3, 4};
   const auto result = executor.prefill(prompt);
@@ -701,25 +701,25 @@ void run_executor_f32_auxiliary_smoke() {
 void run_grouped_input_cast_tests() {
   assert(cudaSetDevice(0) == cudaSuccess);
   const auto path =
-      write_fixture(brt::test::make_qwen35_nonzero_bf16_gguf_fixture());
-  brt::model::Model model{path.string()};
+      write_fixture(raftinfer::test::make_qwen35_nonzero_bf16_gguf_fixture());
+  raftinfer::model::Model model{path.string()};
   constexpr std::size_t max_context = 64;
 
   auto grouped_policy = materialized_policy();
   grouped_policy.grouped_input_casts = true;
   const auto ungrouped_policy = materialized_policy();
-  const std::size_t workspace_bytes = brt::Qwen35Executor::workspace_bytes(
+  const std::size_t workspace_bytes = raftinfer::Qwen35Executor::workspace_bytes(
       model.qwen35_config(), max_context, grouped_policy);
 
-  brt::DeviceContext device{0, 256U * 1024U * 1024U};
+  raftinfer::DeviceContext device{0, 256U * 1024U * 1024U};
   auto weights = device.upload_qwen35_weights(model);
   auto grouped_owner = device.create_execution_owner(workspace_bytes);
   auto ungrouped_owner = device.create_execution_owner(workspace_bytes);
   auto grouped_context = grouped_owner->execution_context();
   auto ungrouped_context = ungrouped_owner->execution_context();
-  brt::Qwen35Executor grouped{grouped_context, model.qwen35_config(), *weights,
+  raftinfer::Qwen35Executor grouped{grouped_context, model.qwen35_config(), *weights,
                               max_context, grouped_policy};
-  brt::Qwen35Executor ungrouped{ungrouped_context, model.qwen35_config(),
+  raftinfer::Qwen35Executor ungrouped{ungrouped_context, model.qwen35_config(),
                                 *weights, max_context, ungrouped_policy};
   const std::vector<std::size_t> expected_grouped_full{1};
   const std::vector<std::size_t> expected_grouped_linear{1, 1, 1};
@@ -728,17 +728,17 @@ void run_grouped_input_cast_tests() {
   const std::vector<std::size_t> expected_ungrouped_linear{4, 4, 4};
   const std::vector<std::size_t> expected_ungrouped_ffn{2, 2, 2, 2};
 
-  brt::test::reset_qwen35_executor_input_cast_launches();
+  raftinfer::test::reset_qwen35_executor_input_cast_launches();
   const auto grouped_result = grouped.decode(1);
-  const auto grouped_casts = brt::test::qwen35_executor_input_cast_launches();
+  const auto grouped_casts = raftinfer::test::qwen35_executor_input_cast_launches();
   assert(grouped_casts.total == 17);
   assert(grouped_casts.full_attention_projection == expected_grouped_full);
   assert(grouped_casts.linear_attention_projection == expected_grouped_linear);
   assert(grouped_casts.ffn_gate_up == expected_grouped_ffn);
 
-  brt::test::reset_qwen35_executor_input_cast_launches();
+  raftinfer::test::reset_qwen35_executor_input_cast_launches();
   const auto ungrouped_result = ungrouped.decode(1);
-  const auto ungrouped_casts = brt::test::qwen35_executor_input_cast_launches();
+  const auto ungrouped_casts = raftinfer::test::qwen35_executor_input_cast_launches();
   assert(ungrouped_casts.total == 32);
   assert(ungrouped_casts.full_attention_projection == expected_ungrouped_full);
   assert(ungrouped_casts.linear_attention_projection ==
@@ -759,27 +759,27 @@ void run_grouped_input_cast_tests() {
 void run_cublaslt_plan_tuning_tests() {
   assert(cudaSetDevice(0) == cudaSuccess);
   const auto path = write_fixture(make_release_attention_fixture(512));
-  brt::model::Model model{path.string()};
+  raftinfer::model::Model model{path.string()};
   constexpr std::size_t max_context = 512;
 
-  brt::DeviceContext device{0, 256U * 1024U * 1024U};
+  raftinfer::DeviceContext device{0, 256U * 1024U * 1024U};
   auto weights = device.upload_qwen35_weights(model);
   for (const auto dtype :
-       {brt::Qwen35KvCacheDType::f32, brt::Qwen35KvCacheDType::bf16}) {
-    for (const auto layout : {brt::Qwen35KvCacheLayout::token_major,
-                              brt::Qwen35KvCacheLayout::head_major}) {
+       {raftinfer::Qwen35KvCacheDType::f32, raftinfer::Qwen35KvCacheDType::bf16}) {
+    for (const auto layout : {raftinfer::Qwen35KvCacheLayout::token_major,
+                              raftinfer::Qwen35KvCacheLayout::head_major}) {
       const auto policy = online_policy(dtype, layout, true);
       const std::size_t workspace_bytes =
-          brt::Qwen35Executor::workspace_bytes(model.qwen35_config(),
+          raftinfer::Qwen35Executor::workspace_bytes(model.qwen35_config(),
                                                max_context, policy);
       auto owner = device.create_execution_owner(workspace_bytes);
       auto context = owner->execution_context();
 
-      brt::Qwen35Executor executor{context, model.qwen35_config(), *weights,
+      raftinfer::Qwen35Executor executor{context, model.qwen35_config(), *weights,
                                    max_context, policy};
       const auto construction = executor.diagnostics();
       assert(construction.attention ==
-             brt::Qwen35AttentionImplementation::online_tiled);
+             raftinfer::Qwen35AttentionImplementation::online_tiled);
       assert(construction.kv_cache_dtype == dtype);
       assert(construction.kv_cache_layout == layout);
       assert(!construction.cublaslt_algorithm_ids.empty());
@@ -794,7 +794,7 @@ void run_cublaslt_plan_tuning_tests() {
                                     schedule.key_dim == 256 &&
                                     schedule.value_dim == 256 &&
                                     schedule.schedule ==
-                                        brt::kernels::GatedDeltaSchedule::
+                                        raftinfer::kernels::GatedDeltaSchedule::
                                             register_resident_current &&
                                     schedule.warps_per_block == 4 &&
                                     !schedule.transposed_boundary_state &&
@@ -858,8 +858,8 @@ void run_cublaslt_plan_tuning_tests() {
 }
 
 void maybe_write_delta_microbenchmark_evidence(
-    const brt::Qwen35ExecutionDiagnostics &diagnostics) {
-  const char *path = std::getenv("BRT_QWEN35_DELTA_MICROBENCHMARK_OUTPUT");
+    const raftinfer::Qwen35ExecutionDiagnostics &diagnostics) {
+  const char *path = std::getenv("RAFTINFER_QWEN35_DELTA_MICROBENCHMARK_OUTPUT");
   if (path == nullptr || std::string{path}.empty())
     return;
 
@@ -887,14 +887,14 @@ void maybe_write_delta_microbenchmark_evidence(
 void run_gated_delta_schedule_tuning_tests() {
   assert(cudaSetDevice(0) == cudaSuccess);
   const auto path = write_linear_delta_fixture(64);
-  brt::model::Model model{path.string()};
+  raftinfer::model::Model model{path.string()};
   constexpr std::size_t max_context = 512;
-  auto policy = brt::Qwen35ExecutionPolicy{};
+  auto policy = raftinfer::Qwen35ExecutionPolicy{};
   policy.decode_graph = true;
-  const std::size_t workspace_bytes = brt::Qwen35Executor::workspace_bytes(
+  const std::size_t workspace_bytes = raftinfer::Qwen35Executor::workspace_bytes(
       model.qwen35_config(), max_context, policy);
 
-  brt::DeviceContext device{0, 512U * 1024U * 1024U};
+  raftinfer::DeviceContext device{0, 512U * 1024U * 1024U};
   auto weights = device.upload_qwen35_weights(model);
 
   raft::device_resources resources;
@@ -902,14 +902,14 @@ void run_gated_delta_schedule_tuning_tests() {
       raft::resource::get_cuda_stream(resources).value();
   rmm::mr::cuda_memory_resource cuda_resource;
   rmm::mr::statistics_resource_adaptor statistics{cuda_resource};
-  brt::WorkspaceArena workspace{rmm::device_async_resource_ref{statistics},
+  raftinfer::WorkspaceArena workspace{rmm::device_async_resource_ref{statistics},
                                 cuda::stream_ref{stream}, stream,
                                 workspace_bytes};
   cudaDeviceProp properties{};
   assert(cudaGetDeviceProperties(&properties, 0) == cudaSuccess);
   assert(properties.sharedMemPerBlock <=
          static_cast<std::size_t>(std::numeric_limits<int>::max()));
-  brt::ExecutionContext context{resources,
+  raftinfer::ExecutionContext context{resources,
                                 rmm::device_async_resource_ref{statistics},
                                 stream,
                                 workspace,
@@ -918,7 +918,7 @@ void run_gated_delta_schedule_tuning_tests() {
                                 properties.minor,
                                 static_cast<int>(properties.sharedMemPerBlock)};
 
-  brt::Qwen35Executor executor{context, model.qwen35_config(), *weights,
+  raftinfer::Qwen35Executor executor{context, model.qwen35_config(), *weights,
                                max_context, policy};
   const auto construction = executor.diagnostics();
   // The 64-dim tuned gated-delta fixture is intentionally not a decode-graph
@@ -927,7 +927,7 @@ void run_gated_delta_schedule_tuning_tests() {
   // for tuned gated-delta schedules; graph capture/replay is covered by the
   // release-shape executor and CUDA graph tests.
   assert(construction.attention ==
-         brt::Qwen35AttentionImplementation::materialized_reference);
+         raftinfer::Qwen35AttentionImplementation::materialized_reference);
   assert(!construction.decode_graph_captured);
   assert(!construction.decode_graph_replayed);
   assert(construction.gated_delta_schedules.size() == 3);
@@ -949,15 +949,15 @@ void run_gated_delta_schedule_tuning_tests() {
     assert(schedule.candidate_median_ms > 0.0F);
     const auto expected_candidate =
         bucket == 1
-            ? brt::kernels::GatedDeltaSchedule::register_resident_decode_sm120
-            : brt::kernels::GatedDeltaSchedule::register_resident_prefill_sm120;
+            ? raftinfer::kernels::GatedDeltaSchedule::register_resident_decode_sm120
+            : raftinfer::kernels::GatedDeltaSchedule::register_resident_prefill_sm120;
     assert(schedule.candidate_schedule == expected_candidate);
     if (schedule.candidate_accepted) {
       assert(schedule.schedule == expected_candidate);
       assert(schedule.rejection_reason.empty());
     } else {
       assert(schedule.schedule ==
-             brt::kernels::GatedDeltaSchedule::register_resident_current);
+             raftinfer::kernels::GatedDeltaSchedule::register_resident_current);
       assert(!schedule.rejection_reason.empty());
     }
   }
@@ -999,14 +999,14 @@ void run_gated_delta_schedule_tuning_tests() {
 void run_executor_online_materialized_parity_tests() {
   assert(cudaSetDevice(0) == cudaSuccess);
   const auto path = write_fixture(make_release_attention_fixture());
-  brt::model::Model model{path.string()};
+  raftinfer::model::Model model{path.string()};
   constexpr std::size_t max_context = 4;
   const auto reference_policy = materialized_policy();
   const std::size_t reference_workspace_bytes =
-      brt::Qwen35Executor::workspace_bytes(model.qwen35_config(), max_context,
+      raftinfer::Qwen35Executor::workspace_bytes(model.qwen35_config(), max_context,
                                            reference_policy);
 
-  brt::DeviceContext device{0, 256U * 1024U * 1024U};
+  raftinfer::DeviceContext device{0, 256U * 1024U * 1024U};
   auto weights = device.upload_qwen35_weights(model);
 
   raft::device_resources resources;
@@ -1014,15 +1014,15 @@ void run_executor_online_materialized_parity_tests() {
       raft::resource::get_cuda_stream(resources).value();
   rmm::mr::cuda_memory_resource cuda_resource;
   rmm::mr::statistics_resource_adaptor statistics{cuda_resource};
-  brt::WorkspaceArena reference_workspace{
+  raftinfer::WorkspaceArena reference_workspace{
       rmm::device_async_resource_ref{statistics}, cuda::stream_ref{stream},
       stream, reference_workspace_bytes};
   cudaDeviceProp properties{};
   assert(cudaGetDeviceProperties(&properties, 0) == cudaSuccess);
   assert(properties.sharedMemPerBlock <=
          static_cast<std::size_t>(std::numeric_limits<int>::max()));
-  const auto context_for = [&](brt::WorkspaceArena &workspace) {
-    return brt::ExecutionContext{
+  const auto context_for = [&](raftinfer::WorkspaceArena &workspace) {
+    return raftinfer::ExecutionContext{
         resources,
         rmm::device_async_resource_ref{statistics},
         stream,
@@ -1034,12 +1034,12 @@ void run_executor_online_materialized_parity_tests() {
     };
   };
   auto reference_context = context_for(reference_workspace);
-  brt::Qwen35Executor reference{reference_context, model.qwen35_config(),
+  raftinfer::Qwen35Executor reference{reference_context, model.qwen35_config(),
                                 *weights, max_context, reference_policy};
 
   const auto reference_diagnostics = reference.diagnostics();
   assert(reference_diagnostics.attention ==
-         brt::Qwen35AttentionImplementation::materialized_reference);
+         raftinfer::Qwen35AttentionImplementation::materialized_reference);
   assert(reference_diagnostics.attention_workspace_bytes > 0);
 
   const std::vector<std::int32_t> prompt{1, 2};
@@ -1053,22 +1053,22 @@ void run_executor_online_materialized_parity_tests() {
   const auto reference_decode_logits = reference_logits;
 
   for (const auto dtype :
-       {brt::Qwen35KvCacheDType::f32, brt::Qwen35KvCacheDType::bf16}) {
-    for (const auto layout : {brt::Qwen35KvCacheLayout::token_major,
-                              brt::Qwen35KvCacheLayout::head_major}) {
+       {raftinfer::Qwen35KvCacheDType::f32, raftinfer::Qwen35KvCacheDType::bf16}) {
+    for (const auto layout : {raftinfer::Qwen35KvCacheLayout::token_major,
+                              raftinfer::Qwen35KvCacheLayout::head_major}) {
       const auto candidate_policy = online_policy(dtype, layout, false);
       const std::size_t online_workspace_bytes =
-          brt::Qwen35Executor::workspace_bytes(
+          raftinfer::Qwen35Executor::workspace_bytes(
               model.qwen35_config(), max_context, candidate_policy);
-      brt::WorkspaceArena online_workspace{
+      raftinfer::WorkspaceArena online_workspace{
           rmm::device_async_resource_ref{statistics}, cuda::stream_ref{stream},
           stream, online_workspace_bytes};
       auto online_context = context_for(online_workspace);
-      brt::Qwen35Executor online{online_context, model.qwen35_config(),
+      raftinfer::Qwen35Executor online{online_context, model.qwen35_config(),
                                  *weights, max_context, candidate_policy};
       const auto online_diagnostics = online.diagnostics();
       assert(online_diagnostics.attention ==
-             brt::Qwen35AttentionImplementation::online_tiled);
+             raftinfer::Qwen35AttentionImplementation::online_tiled);
       assert(online_diagnostics.kv_cache_dtype == dtype);
       assert(online_diagnostics.kv_cache_layout == layout);
       assert(online_diagnostics.attention_workspace_bytes == 0);
@@ -1112,33 +1112,33 @@ void run_executor_online_materialized_parity_tests() {
 
   {
     auto graph_fixture = make_nonzero_release_attention_fixture(16);
-    const auto graph_catalog = brt::gguf::read_catalog(graph_fixture);
+    const auto graph_catalog = raftinfer::gguf::read_catalog(graph_fixture);
     assert(std::any_of(
         graph_fixture.begin() +
             static_cast<std::ptrdiff_t>(graph_catalog.tensor_data_offset),
         graph_fixture.end(), [](std::uint8_t byte) { return byte != 0; }));
     const auto graph_path = write_fixture(std::move(graph_fixture));
-    brt::model::Model graph_model{graph_path.string()};
+    raftinfer::model::Model graph_model{graph_path.string()};
     auto graph_weights = device.upload_qwen35_weights(graph_model);
     constexpr std::size_t graph_max_context = 16;
-    const auto graph_policy = online_policy(brt::Qwen35KvCacheDType::bf16,
-                                            brt::Qwen35KvCacheLayout::head_major,
+    const auto graph_policy = online_policy(raftinfer::Qwen35KvCacheDType::bf16,
+                                            raftinfer::Qwen35KvCacheLayout::head_major,
                                             true);
     const std::size_t graph_workspace_bytes =
-        brt::Qwen35Executor::workspace_bytes(graph_model.qwen35_config(),
+        raftinfer::Qwen35Executor::workspace_bytes(graph_model.qwen35_config(),
                                              graph_max_context, graph_policy);
-    brt::WorkspaceArena repeated_workspace{
+    raftinfer::WorkspaceArena repeated_workspace{
         rmm::device_async_resource_ref{statistics}, cuda::stream_ref{stream},
         stream, graph_workspace_bytes};
-    brt::WorkspaceArena batched_workspace{
+    raftinfer::WorkspaceArena batched_workspace{
         rmm::device_async_resource_ref{statistics}, cuda::stream_ref{stream},
         stream, graph_workspace_bytes};
     auto repeated_context = context_for(repeated_workspace);
     auto batched_context = context_for(batched_workspace);
-    brt::Qwen35Executor repeated{repeated_context,
+    raftinfer::Qwen35Executor repeated{repeated_context,
                                  graph_model.qwen35_config(), *graph_weights,
                                  graph_max_context, graph_policy};
-    brt::Qwen35Executor batched{batched_context,
+    raftinfer::Qwen35Executor batched{batched_context,
                                 graph_model.qwen35_config(), *graph_weights,
                                 graph_max_context, graph_policy};
 
@@ -1148,7 +1148,7 @@ void run_executor_online_materialized_parity_tests() {
     assert(repeated_prefill.position == batched_prefill.position);
 
     std::array<std::int32_t, 8> repeated_tokens{};
-    auto repeated_result = brt::Qwen35ExecutorResult{};
+    auto repeated_result = raftinfer::Qwen35ExecutorResult{};
     auto token = std::int32_t{3};
     for (auto &output : repeated_tokens) {
       repeated_result = repeated.decode(token);
@@ -1171,7 +1171,7 @@ void run_executor_online_materialized_parity_tests() {
     assert_reference_close("decode-greedy-logits", batched_last_logits,
                            repeated_last_logits);
 
-#if defined(BRT_QWEN35_EXECUTOR_TESTING)
+#if defined(RAFTINFER_QWEN35_EXECUTOR_TESTING)
     const auto repeated_state = repeated.state_snapshot_for_tests();
     const auto batched_state = batched.state_snapshot_for_tests();
     assert(batched_state.full_kv_cache == repeated_state.full_kv_cache);
@@ -1188,14 +1188,14 @@ void run_executor_online_materialized_parity_tests() {
 void run_executor_reference_and_allocation_tests() {
   assert(cudaSetDevice(0) == cudaSuccess);
   const auto path =
-      write_fixture(brt::test::make_qwen35_nonzero_bf16_gguf_fixture());
-  brt::model::Model model{path.string()};
+      write_fixture(raftinfer::test::make_qwen35_nonzero_bf16_gguf_fixture());
+  raftinfer::model::Model model{path.string()};
   constexpr std::size_t max_context = 64;
   const auto policy = materialized_policy();
-  const std::size_t workspace_bytes = brt::Qwen35Executor::workspace_bytes(
+  const std::size_t workspace_bytes = raftinfer::Qwen35Executor::workspace_bytes(
       model.qwen35_config(), max_context, policy);
 
-  brt::DeviceContext device{0, 256U * 1024U * 1024U};
+  raftinfer::DeviceContext device{0, 256U * 1024U * 1024U};
   auto weights = device.upload_qwen35_weights(model);
 
   raft::device_resources resources;
@@ -1203,14 +1203,14 @@ void run_executor_reference_and_allocation_tests() {
       raft::resource::get_cuda_stream(resources).value();
   rmm::mr::cuda_memory_resource cuda_resource;
   rmm::mr::statistics_resource_adaptor statistics{cuda_resource};
-  brt::WorkspaceArena workspace{rmm::device_async_resource_ref{statistics},
+  raftinfer::WorkspaceArena workspace{rmm::device_async_resource_ref{statistics},
                                 cuda::stream_ref{stream}, stream,
                                 workspace_bytes};
   cudaDeviceProp properties{};
   assert(cudaGetDeviceProperties(&properties, 0) == cudaSuccess);
   assert(properties.sharedMemPerBlock <=
          static_cast<std::size_t>(std::numeric_limits<int>::max()));
-  brt::ExecutionContext context{resources,
+  raftinfer::ExecutionContext context{resources,
                                 rmm::device_async_resource_ref{statistics},
                                 stream,
                                 workspace,
@@ -1218,20 +1218,20 @@ void run_executor_reference_and_allocation_tests() {
                                 properties.major,
                                 properties.minor,
                                 static_cast<int>(properties.sharedMemPerBlock)};
-  brt::Qwen35Executor executor{context, model.qwen35_config(), *weights,
+  raftinfer::Qwen35Executor executor{context, model.qwen35_config(), *weights,
                                max_context, policy};
   const auto diagnostics = executor.diagnostics();
   assert(diagnostics.attention ==
-         brt::Qwen35AttentionImplementation::materialized_reference);
-  assert(diagnostics.kv_cache_dtype == brt::Qwen35KvCacheDType::f32);
-  assert(diagnostics.kv_cache_layout == brt::Qwen35KvCacheLayout::token_major);
+         raftinfer::Qwen35AttentionImplementation::materialized_reference);
+  assert(diagnostics.kv_cache_dtype == raftinfer::Qwen35KvCacheDType::f32);
+  assert(diagnostics.kv_cache_layout == raftinfer::Qwen35KvCacheLayout::token_major);
   assert(!diagnostics.decode_graph_captured);
   assert(!diagnostics.decode_graph_replayed);
   assert(diagnostics.attention_workspace_bytes > 0);
 
   const std::vector<std::int32_t> prompt{1, 2, 3, 4};
   const auto expected_prefill =
-      brt::reference::qwen35_execute_model(model, prompt);
+      raftinfer::reference::qwen35_execute_model(model, prompt);
   const auto actual_prefill = executor.prefill(prompt);
   std::vector<float> actual_logits(model.qwen35_config().vocabulary_size);
   executor.copy_last_logits(actual_logits);
@@ -1241,7 +1241,7 @@ void run_executor_reference_and_allocation_tests() {
 
   const std::vector<std::int32_t> prompt_and_decode{1, 2, 3, 4, 5};
   const auto expected_decode =
-      brt::reference::qwen35_execute_model(model, prompt_and_decode);
+      raftinfer::reference::qwen35_execute_model(model, prompt_and_decode);
   const auto actual_decode = executor.decode(5);
   executor.copy_last_logits(actual_logits);
   assert(actual_decode.position == prompt.size());
@@ -1276,7 +1276,7 @@ void run_executor_reference_and_allocation_tests() {
 } // namespace
 
 int main() {
-  const char *opt_in = std::getenv("BRT_RUN_GPU_TESTS");
+  const char *opt_in = std::getenv("RAFTINFER_RUN_GPU_TESTS");
   if (opt_in == nullptr || std::string{opt_in} != "1") {
     return 77;
   }
