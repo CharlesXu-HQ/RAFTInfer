@@ -138,9 +138,9 @@ field names. No v1 compatibility reader is added.
 
 Tracked source, tests, scripts, current documentation, CI, examples, fixtures,
 and generated public assets must contain no old project identifier after the
-rename. The only prose exceptions are this migration design and the changelog,
-where the former identifiers may appear solely to describe historical
-old-to-new mappings. Git history is not rewritten.
+rename. The only prose exceptions are this migration design, its implementation
+plan, and the changelog, where the former identifiers may appear solely to
+describe historical old-to-new mappings. Git history is not rewritten.
 
 References to `bw24` remain only where they describe provenance or the external
 kernel reuse policy. The README does not compare RAFTInfer performance with
