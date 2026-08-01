@@ -37,10 +37,18 @@ def record(arm, prefill_raftinfer, prefill_llama, generation_raftinfer,
 
 
 VALID_RECORDS = [
-    record("pp128", 10, 5, 11, 10, 2, 1.1),
-    record("pp512", 20, 10, 21, 20, 2, 1.05),
-    record("tg128_pp512", 30, 15, 31, 30, 2, 1.033),
+    record("pp128", 101, 51, 111, 61, 1.980, 1.820),
+    record("pp512", 202, 102, 212, 112, 1.980, 1.890),
+    record("tg128_pp512", 303, 153, 313, 163, 1.980, 1.920),
 ]
+
+EXPECTED_GROUPS = {
+    ("Prefill", "pp128"): ("101.00 tok/s", "51.00 tok/s", "RAFTInfer 1.980x"),
+    ("Prefill", "pp512"): ("202.00 tok/s", "102.00 tok/s", "RAFTInfer 1.980x"),
+    ("Generation", "pp128"): ("111.00 tok/s", "61.00 tok/s", "RAFTInfer 1.820x"),
+    ("Generation", "pp512"): ("212.00 tok/s", "112.00 tok/s", "RAFTInfer 1.890x"),
+    ("Generation", "tg128 pp512"): ("313.00 tok/s", "163.00 tok/s", "RAFTInfer 1.920x"),
+}
 
 
 class BenchmarkChartTest(unittest.TestCase):
@@ -69,14 +77,49 @@ class BenchmarkChartTest(unittest.TestCase):
         self.assertEqual(root.attrib["width"], "1200")
         self.assertEqual(root.attrib["height"], "620")
         text = output.read_text()
-        for expected in (
-            "Prefill", "Generation", "RAFTInfer", "llama.cpp",
-            "10.00 tok/s", "20.00 tok/s", "30.00 tok/s",
-            "11.00 tok/s", "21.00 tok/s", "31.00 tok/s",
-            "5.00 tok/s", "10.00 tok/s",
-            "2.000x", "1.100x", "1.050x", "1.033x",
-        ):
+        for expected in ("Prefill", "Generation", "RAFTInfer", "llama.cpp"):
             self.assertIn(expected, text)
+
+    def test_scopes_each_series_label_to_its_panel_and_arm_group(self):
+        """Catches labels swapped between chart groups despite matching global text."""
+        completed, output = self.run_renderer(VALID_RECORDS)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        root = ET.parse(output).getroot()
+        namespace = {"svg": "http://www.w3.org/2000/svg"}
+        texts = root.findall("svg:text", namespace)
+        categories = [
+            item for item in texts
+            if item.attrib.get("y") == "534" and (item.text or "") in {"pp128", "pp512", "tg128 pp512"}
+        ]
+        self.assertEqual(len(categories), 5)
+        for (panel, arm), expected in EXPECTED_GROUPS.items():
+            category = next(
+                item for item in categories
+                if item.text == arm and ((panel == "Prefill") == (float(item.attrib["x"]) < 600))
+            )
+            center = float(category.attrib["x"])
+            panel_categories = sorted(
+                float(item.attrib["x"]) for item in categories
+                if (float(item.attrib["x"]) < 600) == (panel == "Prefill")
+            )
+            position = panel_categories.index(center)
+            left = 40 if panel == "Prefill" else 660
+            right = 540 if panel == "Prefill" else 1160
+            if position:
+                left = (panel_categories[position - 1] + center) / 2
+            if position + 1 < len(panel_categories):
+                right = (center + panel_categories[position + 1]) / 2
+            group_text = [
+                item.text for item in texts
+                if left < float(item.attrib.get("x", "-1")) < right
+            ]
+            for label in expected:
+                self.assertEqual(group_text.count(label), 1, (panel, arm, label, group_text))
+
+        value_labels = [item.text for item in texts if (item.text or "").endswith(" tok/s")]
+        ratio_labels = [item.text for item in texts if (item.text or "").startswith("RAFTInfer ")]
+        self.assertEqual(len(value_labels), 10)
+        self.assertEqual(len(ratio_labels), 5)
 
     def test_rejects_invalid_schema(self):
         """Catches accepting an unsupported record schema."""

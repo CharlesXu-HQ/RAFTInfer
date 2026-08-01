@@ -61,6 +61,17 @@ bar whose top was `185.0`) and is GREEN after the layout change. The asset test
 also locks the outward-anchor output. A Quick Look PNG render was visually
 reviewed for unclipped panels, labels, zero baselines, and separated ratios.
 
+## Fix round 1
+
+The renderer fixture now assigns a distinct RAFTInfer value, llama.cpp value,
+and ratio to every displayed panel/arm group. The former global `assertIn`
+checks passed with duplicated values, demonstrating that they could not detect
+a label moved to the wrong group. The replacement parses SVG XML category
+anchors and group x-ranges, then requires each expected RAFTInfer value,
+llama.cpp value, and ratio exactly once in its Prefill/Generation arm group,
+with 10 value labels and 5 ratio labels overall. Invalid schema, missing arm,
+parity, and performance-floor refusals remain covered.
+
 ## Concerns
 
 The accepted comparison is limited to the recorded Qwen3.5-9B BF16 RTX 5090
