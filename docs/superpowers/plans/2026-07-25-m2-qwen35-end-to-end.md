@@ -522,7 +522,7 @@ Rust 2024, GGUF v3, pinned llama.cpp.
 - Create: `scripts/qwen35-parity.sh`
 - Create: `scripts/qwen35-benchmark.sh`
 - Create: `docs/provenance/qwen35-9b.md`
-- Create: `docs/m2-verification.md`
+- Create: `docs/verification/m2.md`
 - Modify: `README.md`
 
 **Interfaces:**

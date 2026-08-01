@@ -39,22 +39,22 @@ Tests added first:
 RED command attempted:
 
 ```bash
-cmake --build build/host --target brt_cublaslt_matmul_test brt_qwen35_executor_test
+cmake --build build/host --target raftinfer_cublaslt_matmul_test raftinfer_qwen35_executor_test
 ```
 
 Output:
 
 ```text
-ninja: error: unknown target 'brt_cublaslt_matmul_test'
+ninja: error: unknown target 'raftinfer_cublaslt_matmul_test'
 ```
 
-Reason: existing local configured tree is host-only (`BRT_ENABLE_CUDA=OFF`), so
+Reason: existing local configured tree is host-only (`RAFTINFER_ENABLE_CUDA=OFF`), so
 the CUDA test targets are not generated.
 
 CUDA configure command attempted:
 
 ```bash
-cmake -S . -B build/cuda -G Ninja -DBRT_ENABLE_CUDA=ON -DBRT_BUILD_TESTS=ON
+cmake -S . -B build/cuda -G Ninja -DRAFTINFER_ENABLE_CUDA=ON -DRAFTINFER_BUILD_TESTS=ON
 ```
 
 Output:
@@ -67,7 +67,7 @@ Compiler requires the CUDA toolkit. Please set the CUDAToolkit_ROOT variable.
 Docker toolchain check:
 
 ```bash
-docker images brt-dev:26.06-cuda13
+docker images raftinfer-dev:26.06-cuda13
 ```
 
 Output:
@@ -121,8 +121,8 @@ Result:
 
 ```text
 100% tests passed, 0 tests failed out of 18
-Rust tests: brt-cli 3 passed; cli 14 passed; brt-runtime 0 passed;
-engine 14 passed; tokenizer 18 passed; brt-sys 0 passed; doc-tests passed.
+Rust tests: raftinfer-cli 3 passed; cli 14 passed; raftinfer-runtime 0 passed;
+engine 14 passed; tokenizer 18 passed; raftinfer-sys 0 passed; doc-tests passed.
 ```
 
 Whitespace:
@@ -136,7 +136,7 @@ Result: exit 0, no output.
 CUDA target checks unavailable locally:
 
 ```bash
-cmake -S . -B build/cuda -G Ninja -DBRT_ENABLE_CUDA=ON -DBRT_BUILD_TESTS=ON
+cmake -S . -B build/cuda -G Ninja -DRAFTINFER_ENABLE_CUDA=ON -DRAFTINFER_BUILD_TESTS=ON
 ```
 
 Result: fails before target generation because `nvcc` is not installed on this
@@ -155,17 +155,17 @@ host.
 
 ## Target-Only Verification Gaps
 
-- Could not build `brt_cublaslt_matmul_test` or `brt_qwen35_executor_test`
+- Could not build `raftinfer_cublaslt_matmul_test` or `raftinfer_qwen35_executor_test`
   because no CUDA toolkit is installed locally.
 - Could not run GPU correctness/performance smoke because there is no local
   `nvidia-smi`/RTX 50 GPU and the repo CUDA dev image is absent.
 - Target owner should run:
 
 ```bash
-cmake -S . -B build/cuda -G Ninja -DBRT_ENABLE_CUDA=ON -DBRT_BUILD_TESTS=ON
-cmake --build build/cuda --target brt_cublaslt_matmul_test brt_qwen35_executor_test
-BRT_RUN_GPU_TESTS=1 ctest --test-dir build/cuda --output-on-failure \
-  -R 'brt_cublaslt_matmul_test|brt_qwen35_executor_test|brt_qwen35_cuda_graph_test'
+cmake -S . -B build/cuda -G Ninja -DRAFTINFER_ENABLE_CUDA=ON -DRAFTINFER_BUILD_TESTS=ON
+cmake --build build/cuda --target raftinfer_cublaslt_matmul_test raftinfer_qwen35_executor_test
+RAFTINFER_RUN_GPU_TESTS=1 ctest --test-dir build/cuda --output-on-failure \
+  -R 'raftinfer_cublaslt_matmul_test|raftinfer_qwen35_executor_test|raftinfer_qwen35_cuda_graph_test'
 scripts/gpu-smoke.sh
 git diff --check
 ```
@@ -204,8 +204,8 @@ Output summary:
 
 ```text
 100% tests passed, 0 tests failed out of 18
-Rust tests: brt-cli 3 passed; cli 14 passed; brt-runtime 0 passed;
-engine 14 passed; tokenizer 18 passed; brt-sys 0 passed; doc-tests passed.
+Rust tests: raftinfer-cli 3 passed; cli 14 passed; raftinfer-runtime 0 passed;
+engine 14 passed; tokenizer 18 passed; raftinfer-sys 0 passed; doc-tests passed.
 ```
 
 Whitespace:
@@ -262,8 +262,8 @@ Output summary:
 
 ```text
 100% tests passed, 0 tests failed out of 18
-Rust tests: brt-cli 3 passed; cli 14 passed; brt-runtime 0 passed;
-engine 14 passed; tokenizer 18 passed; brt-sys 0 passed; doc-tests passed.
+Rust tests: raftinfer-cli 3 passed; cli 14 passed; raftinfer-runtime 0 passed;
+engine 14 passed; tokenizer 18 passed; raftinfer-sys 0 passed; doc-tests passed.
 ```
 
 Target CUDA/NVCC/GPU rerun remains delegated to the controller. Local host still
@@ -310,8 +310,8 @@ Output summary:
 
 ```text
 100% tests passed, 0 tests failed out of 18
-Rust tests: brt-cli 3 passed; cli 14 passed; brt-runtime 0 passed;
-engine 14 passed; tokenizer 18 passed; brt-sys 0 passed; doc-tests passed.
+Rust tests: raftinfer-cli 3 passed; cli 14 passed; raftinfer-runtime 0 passed;
+engine 14 passed; tokenizer 18 passed; raftinfer-sys 0 passed; doc-tests passed.
 ```
 
 Target CUDA/NVCC/GPU repeat gate remains delegated to the controller. Local host
@@ -323,14 +323,14 @@ Commit validated: `243e5bca71d090fb4d1add144bf0217792886ca2`
 
 - CUDA 13.2 `sm_120a` compile passed.
 - Focused GPU tests passed 3/3:
-  `brt_cublaslt_matmul_test`, `brt_qwen35_executor_test`, and
-  `brt_qwen35_cuda_graph_test`.
+  `raftinfer_cublaslt_matmul_test`, `raftinfer_qwen35_executor_test`, and
+  `raftinfer_qwen35_cuda_graph_test`.
 - Graph repeat gate passed: `ctest --repeat until-fail:12` completed 12/12
   successful runs after Fix Round 3.
 - Independent review approved.
 - Real Qwen3.5-9B BF16 parity passed 4/4 exact greedy-token prompts with 32
   generated tokens each. Evidence:
-  `/home/charles/brt-validation/task7-243e5bc/qwen35-task7-parity.jsonl`.
+  `<artifact-root>`.
 - Post-verification preflight was idle: 31972 MiB free, 0% utilization, 35C.
 
 Task 7 is complete.

@@ -1206,7 +1206,7 @@ git commit -m "build: add reproducible GPU smoke environment"
 
 **Files:**
 - Create: `docs/provenance/dependencies.md`
-- Create: `docs/m0-verification.md`
+- Create: `docs/verification/m0.md`
 - Modify: `README.md`
 
 **Interfaces:**
@@ -1234,7 +1234,7 @@ The project does not vendor or import `bw24` code in M0.
 
 - [ ] **Step 2: Write the verification record from actual outputs**
 
-Create `docs/m0-verification.md` containing:
+Create `docs/verification/m0.md` containing:
 
 ```markdown
 # M0 Verification
@@ -1315,10 +1315,10 @@ Expected: host checks pass, GPU JSON matches the golden file, no RAFTINFER proce
 - [ ] **Step 5: Commit the M0 record**
 
 ```bash
-git add README.md docs/provenance/dependencies.md docs/m0-verification.md
+git add README.md docs/provenance/dependencies.md docs/verification/m0.md
 git commit -m "docs: record M0 foundation verification"
 ```
 
 ## M0 completion gate
 
-M0 is complete only when all six task commits exist, `scripts/local-check.sh` passes on the local host, the shared-GPU preflight passes during an uncontended window, `scripts/gpu-smoke.sh` returns the exact golden JSON on the RTX 5090, the container exits without leaving a GPU process, and `docs/m0-verification.md` records actual rather than anticipated evidence.
+M0 is complete only when all six task commits exist, `scripts/local-check.sh` passes on the local host, the shared-GPU preflight passes during an uncontended window, `scripts/gpu-smoke.sh` returns the exact golden JSON on the RTX 5090, the container exits without leaving a GPU process, and `docs/verification/m0.md` records actual rather than anticipated evidence.

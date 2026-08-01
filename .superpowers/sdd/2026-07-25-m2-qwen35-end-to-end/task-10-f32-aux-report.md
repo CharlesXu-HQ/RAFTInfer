@@ -12,17 +12,17 @@ matrices are F16/BF16 but norms and DeltaNet auxiliary tensors are F32.
 Intended RED command on CUDA target after syncing only the test/fixture changes:
 
 ```bash
-cd /home/charles/brt-workspace
+cd <repo>
 scripts/gpu-preflight.sh
-cmake --build build/cuda --target brt_cuda_weights_test
-./build/cuda/cpp/brt_cuda_weights_test
+cmake --build build/cuda --target raftinfer_cuda_weights_test
+./build/cuda/cpp/raftinfer_cuda_weights_test
 ```
 
 Expected failure before the production fix: the new mixed F16/BF16 primary plus
 F32 auxiliary fixture reaches immutable upload and throws `CudaWeightError`
 from the old unsupported-primary-type path for an auxiliary tensor.
 
-Actual RED status: not observed by this agent. SSH to `charles@192.168.124.8`
+Actual RED status: not observed by this agent. SSH to `<target-host>`
 is reachable only through password auth in this session, and the sandbox
 review rejected non-interactive password SSH to the target. Local CUDA
 configuration also fails because `nvcc` is unavailable.
@@ -49,9 +49,9 @@ Commands run locally:
 git diff --check -- cpp/model/cuda_weights.cu cpp/tests/qwen35_gguf_fixture.hpp cpp/tests/cuda_weights_test.cu
 cmake --build build/host
 cmake --build build/m2a-release
-ctest --test-dir build/host --output-on-failure -R 'brt_(gguf_reader|session|c_api|qwen35_executor_reference)_test'
-ctest --test-dir build/m2a-release --output-on-failure -R 'brt_(qwen35_manifest|qwen35_config|qwen35_fixture|qwen35_state|gguf_reader|session|c_api|qwen35_executor_reference)_test'
-cmake -S cpp -B /private/tmp/brt-cuda-probe -DBRT_ENABLE_CUDA=ON -DBRT_BUILD_TESTS=ON
+ctest --test-dir build/host --output-on-failure -R 'raftinfer_(gguf_reader|session|c_api|qwen35_executor_reference)_test'
+ctest --test-dir build/m2a-release --output-on-failure -R 'raftinfer_(qwen35_manifest|qwen35_config|qwen35_fixture|qwen35_state|gguf_reader|session|c_api|qwen35_executor_reference)_test'
+cmake -S cpp -B /private/tmp/raftinfer-cuda-probe -DRAFTINFER_ENABLE_CUDA=ON -DRAFTINFER_BUILD_TESTS=ON
 ```
 
 Observed output summary:
@@ -89,7 +89,7 @@ This commit: `fix: accept Qwen3.5 F32 auxiliary CUDA weights`.
 
 ## Risks
 
-- Required CUDA RED/GREEN evidence for `brt_cuda_weights_test` is missing from
+- Required CUDA RED/GREEN evidence for `raftinfer_cuda_weights_test` is missing from
   this agent because remote password SSH automation was rejected by sandbox
   review and local CUDA tooling is unavailable.
 - F16 conversion is implemented in host code for upload-time conversion; CUDA

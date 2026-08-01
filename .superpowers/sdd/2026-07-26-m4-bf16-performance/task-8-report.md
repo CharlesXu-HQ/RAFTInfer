@@ -48,7 +48,7 @@ Base: `575445c`
 ## Remaining controller-owned validation
 
 - CUDA 13.2 `sm_120a` compile on the RTX5090 target.
-- `brt_qwen35_cuda_delta_test` and `brt_qwen35_executor_test` on target.
+- `raftinfer_qwen35_cuda_delta_test` and `raftinfer_qwen35_executor_test` on target.
 - zero decode allocation gate.
 - four-prompt, 32-token exact Qwen3.5-9B BF16 greedy parity.
 - focused microbenchmark evidence for current vs candidate schedules at buckets

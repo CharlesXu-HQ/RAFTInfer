@@ -19,7 +19,7 @@ changes:
 
 ```text
 $ tests/public-surface-test.sh
-unexpected workspace packages: ['brt-cli', 'brt-runtime', 'brt-sys']
+unexpected workspace packages: ['raftinfer-cli', 'raftinfer-runtime', 'raftinfer-sys']
 ```
 
 The test first configured, built, installed, and consumed the Task 2 RAFTInfer
@@ -89,11 +89,11 @@ Results:
 
 ## Concerns
 
-The tokenizer-spec version-1 wire magic remains `BRTTOK\0` in the parser and
+The tokenizer-spec version-1 wire magic remains `<legacy-prefix>TOK\0` in the parser and
 its corruption fixtures. This is serialized format compatibility, not an
 active Rust package, API, environment, native-library, or CLI alias. Changing
 the bytes would be a wire-format migration outside Task 3; Task 4 should decide
 whether schema/fixture migration requires a new tokenizer-spec version.
 
-No `brt`/`BRT` compatibility package, import, symbol, environment fallback,
+No `raftinfer`/`<legacy-project>` compatibility package, import, symbol, environment fallback,
 library fallback, CLI binary, or wrapper was retained.

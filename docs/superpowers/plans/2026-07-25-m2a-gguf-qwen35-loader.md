@@ -122,7 +122,7 @@ Commit: `feat: expose validated GGUF models through coarse ABI`
 **Files**
 
 - Modify: `README.md`
-- Create: `docs/m2a-verification.md`
+- Create: `docs/verification/m2a.md`
 
 Run fresh Debug and Release host builds, all CTest tests, Cargo tests, formatting
 checks, and the existing local check script. Record exact commands, results,

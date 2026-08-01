@@ -464,7 +464,7 @@ git commit -m "test: add operator correctness metrics"
 - Create: `cpp/benchmarks/benchmark_record.cpp`
 - Create: `cpp/tests/benchmark_record_test.cpp`
 - Modify: `cpp/CMakeLists.txt`
-- Create: `docs/m1-verification.md`
+- Create: `docs/verification/m1.md`
 - Modify: `README.md`
 
 **Interfaces:**
@@ -499,7 +499,7 @@ kernels.
 
 Change README's current milestone to M1 and document that M1 supplies contracts
 and CPU oracles but still does not load Qwen3 Dense. Create
-`docs/m1-verification.md` with exact local and target commands, evidence fields,
+`docs/verification/m1.md` with exact local and target commands, evidence fields,
 and the distinction between correctness-valid and publishable performance.
 
 - [ ] **Step 5: Run all local checks**
@@ -514,7 +514,7 @@ Expected: all CTest and Cargo tests pass; formatting and diff checks pass.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add cpp/benchmarks cpp/tests/benchmark_record_test.cpp cpp/CMakeLists.txt README.md docs/m1-verification.md
+git add cpp/benchmarks cpp/tests/benchmark_record_test.cpp cpp/CMakeLists.txt README.md docs/verification/m1.md
 git commit -m "feat: add benchmark evidence records"
 ```
 
@@ -524,7 +524,7 @@ git commit -m "feat: add benchmark evidence records"
 
 **Files:**
 - Modify: `scripts/gpu-smoke.sh`
-- Modify: `docs/m1-verification.md`
+- Modify: `docs/verification/m1.md`
 - Modify: `docs/provenance/dependencies.md`
 
 **Interfaces:**
@@ -570,7 +570,7 @@ preallocated workspace allocation/reset probe completed.
 - [ ] **Step 4: Record evidence and rerun local checks**
 
 Record commit, image digest, GPU, driver, CUDA, RAFT/RMM versions, pre/post GPU
-state, test output, and cleanup state in `docs/m1-verification.md`. Update
+state, test output, and cleanup state in `docs/verification/m1.md`. Update
 dependency provenance only if exact versions changed.
 
 Run:
@@ -586,7 +586,7 @@ Expected: all checks pass and only intended evidence files differ.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add scripts/gpu-smoke.sh docs/m1-verification.md docs/provenance/dependencies.md
+git add scripts/gpu-smoke.sh docs/verification/m1.md docs/provenance/dependencies.md
 git commit -m "docs: record M1 target verification"
 ```
 

@@ -47,7 +47,7 @@ Base: `adc06d8`
   decode API with an explicit layout parameter and executor tests require
   head-major policies to stay online rather than falling back.
 - Local CUDA RED/GREEN compile/run could not be collected on this Mac worktree
-  because `cmake -S . -B build/cuda -G Ninja -DBRT_ENABLE_CUDA=ON` fails before
+  because `cmake -S . -B build/cuda -G Ninja -DRAFTINFER_ENABLE_CUDA=ON` fails before
   compiling tests with `Failed to find nvcc`.
 
 ## Local verification

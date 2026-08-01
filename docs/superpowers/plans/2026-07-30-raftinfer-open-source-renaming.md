@@ -492,11 +492,11 @@ git commit -m "refactor: rename automation and benchmark schema"
 - Create: `CHANGELOG.md`
 - Create: `CITATION.cff`
 - Create: `docs/architecture.md`
-- Move: `docs/m0-verification.md` → `docs/verification/m0.md`
-- Move: `docs/m1-verification.md` → `docs/verification/m1.md`
-- Move: `docs/m2-verification.md` → `docs/verification/m2.md`
-- Move: `docs/m2a-verification.md` → `docs/verification/m2a.md`
-- Move: `docs/m4-verification.md` → `docs/verification/m4.md`
+- Move: `docs/verification/m0.md` → `docs/verification/m0.md`
+- Move: `docs/verification/m1.md` → `docs/verification/m1.md`
+- Move: `docs/verification/m2.md` → `docs/verification/m2.md`
+- Move: `docs/verification/m2a.md` → `docs/verification/m2a.md`
+- Move: `docs/verification/m4.md` → `docs/verification/m4.md`
 - Modify: `NOTICE`
 - Modify: all current tracked Markdown files and relative links
 

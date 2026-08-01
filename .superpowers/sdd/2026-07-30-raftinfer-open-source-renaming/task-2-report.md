@@ -5,9 +5,9 @@
 Before production changes, the updated source-contract tests failed for the
 intended legacy production spellings:
 
-- `c_api_source_test.cmake`: legacy `<brt/...>` include in `c_api.cpp`.
-- `device_context_source_test.cmake`: legacy `namespace brt` in device code.
-- `qwen35_executor_source_test.cmake`: legacy `namespace brt` in executor code.
+- `c_api_source_test.cmake`: legacy `<raftinfer/...>` include in `c_api.cpp`.
+- `device_context_source_test.cmake`: legacy `namespace raftinfer` in device code.
+- `qwen35_executor_source_test.cmake`: legacy `namespace raftinfer` in executor code.
 
 ## GREEN
 

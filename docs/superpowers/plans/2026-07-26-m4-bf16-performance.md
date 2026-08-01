@@ -749,7 +749,7 @@ git commit -m "perf: add validated BF16 Qwen3.5 KV cache"
 - Create: `tests/bf16-gate-script-test.sh`
 - Modify: `scripts/qwen35-benchmark.sh`
 - Modify: `scripts/local-check.sh`
-- Create: `docs/m4-verification.md`
+- Create: `docs/verification/m4.md`
 
 **Interfaces:**
 - Consumes the two JSONL benchmark arms from `qwen35-benchmark.sh`.
@@ -799,13 +799,13 @@ performance gate pass.
 
 Write exact commit, binary/model hashes, selected kernels, cache dtype, graph
 status, peak RMM bytes, PP128, PP512, and TG128@PP512 results to
-`docs/m4-verification.md`.
+`docs/verification/m4.md`.
 
 - [ ] **Step 6: Commit**
 
 ```bash
 git add scripts/qwen35-bf16-gate.sh scripts/qwen35-benchmark.sh \
   scripts/local-check.sh tests/bf16-gate-script-test.sh \
-  docs/m4-verification.md
+  docs/verification/m4.md
 git commit -m "test: enforce BF16 performance release gate"
 ```

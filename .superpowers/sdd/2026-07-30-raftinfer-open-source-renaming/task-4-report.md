@@ -9,7 +9,7 @@ failed with exit code 43 and `provenance JSON is not a pinned BF16 artifact`,
 because the prior gate accepted schema v1.
 
 Updated the C API tokenizer-wire assertion to `RIFTOK`; the focused C++ test
-failed because the native serializer was still producing `BRTTOK`. Updated the
+failed because the native serializer was still producing `<legacy-prefix>TOK`. Updated the
 Qwen fixture parser expectation to `RIFQ35F1`; its focused test then failed
 against the old binary fixture magic.
 
@@ -20,7 +20,7 @@ against the old binary fixture magic.
 - Benchmark/parity/provenance records now require and emit schema version 2,
   `.raftinfer`, and `provenance.raftinfer_model_sha256`.
 - Added executable negative fixtures: schema-v1 provenance and the old
-  `brt_model_sha256` field are rejected.
+  `raftinfer_model_sha256` field are rejected.
 - Renamed tokenizer wire magic to `RIFTOK\\0` and Qwen fixture magic to
   `RIFQ35F1`; updated the native producer/parser, Rust parser/tests, exporter,
   binary fixture, and fixture checksum.
@@ -62,7 +62,7 @@ updated parity test executes the default path successfully and records all
 four calls.
 
 The benchmark gate test also now replaces a valid schema-v2 top-level
-`.raftinfer` object with legacy `.brt`, while leaving the provenance fields
+`.raftinfer` object with legacy `.raftinfer`, while leaving the provenance fields
 valid. The gate rejects it with `resolved attention must be online_tiled`.
 
 Fix-round covering commands passed:
