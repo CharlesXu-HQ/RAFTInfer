@@ -1,126 +1,113 @@
 # RAFTInfer
 
-RAFTInfer is an open-source Qwen3.5 inference runtime for
-RTX 50-series GPUs. RAFT and RMM provide the device-resource, stream, and memory
-foundation; performance-critical model operators are implemented in project
-C++/CUDA code and selected through stable execution plans.
+[简体中文](README.zh-CN.md)
 
-Current status: M2 is **accepted** for the Qwen3.5-9B text path on RTX 50. The
-CUDA build and all 23 target CTest tests pass, four real-model prompts match a
-pinned llama.cpp reference exactly under greedy decoding, and both PP128/TG128
-and PP512/TG128 exceed the required 0.8 throughput ratio. Exact evidence and
-reproduction paths are recorded in
-[docs/verification/m2.md](docs/verification/m2.md).
+Correctness-gated RAFT/RMM inference with custom CUDA kernels for RTX
+50-series GPUs.
+
+![Qwen3.5-9B BF16 RTX 5090 throughput](docs/assets/qwen35-bf16-rtx5090.svg)
+
+## Benchmark summary
+
+Accepted Qwen3.5-9B BF16 evidence on an NVIDIA GeForce RTX 5090 compares
+RAFTInfer with llama.cpp only. RAFTInfer is higher in all five displayed
+measurements: PP128 and PP512 prefill, plus PP128, PP512, and TG128@PP512
+generation. The plotted ratios are the exact source ratios rounded to three
+decimals. See [benchmark methodology](docs/benchmarks.md) and the committed
+[schema-v2 evidence](benchmarks/results/qwen35-9b-bf16-rtx5090.jsonl).
+
+The protocol used 5 warmups and 20 measurements per arm, BF16 Qwen3.5-9B
+revision `c202236235762e1c871ad0ccb60c8ee5ba337b9a`, pinned llama.cpp revision
+`aedb2a5e9ca3d4064148bbb919e0ddc0c1b70ab3`, and exact greedy parity for 4
+prompts × 32 tokens. Results are a single accepted RTX 5090 environment, not a
+general hardware or workload claim.
 
 ## Scope
 
-- RTX 50-series consumer Blackwell only (`sm_120a`). RTX 40 is not supported.
-- Qwen3.5-9B text generation in BF16/F16. Vision, MTP, and general quantized
-  execution are deferred.
-- C++ owns GPU pointers, streams, events, RMM allocations, persistent model
-  state, cuBLASLt plans, and custom kernel launches.
-- Rust owns the safe public runtime, tokenizer/chat template, generation loop,
-  machine-readable CLI output, and benchmark orchestration.
-- Rust crosses the coarse C ABI at model/session operations such as prefill,
-  decode, reset, and logits copy; it does not call individual CUDA operators.
-- A `bw24` custom operator may be reused directly when it is already optimized
-  and passes license, provenance, functional/numerical correctness, and RTX 50
-  performance gates. The current M2 CUDA operators are project-native because
-  the audited `bw24` material contained no reusable optimized implementation.
+- RTX 50-series Blackwell (`sm_120a`) only; other GPU families are unsupported.
+- Qwen3.5-9B text generation with BF16 weights and BF16 KV cache in the
+  accepted evidence.
+- RAFT and RMM form the device-resource and allocation foundation. Project C++
+  and CUDA own the high-performance model operators; Rust provides the coarse
+  ABI/runtime, tokenizer, CLI, and orchestration layer.
+- Reuse of `bw24` material is permitted only through the documented license,
+  provenance, correctness, numerical, and RTX 50 performance gate. RAFTInfer
+  does not publish a `bw24` performance comparison.
 
-## What M2 contains
+## Architecture
 
-- Bounds-checked GGUF v3 catalog, Qwen3.5 hybrid block-plan validation, named
-  immutable CUDA weights, and fixed cuBLASLt projection plans.
-- Independent CPU FP32 reference semantics for the full hybrid executor.
-- FP32-activation CUDA primitives with BF16/F16 projection boundaries for
-  RMSNorm, RoPE/full attention, Gated DeltaNet, gated MLP, residual flow,
-  prefill, decode, and persistent session state.
-- RMM-backed fixed workspace/state allocation; execution loops are tested to
-  perform no additional RMM allocation.
-- Rust Qwen3.5 tokenizer/chat-template handling and greedy generation.
-- JSON generation output carrying both prompt and generated token IDs.
-- One-process prefill/decode benchmark support.
-- RMM logical-allocation peak tracking exposed through the stable C ABI and
-  included in benchmark JSON.
-- Reproducible GGUF preparation, fixed-corpus llama.cpp parity, and fair
-  PP128/PP512 + TG128 benchmark scripts.
+```text
+Rust CLI/runtime → coarse C ABI → C++ execution plans → RAFT/RMM → cuBLASLt + custom CUDA kernels
+```
 
-## Host verification
+The ABI crosses model and session operations such as prefill, decode, reset,
+and logits transfer; Rust does not dispatch individual CUDA operators. Details:
+[docs/architecture.md](docs/architecture.md).
+
+## Quick start
 
 ```bash
+cmake -S . -B build/host -G Ninja -DRAFTINFER_ENABLE_CUDA=OFF
+cmake --build build/host
+cargo run -p raftinfer-cli -- info
 scripts/local-check.sh
-cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-`local-check.sh` builds the host-only C++ implementation, runs CTest, verifies
-native static/shared library selection, exercises the parity/benchmark/GGUF
-scripts with controlled fakes, checks Rust formatting, and runs all Rust tests.
-
-## CUDA build and CLI
-
-The CUDA build requires CUDA 13, RAFT 26.06, and RMM 26.06. The repository's
-development image supplies this environment.
+On an RTX 50 host, build with CUDA and use the renamed CLI:
 
 ```bash
-cmake -S . -B build/cuda -G Ninja \
-  -DRAFTINFER_ENABLE_CUDA=ON \
-  -DRAFTINFER_BUILD_TESTS=ON
-cmake --build build/cuda
+cargo run -p raftinfer-cli -- generate \
+  --model /path/to/Qwen3.5-9B-c202236-bf16.gguf \
+  --prompt "Hello" --max-new-tokens 32 --context 4096 \
+  --kv-cache-dtype bf16 --kv-cache-layout head-major --output-format json
+```
+
+## Parity and performance reproduction
+
+Prepare the pinned BF16 GGUF and run target-GPU gates in order: shared-GPU
+preflight, exact greedy parity, benchmark, then the BF16 gate.
+
+```bash
 scripts/gpu-preflight.sh
-ctest --test-dir build/cuda --output-on-failure
-
-RAFTINFER_ENABLE_CUDA=ON cargo build --release -p raftinfer-cli
-target/release/raftinfer generate \
-  --model /path/to/Qwen3.5-9B-bf16.gguf \
-  --prompt "用一句话解释 RAFT 在本项目中的作用。" \
-  --max-new-tokens 32 \
-  --context 4096 \
-  --output-format json
-```
-
-CUDA builds default `raftinfer_cpp` to a shared native library so the CMake target
-encapsulates the CUDA/RAFT/RMM/cuBLASLt dependency closure. Host builds default
-to a static library. `RAFTINFER_NATIVE_LIBRARY_TYPE=STATIC|SHARED` can override this
-choice explicitly.
-
-## Parity and performance
-
-Prepare a new artifact only from pinned model, Transformers, converter, and
-reference revisions:
-
-```bash
-HF_MODEL_DIR=/path/to/Qwen3.5-9B \
-HF_MODEL_REVISION=<40-char-revision> \
-TRANSFORMERS_REVISION=<40-char-revision> \
-LLAMA_CONVERTER_DIR=/path/to/llama.cpp-converter \
-LLAMA_CONVERTER_REVISION=<40-char-revision> \
-LLAMA_REFERENCE_DIR=/path/to/llama.cpp-reference \
-LLAMA_REFERENCE_REVISION=<40-char-revision> \
-OUTPUT_GGUF=/path/to/Qwen3.5-9B-bf16.gguf \
-PROVENANCE_OUTPUT=/path/to/Qwen3.5-9B-bf16.provenance.json \
-scripts/prepare-qwen35-gguf.sh
-```
-
-Then run exact token parity before benchmarking:
-
-```bash
-RAFTINFER_MODEL=/path/to/Qwen3.5-9B-bf16.gguf \
-LLAMA_SERVER_BIN=/path/to/llama-server \
 scripts/qwen35-parity.sh
-
-RAFTINFER_MODEL=/path/to/Qwen3.5-9B-bf16.gguf \
-LLAMA_SERVER_BIN=/path/to/llama-server \
 scripts/qwen35-benchmark.sh
+scripts/qwen35-bf16-gate.sh build/evidence/qwen35-benchmark.jsonl
 ```
 
-Both GPU scripts take a cooperative lock and execute
-`scripts/gpu-preflight.sh`. The benchmark refuses to start unless every parity
-record passes. On a shared GPU, do not bypass this guard or stop unrelated
-processes.
+Set the required model and llama.cpp environment variables described by the
+scripts. The checked-in data is rendered deterministically with:
 
-See [docs/verification/m2.md](docs/verification/m2.md) for the current evidence,
-[docs/provenance/qwen35-9b.md](docs/provenance/qwen35-9b.md) for artifact
-provenance status, [docs/verification/m1.md](docs/verification/m1.md) for M1,
-and [docs/provenance/dependencies.md](docs/provenance/dependencies.md) for
-dependency provenance.
+```bash
+python3 tools/render_benchmark_chart.py \
+  benchmarks/results/qwen35-9b-bf16-rtx5090.jsonl \
+  docs/assets/qwen35-bf16-rtx5090.svg
+```
+
+## Limitations
+
+- The accepted comparison is Qwen3.5-9B BF16 on one RTX 5090 configuration;
+  it does not establish results for other models, quantizations, GPUs, batch
+  sizes, or serving workloads.
+- The comparison reports throughput, not end-to-end service latency, power, or
+  cost. Peak memory is RAFTInfer's RMM logical-allocation peak, not whole-GPU
+  process memory.
+- CUDA correctness, parity, and performance gates require the target GPU and
+  are not run by hosted host-only CI.
+
+## Roadmap
+
+Improve Qwen3.5 coverage, target validation automation, and documented
+reproducibility while preserving the correctness-before-performance gate.
+
+## Contributing and security
+
+Read [CONTRIBUTING.md](CONTRIBUTING.md) for the review and RTX 50 validation
+contract. Report vulnerabilities through [SECURITY.md](SECURITY.md).
+
+## Citation
+
+Use [CITATION.cff](CITATION.cff) when citing RAFTInfer.
+
+## License
+
+RAFTInfer source is licensed under [Apache-2.0](LICENSE).
