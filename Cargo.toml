@@ -1,3 +1,7 @@
 [workspace]
 resolver = "2"
-members = ["rust/brt-sys", "rust/brt-runtime", "rust/brt-cli"]
+members = [
+    "rust/raftinfer-sys",
+    "rust/raftinfer-runtime",
+    "rust/raftinfer-cli",
+]

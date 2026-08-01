@@ -1,4 +1,4 @@
-use brt_runtime::{
+use raftinfer_runtime::{
     BenchmarkConfig, ChatGeneration, Engine, EngineConfig, ExecutionDiagnostics, GenerationConfig,
     KvCacheDType, KvCacheLayout, Qwen35AttentionImplementation, Qwen35ExecutionPolicy,
     SessionConfig, benchmark_session, generate_chat,
@@ -318,9 +318,7 @@ fn parse_token_ids(value: &str) -> Result<Vec<i32>, Box<dyn std::error::Error>> 
 fn run_generate(arguments: GenerateArguments) -> Result<(), Box<dyn std::error::Error>> {
     let engine = Engine::new(EngineConfig::default())?;
     if !engine.cuda_enabled() {
-        return Err(
-            "generation requires a CUDA-enabled BRT build; this binary is host-only".into(),
-        );
+        return Err("generation requires a CUDA-enabled RAFTInfer build".into());
     }
     let model = engine.load_model(&arguments.model)?;
     let tokenizer = Tokenizer::from_spec(&model.tokenizer_spec()?)?;
@@ -351,7 +349,7 @@ fn run_generate(arguments: GenerateArguments) -> Result<(), Box<dyn std::error::
 fn run_benchmark(arguments: BenchmarkArguments) -> Result<(), Box<dyn std::error::Error>> {
     let engine = Engine::new(EngineConfig::default())?;
     if !engine.cuda_enabled() {
-        return Err("benchmark requires a CUDA-enabled BRT build; this binary is host-only".into());
+        return Err("benchmark requires a CUDA-enabled RAFTInfer build".into());
     }
     let model = engine.load_model(&arguments.model)?;
     let prompt_tokens = match arguments.prompt {
@@ -598,7 +596,7 @@ fn append_json_string(output: &mut String, value: &str) {
 #[cfg(test)]
 mod tests {
     use super::{BenchmarkOutput, LatencySummary, benchmark_json, generation_json};
-    use brt_runtime::{
+    use raftinfer_runtime::{
         ChatGeneration, ExecutionDiagnostics, KvCacheDType, KvCacheLayout,
         Qwen35AttentionImplementation,
     };

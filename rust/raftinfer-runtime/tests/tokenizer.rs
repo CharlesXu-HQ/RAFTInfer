@@ -1,4 +1,4 @@
-use brt_runtime::{
+use raftinfer_runtime::{
     Engine, EngineConfig, TokenizerSpec,
     tokenizer::{ChatMessage, ChatRole, Tokenizer},
 };
@@ -313,8 +313,8 @@ fn rejects_huge_array_length_before_allocation() {
 
 #[test]
 fn official_qwen35_vectors_match_when_artifact_is_available() {
-    let Ok(path) = std::env::var("BRT_QWEN35_GGUF") else {
-        eprintln!("skipping official tokenizer vectors: BRT_QWEN35_GGUF is not set");
+    let Ok(path) = std::env::var("RAFTINFER_QWEN35_GGUF") else {
+        eprintln!("skipping official tokenizer vectors: RAFTINFER_QWEN35_GGUF is not set");
         return;
     };
     let engine = Engine::new(EngineConfig::default()).expect("engine");

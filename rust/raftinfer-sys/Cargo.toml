@@ -1,8 +1,8 @@
 [package]
-name = "brt-sys"
+name = "raftinfer-sys"
 version = "0.1.0"
 edition = "2024"
-links = "brt_cpp"
+links = "raftinfer_cpp"
 
 [build-dependencies]
 cmake = "0.1"

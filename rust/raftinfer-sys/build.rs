@@ -1,25 +1,25 @@
 use std::path::{Path, PathBuf};
 
 fn main() {
-    println!("cargo:rerun-if-env-changed=BRT_ENABLE_CUDA");
-    println!("cargo:rerun-if-env-changed=BRT_NATIVE_LIBRARY_TYPE");
-    println!("cargo:rerun-if-env-changed=BRT_NATIVE_LIBRARY_DIRS");
+    println!("cargo:rerun-if-env-changed=RAFTINFER_ENABLE_CUDA");
+    println!("cargo:rerun-if-env-changed=RAFTINFER_NATIVE_LIBRARY_TYPE");
+    println!("cargo:rerun-if-env-changed=RAFTINFER_NATIVE_LIBRARY_DIRS");
     println!("cargo:rerun-if-env-changed=CONDA_PREFIX");
     println!("cargo:rerun-if-env-changed=CUDA_HOME");
     println!("cargo:rerun-if-env-changed=CUDA_PATH");
-    let cuda = std::env::var("BRT_ENABLE_CUDA").unwrap_or_else(|_| "OFF".into());
-    let cuda_enabled = parse_cmake_bool(&cuda, "BRT_ENABLE_CUDA");
-    let library_type = std::env::var("BRT_NATIVE_LIBRARY_TYPE")
+    let cuda = std::env::var("RAFTINFER_ENABLE_CUDA").unwrap_or_else(|_| "OFF".into());
+    let cuda_enabled = parse_cmake_bool(&cuda, "RAFTINFER_ENABLE_CUDA");
+    let library_type = std::env::var("RAFTINFER_NATIVE_LIBRARY_TYPE")
         .unwrap_or_else(|_| "STATIC".into())
         .to_ascii_uppercase();
     if !matches!(library_type.as_str(), "STATIC" | "SHARED") {
-        panic!("BRT_NATIVE_LIBRARY_TYPE must be STATIC or SHARED, got: {library_type}");
+        panic!("RAFTINFER_NATIVE_LIBRARY_TYPE must be STATIC or SHARED, got: {library_type}");
     }
     let dst = cmake::Config::new("../..")
         .generator("Ninja")
-        .define("BRT_ENABLE_CUDA", cuda)
-        .define("BRT_NATIVE_LIBRARY_TYPE", &library_type)
-        .define("BRT_BUILD_TESTS", "OFF")
+        .define("RAFTINFER_ENABLE_CUDA", cuda)
+        .define("RAFTINFER_NATIVE_LIBRARY_TYPE", &library_type)
+        .define("RAFTINFER_BUILD_TESTS", "OFF")
         .build();
 
     println!("cargo:rustc-link-search=native={}/lib", dst.display());
@@ -28,7 +28,7 @@ fn main() {
     } else {
         "static"
     };
-    println!("cargo:rustc-link-lib={link_kind}=brt_cpp");
+    println!("cargo:rustc-link-lib={link_kind}=raftinfer_cpp");
     if cuda_enabled {
         for directory in native_library_dirs() {
             println!("cargo:rustc-link-search=native={}", directory.display());
@@ -56,7 +56,7 @@ fn parse_cmake_bool(value: &str, name: &str) -> bool {
 
 fn native_library_dirs() -> Vec<PathBuf> {
     let mut directories = Vec::new();
-    if let Some(paths) = std::env::var_os("BRT_NATIVE_LIBRARY_DIRS") {
+    if let Some(paths) = std::env::var_os("RAFTINFER_NATIVE_LIBRARY_DIRS") {
         for path in std::env::split_paths(&paths) {
             add_existing_directory(&mut directories, path);
         }

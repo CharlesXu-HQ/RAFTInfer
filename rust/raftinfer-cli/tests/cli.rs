@@ -1,10 +1,10 @@
 use std::process::Command;
 
 fn run(args: &[&str]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_brt-cli"))
+    Command::new(env!("CARGO_BIN_EXE_raftinfer"))
         .args(args)
         .output()
-        .expect("run brt-cli")
+        .expect("run raftinfer")
 }
 
 #[test]
@@ -191,7 +191,7 @@ fn generate_reports_that_host_only_builds_cannot_execute_inference() {
     assert!(!output.status.success());
     assert!(
         String::from_utf8_lossy(&output.stderr)
-            .contains("generation requires a CUDA-enabled BRT build; this binary is host-only")
+            .contains("generation requires a CUDA-enabled RAFTInfer build")
     );
 }
 
@@ -214,7 +214,7 @@ fn generate_accepts_json_output_format_before_backend_selection() {
     assert!(!output.status.success());
     assert!(
         String::from_utf8_lossy(&output.stderr)
-            .contains("generation requires a CUDA-enabled BRT build; this binary is host-only")
+            .contains("generation requires a CUDA-enabled RAFTInfer build")
     );
 }
 
@@ -239,7 +239,7 @@ fn generate_accepts_explicit_kv_policy_before_backend_selection() {
     assert!(!output.status.success());
     assert!(
         String::from_utf8_lossy(&output.stderr)
-            .contains("generation requires a CUDA-enabled BRT build; this binary is host-only")
+            .contains("generation requires a CUDA-enabled RAFTInfer build")
     );
 }
 
@@ -266,7 +266,7 @@ fn generate_accepts_json_output_with_explicit_kv_policy_before_backend_selection
     assert!(!output.status.success());
     assert!(
         String::from_utf8_lossy(&output.stderr)
-            .contains("generation requires a CUDA-enabled BRT build; this binary is host-only")
+            .contains("generation requires a CUDA-enabled RAFTInfer build")
     );
 }
 
@@ -420,7 +420,7 @@ fn benchmark_accepts_a_complete_arm_before_backend_selection() {
     assert!(!output.status.success());
     assert!(
         String::from_utf8_lossy(&output.stderr)
-            .contains("benchmark requires a CUDA-enabled BRT build; this binary is host-only")
+            .contains("benchmark requires a CUDA-enabled RAFTInfer build")
     );
 }
 
@@ -451,7 +451,7 @@ fn benchmark_accepts_explicit_kv_policy_before_backend_selection() {
     assert!(!output.status.success());
     assert!(
         String::from_utf8_lossy(&output.stderr)
-            .contains("benchmark requires a CUDA-enabled BRT build; this binary is host-only")
+            .contains("benchmark requires a CUDA-enabled RAFTInfer build")
     );
 }
 
@@ -661,7 +661,7 @@ fn benchmark_accepts_explicit_prompt_token_ids_before_backend_selection() {
     assert!(!output.status.success());
     assert!(
         String::from_utf8_lossy(&output.stderr)
-            .contains("benchmark requires a CUDA-enabled BRT build; this binary is host-only")
+            .contains("benchmark requires a CUDA-enabled RAFTInfer build")
     );
 }
 

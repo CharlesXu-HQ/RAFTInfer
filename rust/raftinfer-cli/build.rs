@@ -1,14 +1,14 @@
 use std::path::{Path, PathBuf};
 
 fn main() {
-    println!("cargo:rerun-if-env-changed=BRT_ENABLE_CUDA");
-    println!("cargo:rerun-if-env-changed=BRT_NATIVE_LIBRARY_DIRS");
+    println!("cargo:rerun-if-env-changed=RAFTINFER_ENABLE_CUDA");
+    println!("cargo:rerun-if-env-changed=RAFTINFER_NATIVE_LIBRARY_DIRS");
     println!("cargo:rerun-if-env-changed=CONDA_PREFIX");
     println!("cargo:rerun-if-env-changed=CUDA_HOME");
     println!("cargo:rerun-if-env-changed=CUDA_PATH");
 
-    let cuda = std::env::var("BRT_ENABLE_CUDA").unwrap_or_else(|_| "OFF".into());
-    if !parse_cmake_bool(&cuda, "BRT_ENABLE_CUDA") {
+    let cuda = std::env::var("RAFTINFER_ENABLE_CUDA").unwrap_or_else(|_| "OFF".into());
+    if !parse_cmake_bool(&cuda, "RAFTINFER_ENABLE_CUDA") {
         return;
     }
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
@@ -30,7 +30,7 @@ fn parse_cmake_bool(value: &str, name: &str) -> bool {
 
 fn native_library_dirs() -> Vec<PathBuf> {
     let mut directories = Vec::new();
-    if let Some(paths) = std::env::var_os("BRT_NATIVE_LIBRARY_DIRS") {
+    if let Some(paths) = std::env::var_os("RAFTINFER_NATIVE_LIBRARY_DIRS") {
         for path in std::env::split_paths(&paths) {
             add_existing_directory(&mut directories, path);
         }

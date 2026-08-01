@@ -1,4 +1,4 @@
-use brt_runtime::{
+use raftinfer_runtime::{
     BenchmarkConfig, Engine, EngineConfig, GenerationConfig, GenerationSession, KvCacheDType,
     KvCacheLayout, Model, Qwen35AttentionImplementation, Qwen35ExecutionPolicy, SessionConfig,
     TokenResult, benchmark_session, generate_token_ids,
@@ -73,9 +73,9 @@ fn qwen35_execution_policy_defaults_to_online_f32_token_major_graphs() {
 fn missing_model_is_an_atomic_load_failure() {
     let engine = Engine::new(EngineConfig::default()).expect("engine creation");
     let error = engine
-        .load_model("/missing/brt-qwen35.gguf")
+        .load_model("/missing/raftinfer-qwen35.gguf")
         .expect_err("missing model must fail");
-    assert!(error.to_string().contains("brt-qwen35.gguf"));
+    assert!(error.to_string().contains("raftinfer-qwen35.gguf"));
 }
 
 #[test]
@@ -346,7 +346,7 @@ fn benchmark_uses_one_batched_decode_per_iteration_when_available() {
 #[allow(dead_code)]
 fn session_lifetime_is_tied_to_model<'engine, 'model>(
     model: &'model Model<'engine>,
-) -> brt_runtime::Session<'model, 'engine> {
+) -> raftinfer_runtime::Session<'model, 'engine> {
     model
         .create_session(SessionConfig {
             max_context_tokens: 8,
@@ -481,7 +481,7 @@ impl TemporaryGguf {
             .duration_since(UNIX_EPOCH)
             .expect("system time")
             .as_nanos();
-        path.push(format!("brt-qwen35-rust-{nanos}.gguf"));
+        path.push(format!("raftinfer-qwen35-rust-{nanos}.gguf"));
         let bytes = make_qwen35_gguf_fixture();
         let mut file = File::create(&path).expect("create fixture");
         file.write_all(&bytes).expect("write fixture");

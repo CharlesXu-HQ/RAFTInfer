@@ -41,7 +41,7 @@ impl Error {
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "BRT error {}: {}", self.code, self.message)
+        write!(f, "RAFTInfer error {}: {}", self.code, self.message)
     }
 }
 
@@ -49,20 +49,20 @@ impl std::error::Error for Error {}
 
 #[derive(Debug)]
 pub struct Engine {
-    raw: NonNull<brt_sys::BrtEngineHandle>,
+    raw: NonNull<raftinfer_sys::RaftInferEngineHandle>,
     _not_send_sync: PhantomData<Rc<()>>,
 }
 
 #[derive(Debug)]
 pub struct Model<'engine> {
-    raw: NonNull<brt_sys::BrtModelHandle>,
+    raw: NonNull<raftinfer_sys::RaftInferModelHandle>,
     _engine: PhantomData<&'engine Engine>,
     _not_send_sync: PhantomData<Rc<()>>,
 }
 
 #[derive(Debug)]
 pub struct Session<'model, 'engine> {
-    raw: NonNull<brt_sys::BrtSessionHandle>,
+    raw: NonNull<raftinfer_sys::RaftInferSessionHandle>,
     _model: PhantomData<&'model Model<'engine>>,
     _not_send_sync: PhantomData<Rc<()>>,
 }
@@ -104,17 +104,21 @@ pub enum Qwen35AttentionImplementation {
 impl Qwen35AttentionImplementation {
     fn to_native(self) -> u32 {
         match self {
-            Self::MaterializedReference => brt_sys::BRT_QWEN35_ATTENTION_MATERIALIZED_REFERENCE,
-            Self::OnlineTiled => brt_sys::BRT_QWEN35_ATTENTION_ONLINE_TILED,
+            Self::MaterializedReference => {
+                raftinfer_sys::RAFTINFER_QWEN35_ATTENTION_MATERIALIZED_REFERENCE
+            }
+            Self::OnlineTiled => raftinfer_sys::RAFTINFER_QWEN35_ATTENTION_ONLINE_TILED,
         }
     }
 
     fn from_native(value: u32) -> Result<Self, Error> {
         match value {
-            brt_sys::BRT_QWEN35_ATTENTION_MATERIALIZED_REFERENCE => Ok(Self::MaterializedReference),
-            brt_sys::BRT_QWEN35_ATTENTION_ONLINE_TILED => Ok(Self::OnlineTiled),
+            raftinfer_sys::RAFTINFER_QWEN35_ATTENTION_MATERIALIZED_REFERENCE => {
+                Ok(Self::MaterializedReference)
+            }
+            raftinfer_sys::RAFTINFER_QWEN35_ATTENTION_ONLINE_TILED => Ok(Self::OnlineTiled),
             _ => Err(Error {
-                code: brt_sys::BRT_STATUS_UNSUPPORTED,
+                code: raftinfer_sys::RAFTINFER_STATUS_UNSUPPORTED,
                 message: "native diagnostics returned an unknown attention implementation"
                     .to_owned(),
             }),
@@ -131,17 +135,17 @@ pub enum KvCacheDType {
 impl KvCacheDType {
     fn to_native(self) -> u32 {
         match self {
-            Self::F32 => brt_sys::BRT_QWEN35_KV_CACHE_F32,
-            Self::Bf16 => brt_sys::BRT_QWEN35_KV_CACHE_BF16,
+            Self::F32 => raftinfer_sys::RAFTINFER_QWEN35_KV_CACHE_F32,
+            Self::Bf16 => raftinfer_sys::RAFTINFER_QWEN35_KV_CACHE_BF16,
         }
     }
 
     fn from_native(value: u32) -> Result<Self, Error> {
         match value {
-            brt_sys::BRT_QWEN35_KV_CACHE_F32 => Ok(Self::F32),
-            brt_sys::BRT_QWEN35_KV_CACHE_BF16 => Ok(Self::Bf16),
+            raftinfer_sys::RAFTINFER_QWEN35_KV_CACHE_F32 => Ok(Self::F32),
+            raftinfer_sys::RAFTINFER_QWEN35_KV_CACHE_BF16 => Ok(Self::Bf16),
             _ => Err(Error {
-                code: brt_sys::BRT_STATUS_UNSUPPORTED,
+                code: raftinfer_sys::RAFTINFER_STATUS_UNSUPPORTED,
                 message: "native diagnostics returned an unknown KV cache dtype".to_owned(),
             }),
         }
@@ -157,17 +161,17 @@ pub enum KvCacheLayout {
 impl KvCacheLayout {
     fn to_native(self) -> u32 {
         match self {
-            Self::TokenMajor => brt_sys::BRT_QWEN35_KV_CACHE_LAYOUT_TOKEN_MAJOR,
-            Self::HeadMajor => brt_sys::BRT_QWEN35_KV_CACHE_LAYOUT_HEAD_MAJOR,
+            Self::TokenMajor => raftinfer_sys::RAFTINFER_QWEN35_KV_CACHE_LAYOUT_TOKEN_MAJOR,
+            Self::HeadMajor => raftinfer_sys::RAFTINFER_QWEN35_KV_CACHE_LAYOUT_HEAD_MAJOR,
         }
     }
 
     fn from_native(value: u32) -> Result<Self, Error> {
         match value {
-            brt_sys::BRT_QWEN35_KV_CACHE_LAYOUT_TOKEN_MAJOR => Ok(Self::TokenMajor),
-            brt_sys::BRT_QWEN35_KV_CACHE_LAYOUT_HEAD_MAJOR => Ok(Self::HeadMajor),
+            raftinfer_sys::RAFTINFER_QWEN35_KV_CACHE_LAYOUT_TOKEN_MAJOR => Ok(Self::TokenMajor),
+            raftinfer_sys::RAFTINFER_QWEN35_KV_CACHE_LAYOUT_HEAD_MAJOR => Ok(Self::HeadMajor),
             _ => Err(Error {
-                code: brt_sys::BRT_STATUS_UNSUPPORTED,
+                code: raftinfer_sys::RAFTINFER_STATUS_UNSUPPORTED,
                 message: "native diagnostics returned an unknown KV cache layout".to_owned(),
             }),
         }
@@ -482,13 +486,13 @@ pub fn generate_chat(
 
 impl Engine {
     pub fn new(config: EngineConfig) -> Result<Self, Error> {
-        let native = brt_sys::BrtEngineConfig {
-            struct_size: std::mem::size_of::<brt_sys::BrtEngineConfig>(),
+        let native = raftinfer_sys::RaftInferEngineConfig {
+            struct_size: std::mem::size_of::<raftinfer_sys::RaftInferEngineConfig>(),
             device_id: config.device_id,
             initial_pool_bytes: config.initial_pool_bytes,
         };
         let mut raw = std::ptr::null_mut();
-        let status = unsafe { brt_sys::brt_engine_create(&native, &mut raw) };
+        let status = unsafe { raftinfer_sys::raftinfer_engine_create(&native, &mut raw) };
         status_to_result(status)?;
 
         Ok(Self {
@@ -498,12 +502,13 @@ impl Engine {
     }
 
     pub fn cuda_enabled(&self) -> bool {
-        unsafe { brt_sys::brt_engine_is_cuda_enabled(self.raw.as_ptr()) != 0 }
+        unsafe { raftinfer_sys::raftinfer_engine_is_cuda_enabled(self.raw.as_ptr()) != 0 }
     }
 
     pub fn run_smoke(&self) -> Result<SmokeResult, Error> {
-        let mut native = brt_sys::BrtSmokeResult::default();
-        let status = unsafe { brt_sys::brt_engine_run_smoke(self.raw.as_ptr(), &mut native) };
+        let mut native = raftinfer_sys::RaftInferSmokeResult::default();
+        let status =
+            unsafe { raftinfer_sys::raftinfer_engine_run_smoke(self.raw.as_ptr(), &mut native) };
         status_to_result(status).map(|()| SmokeResult {
             device_id: native.device_id,
             element_count: native.element_count,
@@ -514,7 +519,7 @@ impl Engine {
     pub fn peak_allocated_gpu_bytes(&self) -> Result<u64, Error> {
         let mut peak_allocated_gpu_bytes = 0;
         let status = unsafe {
-            brt_sys::brt_engine_peak_allocated_gpu_bytes(
+            raftinfer_sys::raftinfer_engine_peak_allocated_gpu_bytes(
                 self.raw.as_ptr(),
                 &mut peak_allocated_gpu_bytes,
             )
@@ -528,12 +533,16 @@ impl Engine {
     ) -> Result<Model<'engine>, Error> {
         let path = gguf_path.as_ref().to_string_lossy();
         let native_path = CString::new(path.as_bytes()).map_err(|_| Error {
-            code: brt_sys::BRT_STATUS_UNSUPPORTED,
+            code: raftinfer_sys::RAFTINFER_STATUS_UNSUPPORTED,
             message: "GGUF path contains an interior NUL byte".to_owned(),
         })?;
         let mut raw = std::ptr::null_mut();
         let status = unsafe {
-            brt_sys::brt_engine_load_model(self.raw.as_ptr(), native_path.as_ptr(), &mut raw)
+            raftinfer_sys::raftinfer_engine_load_model(
+                self.raw.as_ptr(),
+                native_path.as_ptr(),
+                &mut raw,
+            )
         };
         status_to_result(status)?;
         Ok(Model {
@@ -546,20 +555,21 @@ impl Engine {
 
 impl Drop for Engine {
     fn drop(&mut self) {
-        unsafe { brt_sys::brt_engine_destroy(self.raw.as_ptr()) }
+        unsafe { raftinfer_sys::raftinfer_engine_destroy(self.raw.as_ptr()) }
     }
 }
 
 impl<'engine> Model<'engine> {
     pub fn tokenizer_spec(&self) -> Result<TokenizerSpec, Error> {
-        let mut native = brt_sys::BrtOwnedBuffer {
-            struct_size: std::mem::size_of::<brt_sys::BrtOwnedBuffer>(),
+        let mut native = raftinfer_sys::RaftInferOwnedBuffer {
+            struct_size: std::mem::size_of::<raftinfer_sys::RaftInferOwnedBuffer>(),
             version: 0,
             data: std::ptr::null_mut(),
             size: 0,
         };
-        let status =
-            unsafe { brt_sys::brt_model_copy_tokenizer_spec(self.raw.as_ptr(), &mut native) };
+        let status = unsafe {
+            raftinfer_sys::raftinfer_model_copy_tokenizer_spec(self.raw.as_ptr(), &mut native)
+        };
         status_to_result(status)?;
         let bytes = if native.size == 0 {
             Vec::new()
@@ -567,7 +577,7 @@ impl<'engine> Model<'engine> {
             unsafe { std::slice::from_raw_parts(native.data, native.size) }.to_vec()
         };
         let version = native.version;
-        unsafe { brt_sys::brt_owned_buffer_free(&mut native) };
+        unsafe { raftinfer_sys::raftinfer_owned_buffer_free(&mut native) };
         Ok(TokenizerSpec { version, bytes })
     }
 
@@ -575,21 +585,23 @@ impl<'engine> Model<'engine> {
         &'model self,
         config: SessionConfig,
     ) -> Result<Session<'model, 'engine>, Error> {
-        let native_policy = brt_sys::BrtQwen35ExecutionPolicy {
-            struct_size: std::mem::size_of::<brt_sys::BrtQwen35ExecutionPolicy>(),
+        let native_policy = raftinfer_sys::RaftInferQwen35ExecutionPolicy {
+            struct_size: std::mem::size_of::<raftinfer_sys::RaftInferQwen35ExecutionPolicy>(),
             attention: config.qwen35_policy.attention.to_native(),
             kv_cache_dtype: config.qwen35_policy.kv_cache_dtype.to_native(),
             kv_cache_layout: config.qwen35_policy.kv_cache_layout.to_native(),
             decode_graph: bool_to_native(config.qwen35_policy.decode_graph),
             grouped_input_casts: bool_to_native(config.qwen35_policy.grouped_input_casts),
         };
-        let native = brt_sys::BrtSessionConfig {
-            struct_size: std::mem::size_of::<brt_sys::BrtSessionConfig>(),
+        let native = raftinfer_sys::RaftInferSessionConfig {
+            struct_size: std::mem::size_of::<raftinfer_sys::RaftInferSessionConfig>(),
             max_context_tokens: config.max_context_tokens,
             qwen35_policy: &native_policy,
         };
         let mut raw = std::ptr::null_mut();
-        let status = unsafe { brt_sys::brt_session_create(self.raw.as_ptr(), &native, &mut raw) };
+        let status = unsafe {
+            raftinfer_sys::raftinfer_session_create(self.raw.as_ptr(), &native, &mut raw)
+        };
         status_to_result(status)?;
         Ok(Session {
             raw: NonNull::new(raw).expect("successful session create returned null"),
@@ -601,17 +613,18 @@ impl<'engine> Model<'engine> {
 
 impl Drop for Model<'_> {
     fn drop(&mut self) {
-        unsafe { brt_sys::brt_model_destroy(self.raw.as_ptr()) }
+        unsafe { raftinfer_sys::raftinfer_model_destroy(self.raw.as_ptr()) }
     }
 }
 
 impl Session<'_, '_> {
     pub fn diagnostics(&self) -> Result<ExecutionDiagnostics, Error> {
-        let mut native = brt_sys::BrtSessionDiagnostics {
-            struct_size: std::mem::size_of::<brt_sys::BrtSessionDiagnostics>(),
-            ..brt_sys::BrtSessionDiagnostics::default()
+        let mut native = raftinfer_sys::RaftInferSessionDiagnostics {
+            struct_size: std::mem::size_of::<raftinfer_sys::RaftInferSessionDiagnostics>(),
+            ..raftinfer_sys::RaftInferSessionDiagnostics::default()
         };
-        let status = unsafe { brt_sys::brt_session_diagnostics(self.raw.as_ptr(), &mut native) };
+        let status =
+            unsafe { raftinfer_sys::raftinfer_session_diagnostics(self.raw.as_ptr(), &mut native) };
         status_to_result(status)?;
         Ok(ExecutionDiagnostics {
             attention: Qwen35AttentionImplementation::from_native(native.attention)?,
@@ -625,9 +638,9 @@ impl Session<'_, '_> {
     }
 
     pub fn prefill(&mut self, tokens: &[i32]) -> Result<TokenResult, Error> {
-        let mut native = brt_sys::BrtTokenResult::default();
+        let mut native = raftinfer_sys::RaftInferTokenResult::default();
         let status = unsafe {
-            brt_sys::brt_session_prefill(
+            raftinfer_sys::raftinfer_session_prefill(
                 self.raw.as_ptr(),
                 tokens.as_ptr(),
                 tokens.len(),
@@ -641,9 +654,10 @@ impl Session<'_, '_> {
     }
 
     pub fn decode(&mut self, token_id: i32) -> Result<TokenResult, Error> {
-        let mut native = brt_sys::BrtTokenResult::default();
-        let status =
-            unsafe { brt_sys::brt_session_decode(self.raw.as_ptr(), token_id, &mut native) };
+        let mut native = raftinfer_sys::RaftInferTokenResult::default();
+        let status = unsafe {
+            raftinfer_sys::raftinfer_session_decode(self.raw.as_ptr(), token_id, &mut native)
+        };
         status_to_result(status).map(|()| TokenResult {
             token_id: native.token_id,
             position: native.position,
@@ -655,9 +669,9 @@ impl Session<'_, '_> {
         first_token_id: i32,
         output_tokens: &mut [i32],
     ) -> Result<TokenResult, Error> {
-        let mut native = brt_sys::BrtTokenResult::default();
+        let mut native = raftinfer_sys::RaftInferTokenResult::default();
         let status = unsafe {
-            brt_sys::brt_session_decode_greedy(
+            raftinfer_sys::raftinfer_session_decode_greedy(
                 self.raw.as_ptr(),
                 first_token_id,
                 output_tokens.as_mut_ptr(),
@@ -672,7 +686,7 @@ impl Session<'_, '_> {
     }
 
     pub fn reset(&mut self) -> Result<(), Error> {
-        let status = unsafe { brt_sys::brt_session_reset(self.raw.as_ptr()) };
+        let status = unsafe { raftinfer_sys::raftinfer_session_reset(self.raw.as_ptr()) };
         status_to_result(status)
     }
 }
@@ -703,7 +717,7 @@ impl GenerationSession for Session<'_, '_> {
 
 impl Drop for Session<'_, '_> {
     fn drop(&mut self) {
-        unsafe { brt_sys::brt_session_destroy(self.raw.as_ptr()) }
+        unsafe { raftinfer_sys::raftinfer_session_destroy(self.raw.as_ptr()) }
     }
 }
 
@@ -711,7 +725,7 @@ fn bool_to_native(value: bool) -> i32 {
     if value { 1 } else { 0 }
 }
 
-fn status_to_result(status: brt_sys::BrtStatus) -> Result<(), Error> {
+fn status_to_result(status: raftinfer_sys::RaftInferStatus) -> Result<(), Error> {
     if status.code == 0 {
         return Ok(());
     }
@@ -722,9 +736,9 @@ fn status_to_result(status: brt_sys::BrtStatus) -> Result<(), Error> {
     })
 }
 
-fn native_error_message(status: brt_sys::BrtStatus) -> String {
+fn native_error_message(status: raftinfer_sys::RaftInferStatus) -> String {
     let message = if status.message.is_null() {
-        unsafe { brt_sys::brt_last_error_message() }
+        unsafe { raftinfer_sys::raftinfer_last_error_message() }
     } else {
         status.message
     };
