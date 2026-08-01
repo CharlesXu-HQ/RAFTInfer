@@ -12,10 +12,12 @@ HOME, LD_LIBRARY_PATH, PATH, TMPDIR, and XDG_CACHE_HOME.
 - RAFTINFER_MAX_UTILIZATION_PERCENT — maximum acceptable GPU utilization for
   preflight; default 5.
 - NVIDIA_SMI_BIN — nvidia-smi executable used by benchmark metadata collection.
-- RAFTINFER_TARGET — SSH destination for sync-target.sh; default
-  charles@192.168.124.8.
-- RAFTINFER_TARGET_DIR — validated remote staging directory for sync-target.sh;
-  default /home/charles/raftinfer-workspace.
+- RAFTINFER_TARGET — required SSH destination for sync-target.sh, for example
+  builder@example.test.
+- RAFTINFER_TARGET_DIR — required remote staging directory for sync-target.sh,
+  for example /srv/raftinfer/workspace. It must be an absolute, normalized path
+  with at least three non-special directory components; root, broad paths, and
+  dot components are refused.
 
 ## Parity and benchmark inputs
 

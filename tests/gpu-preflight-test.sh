@@ -330,16 +330,25 @@ run_sync() {
 }
 
 reset_logs
-assert_status 40 run_sync env RAFTINFER_TARGET='charles@192.168.124.8;bad'
+assert_status 40 run_sync env
 [[ ! -s "${fixture_dir}/ssh.log" && ! -s "${fixture_dir}/rsync.log" ]]
 reset_logs
-assert_status 41 run_sync env RAFTINFER_TARGET_DIR=/
+assert_status 41 run_sync env RAFTINFER_TARGET='builder@example.test'
 [[ ! -s "${fixture_dir}/ssh.log" && ! -s "${fixture_dir}/rsync.log" ]]
 reset_logs
-assert_status 41 run_sync env RAFTINFER_TARGET_DIR=/home/charles/raftinfer-workspace/../outside
+assert_status 40 run_sync env RAFTINFER_TARGET='builder@example.test;bad' \
+  RAFTINFER_TARGET_DIR=/srv/raftinfer/workspace
 [[ ! -s "${fixture_dir}/ssh.log" && ! -s "${fixture_dir}/rsync.log" ]]
 reset_logs
-assert_status 0 run_sync env
+assert_status 41 run_sync env RAFTINFER_TARGET='builder@example.test' RAFTINFER_TARGET_DIR=/
+[[ ! -s "${fixture_dir}/ssh.log" && ! -s "${fixture_dir}/rsync.log" ]]
+reset_logs
+assert_status 41 run_sync env RAFTINFER_TARGET='builder@example.test' \
+  RAFTINFER_TARGET_DIR=/srv/raftinfer/workspace/../outside
+[[ ! -s "${fixture_dir}/ssh.log" && ! -s "${fixture_dir}/rsync.log" ]]
+reset_logs
+assert_status 0 run_sync env RAFTINFER_TARGET='builder@example.test' \
+  RAFTINFER_TARGET_DIR=/srv/raftinfer/workspace
 grep -Fx -- "${repo_root}/" "${fixture_dir}/rsync.log"
 ! grep -F -- '--delete' "${fixture_dir}/rsync.log"
-grep -Fx -- 'mkdir -p -- /home/charles/raftinfer-workspace' "${fixture_dir}/ssh.log"
+grep -Fx -- 'mkdir -p -- /srv/raftinfer/workspace' "${fixture_dir}/ssh.log"

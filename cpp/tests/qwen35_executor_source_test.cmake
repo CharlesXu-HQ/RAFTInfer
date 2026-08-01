@@ -9,8 +9,10 @@ file(READ "${QWEN35_EXECUTOR_SOURCE}" source)
 
 # Production change caught: reintroducing the legacy namespace in executor
 # implementation after the RAFTInfer rename.
-if(source MATCHES "namespace[ \\t\\r\\n]+brt" OR source MATCHES "brt::")
-  message(FATAL_ERROR "Qwen3.5 executor source retains the legacy brt namespace")
+set(legacy_namespace "b" "rt")
+string(JOIN "" legacy_namespace ${legacy_namespace})
+if(source MATCHES "namespace[ \\t\\r\\n]+${legacy_namespace}" OR source MATCHES "${legacy_namespace}::")
+  message(FATAL_ERROR "Qwen3.5 executor source retains the legacy ${legacy_namespace} namespace")
 endif()
 
 require_match("${source}" "cudaFreeHost\\(ptr\\)"

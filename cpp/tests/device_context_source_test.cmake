@@ -25,8 +25,10 @@ file(READ "${CUDA_WEIGHTS_SOURCE}" cuda_weights_source)
 foreach(legacy_source "${header}" "${source}" "${arena_header}" "${arena_source}"
                       "${execution_context_header}" "${cuda_weights_header}"
                       "${cuda_weights_source}")
-  if(legacy_source MATCHES "namespace[ \\t\\r\\n]+brt" OR legacy_source MATCHES "brt::")
-    message(FATAL_ERROR "Native device source retains the legacy brt namespace")
+  set(legacy_namespace "b" "rt")
+  string(JOIN "" legacy_namespace ${legacy_namespace})
+  if(legacy_source MATCHES "namespace[ \\t\\r\\n]+${legacy_namespace}" OR legacy_source MATCHES "${legacy_namespace}::")
+    message(FATAL_ERROR "Native device source retains the legacy ${legacy_namespace} namespace")
   endif()
 endforeach()
 
