@@ -63,10 +63,11 @@ def text(x, y, content, size=14, anchor="start", weight="normal", fill="#0F172A"
             f'font-size="{size}" font-weight="{weight}" text-anchor="{anchor}">{escape(content)}</text>')
 
 
-def bar(x, baseline, height, color, label, label_y):
+def bar(x, baseline, height, color, label, label_y, label_anchor):
     return [
         f'  <rect x="{x:.2f}" y="{baseline - height:.2f}" width="46" height="{height:.2f}" fill="{color}"/>',
-        text(f"{x + 23:.2f}", f"{label_y:.2f}", label, 12, "middle", "bold"),
+        text(f"{x + (46 if label_anchor == 'end' else 0):.2f}", f"{label_y:.2f}",
+             label, 12, label_anchor, "bold"),
     ]
 
 
@@ -94,11 +95,13 @@ def panel(lines, x, width, title, categories, records, phase):
         raftinfer_height = available_height * raftinfer_value / maximum
         llama_height = available_height * llama_value / maximum
         lines.extend(bar(center - 50, baseline, raftinfer_height, RAFTINFER,
-                         f"{raftinfer_value:.2f} tok/s", baseline - raftinfer_height - 8))
+                         f"{raftinfer_value:.2f} tok/s", baseline - raftinfer_height - 8,
+                         "end"))
         lines.extend(bar(center + 4, baseline, llama_height, LLAMA_CPP,
-                         f"{llama_value:.2f} tok/s", baseline - llama_height - 8))
+                         f"{llama_value:.2f} tok/s", baseline - llama_height - 8,
+                         "start"))
         ratio = record["throughput_ratio"][phase]
-        ratio_y = max(top + 20, min(baseline - max(raftinfer_height, llama_height) - 29, baseline - 24))
+        ratio_y = max(157, baseline - max(raftinfer_height, llama_height) - 28)
         lines.append(text(f"{center:.2f}", f"{ratio_y:.2f}", f"RAFTInfer {ratio:.3f}x", 13,
                           "middle", "bold", "#14532D"))
         lines.append(text(f"{center:.2f}", 534, arm.replace("_", " "), 13, "middle", "bold"))

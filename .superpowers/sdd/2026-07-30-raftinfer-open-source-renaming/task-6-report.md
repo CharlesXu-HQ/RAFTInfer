@@ -50,6 +50,17 @@ After the owning tasks converted their negative fixtures to runtime input
 construction, `scripts/check-project-brand.sh` and the complete
 `scripts/local-check.sh` are green.
 
+## Visual QA fix
+
+The renderer now places every ratio strictly above its group’s highest bar with
+a 28-pixel vertical margin, keeping ratios outside the painted bars. Paired
+throughput labels use outward anchors (`end` for RAFTInfer and `start` for
+llama.cpp), so adjacent labels have separate horizontal intervals. The new
+renderer behavior test was RED against the former layout (`205.0` was inside a
+bar whose top was `185.0`) and is GREEN after the layout change. The asset test
+also locks the outward-anchor output. A Quick Look PNG render was visually
+reviewed for unclipped panels, labels, zero baselines, and separated ratios.
+
 ## Concerns
 
 The accepted comparison is limited to the recorded Qwen3.5-9B BF16 RTX 5090

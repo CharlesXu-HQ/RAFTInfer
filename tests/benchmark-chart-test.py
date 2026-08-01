@@ -107,6 +107,35 @@ class BenchmarkChartTest(unittest.TestCase):
         self.assertNotEqual(completed.returncode, 0)
         self.assertIn("performance-floor", completed.stderr)
 
+    def test_places_ratio_above_bars_and_value_labels_apart(self):
+        """Catches ratios inside a bar and adjacent value labels colliding."""
+        completed, output = self.run_renderer(VALID_RECORDS)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        root = ET.parse(output).getroot()
+        namespace = {"svg": "http://www.w3.org/2000/svg"}
+        bars = root.findall("svg:rect", namespace)
+        texts = root.findall("svg:text", namespace)
+        for ratio in (item for item in texts if (item.text or "").startswith("RAFTInfer ")):
+            ratio_x = float(ratio.attrib["x"])
+            ratio_y = float(ratio.attrib["y"])
+            group_bars = [
+                item for item in bars
+                if "x" in item.attrib
+                and float(item.attrib.get("y", "0")) >= 185
+                and abs((float(item.attrib["x"]) + 23) - ratio_x) < 60
+                and item.attrib.get("fill") in {"#76B900", "#64748B"}
+            ]
+            self.assertEqual(len(group_bars), 2)
+            highest_top = min(float(item.attrib["y"]) for item in group_bars)
+            self.assertLess(ratio_y, highest_top - 12)
+
+        labels = [item for item in texts if (item.text or "").endswith(" tok/s")]
+        for left, right in zip(labels[::2], labels[1::2]):
+            left_x = float(left.attrib["x"])
+            right_x = float(right.attrib["x"])
+            self.assertNotEqual(left.attrib.get("text-anchor"), right.attrib.get("text-anchor"))
+            self.assertLess(left_x, right_x)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -11,3 +11,5 @@ cmp "${temporary}" "${repo_root}/docs/assets/qwen35-bf16-rtx5090.svg"
 for expected in 6491.86 8391.24 87.46 85.01 84.98 1.967x 1.284x 1.038x 1.010x 1.009x; do
   grep -Fq "${expected}" "${temporary}"
 done
+grep -Fq 'text-anchor="end">6491.86 tok/s' "${temporary}"
+grep -Fq 'text-anchor="start">3300.20 tok/s' "${temporary}"

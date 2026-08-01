@@ -14,37 +14,37 @@
   <text x="516" y="139" fill="#475569" font-family="Arial, sans-serif" font-size="12" font-weight="normal" text-anchor="end">throughput (tok/s)</text>
   <line x1="68" y1="510" x2="512" y2="510" stroke="#0F172A" stroke-width="2"/>
   <rect x="135.00" y="258.56" width="46" height="251.44" fill="#76B900"/>
-  <text x="158.00" y="250.56" fill="#0F172A" font-family="Arial, sans-serif" font-size="12" font-weight="bold" text-anchor="middle">6491.86 tok/s</text>
+  <text x="181.00" y="250.56" fill="#0F172A" font-family="Arial, sans-serif" font-size="12" font-weight="bold" text-anchor="end">6491.86 tok/s</text>
   <rect x="189.00" y="382.18" width="46" height="127.82" fill="#64748B"/>
-  <text x="212.00" y="374.18" fill="#0F172A" font-family="Arial, sans-serif" font-size="12" font-weight="bold" text-anchor="middle">3300.20 tok/s</text>
-  <text x="185.00" y="229.56" fill="#14532D" font-family="Arial, sans-serif" font-size="13" font-weight="bold" text-anchor="middle">RAFTInfer 1.967x</text>
+  <text x="189.00" y="374.18" fill="#0F172A" font-family="Arial, sans-serif" font-size="12" font-weight="bold" text-anchor="start">3300.20 tok/s</text>
+  <text x="185.00" y="230.56" fill="#14532D" font-family="Arial, sans-serif" font-size="13" font-weight="bold" text-anchor="middle">RAFTInfer 1.967x</text>
   <text x="185.00" y="534" fill="#0F172A" font-family="Arial, sans-serif" font-size="13" font-weight="bold" text-anchor="middle">pp128</text>
   <rect x="345.00" y="185.00" width="46" height="325.00" fill="#76B900"/>
-  <text x="368.00" y="177.00" fill="#0F172A" font-family="Arial, sans-serif" font-size="12" font-weight="bold" text-anchor="middle">8391.24 tok/s</text>
+  <text x="391.00" y="177.00" fill="#0F172A" font-family="Arial, sans-serif" font-size="12" font-weight="bold" text-anchor="end">8391.24 tok/s</text>
   <rect x="399.00" y="256.93" width="46" height="253.07" fill="#64748B"/>
-  <text x="422.00" y="248.93" fill="#0F172A" font-family="Arial, sans-serif" font-size="12" font-weight="bold" text-anchor="middle">6534.15 tok/s</text>
-  <text x="395.00" y="205.00" fill="#14532D" font-family="Arial, sans-serif" font-size="13" font-weight="bold" text-anchor="middle">RAFTInfer 1.284x</text>
+  <text x="399.00" y="248.93" fill="#0F172A" font-family="Arial, sans-serif" font-size="12" font-weight="bold" text-anchor="start">6534.15 tok/s</text>
+  <text x="395.00" y="157.00" fill="#14532D" font-family="Arial, sans-serif" font-size="13" font-weight="bold" text-anchor="middle">RAFTInfer 1.284x</text>
   <text x="395.00" y="534" fill="#0F172A" font-family="Arial, sans-serif" font-size="13" font-weight="bold" text-anchor="middle">pp512</text>
   <rect x="660" y="105" width="500" height="445" fill="#F8FAFC" stroke="#CBD5E1"/>
   <text x="684" y="139" fill="#0F172A" font-family="Arial, sans-serif" font-size="22" font-weight="bold" text-anchor="start">Generation</text>
   <text x="1136" y="139" fill="#475569" font-family="Arial, sans-serif" font-size="12" font-weight="normal" text-anchor="end">throughput (tok/s)</text>
   <line x1="688" y1="510" x2="1132" y2="510" stroke="#0F172A" stroke-width="2"/>
   <rect x="720.00" y="185.00" width="46" height="325.00" fill="#76B900"/>
-  <text x="743.00" y="177.00" fill="#0F172A" font-family="Arial, sans-serif" font-size="12" font-weight="bold" text-anchor="middle">87.46 tok/s</text>
+  <text x="766.00" y="177.00" fill="#0F172A" font-family="Arial, sans-serif" font-size="12" font-weight="bold" text-anchor="end">87.46 tok/s</text>
   <rect x="774.00" y="196.76" width="46" height="313.24" fill="#64748B"/>
-  <text x="797.00" y="188.76" fill="#0F172A" font-family="Arial, sans-serif" font-size="12" font-weight="bold" text-anchor="middle">84.29 tok/s</text>
-  <text x="770.00" y="205.00" fill="#14532D" font-family="Arial, sans-serif" font-size="13" font-weight="bold" text-anchor="middle">RAFTInfer 1.038x</text>
+  <text x="774.00" y="188.76" fill="#0F172A" font-family="Arial, sans-serif" font-size="12" font-weight="bold" text-anchor="start">84.29 tok/s</text>
+  <text x="770.00" y="157.00" fill="#14532D" font-family="Arial, sans-serif" font-size="13" font-weight="bold" text-anchor="middle">RAFTInfer 1.038x</text>
   <text x="770.00" y="534" fill="#0F172A" font-family="Arial, sans-serif" font-size="13" font-weight="bold" text-anchor="middle">pp128</text>
   <rect x="860.00" y="194.10" width="46" height="315.90" fill="#76B900"/>
-  <text x="883.00" y="186.10" fill="#0F172A" font-family="Arial, sans-serif" font-size="12" font-weight="bold" text-anchor="middle">85.01 tok/s</text>
+  <text x="906.00" y="186.10" fill="#0F172A" font-family="Arial, sans-serif" font-size="12" font-weight="bold" text-anchor="end">85.01 tok/s</text>
   <rect x="914.00" y="197.15" width="46" height="312.85" fill="#64748B"/>
-  <text x="937.00" y="189.15" fill="#0F172A" font-family="Arial, sans-serif" font-size="12" font-weight="bold" text-anchor="middle">84.19 tok/s</text>
-  <text x="910.00" y="205.00" fill="#14532D" font-family="Arial, sans-serif" font-size="13" font-weight="bold" text-anchor="middle">RAFTInfer 1.010x</text>
+  <text x="914.00" y="189.15" fill="#0F172A" font-family="Arial, sans-serif" font-size="12" font-weight="bold" text-anchor="start">84.19 tok/s</text>
+  <text x="910.00" y="166.10" fill="#14532D" font-family="Arial, sans-serif" font-size="13" font-weight="bold" text-anchor="middle">RAFTInfer 1.010x</text>
   <text x="910.00" y="534" fill="#0F172A" font-family="Arial, sans-serif" font-size="13" font-weight="bold" text-anchor="middle">pp512</text>
   <rect x="1000.00" y="194.22" width="46" height="315.78" fill="#76B900"/>
-  <text x="1023.00" y="186.22" fill="#0F172A" font-family="Arial, sans-serif" font-size="12" font-weight="bold" text-anchor="middle">84.98 tok/s</text>
+  <text x="1046.00" y="186.22" fill="#0F172A" font-family="Arial, sans-serif" font-size="12" font-weight="bold" text-anchor="end">84.98 tok/s</text>
   <rect x="1054.00" y="197.19" width="46" height="312.81" fill="#64748B"/>
-  <text x="1077.00" y="189.19" fill="#0F172A" font-family="Arial, sans-serif" font-size="12" font-weight="bold" text-anchor="middle">84.18 tok/s</text>
-  <text x="1050.00" y="205.00" fill="#14532D" font-family="Arial, sans-serif" font-size="13" font-weight="bold" text-anchor="middle">RAFTInfer 1.009x</text>
+  <text x="1054.00" y="189.19" fill="#0F172A" font-family="Arial, sans-serif" font-size="12" font-weight="bold" text-anchor="start">84.18 tok/s</text>
+  <text x="1050.00" y="166.22" fill="#14532D" font-family="Arial, sans-serif" font-size="13" font-weight="bold" text-anchor="middle">RAFTInfer 1.009x</text>
   <text x="1050.00" y="534" fill="#0F172A" font-family="Arial, sans-serif" font-size="13" font-weight="bold" text-anchor="middle">tg128 pp512</text>
 </svg>
