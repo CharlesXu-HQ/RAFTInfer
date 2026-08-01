@@ -37,16 +37,16 @@ def record(arm, prefill_raftinfer, prefill_llama, generation_raftinfer,
 
 
 VALID_RECORDS = [
-    record("pp128", 101, 51, 111, 61, 1.980, 1.820),
-    record("pp512", 202, 102, 212, 112, 1.980, 1.890),
-    record("tg128_pp512", 303, 153, 313, 163, 1.980, 1.920),
+    record("pp128", 101, 51, 111, 61, 1.9803921568627452, 1.819672131147541),
+    record("pp512", 202, 103, 212, 113, 1.9611650485436893, 1.8761061946902655),
+    record("tg128_pp512", 303, 153, 313, 163, 1.9803921568627452, 1.9202453987730062),
 ]
 
 EXPECTED_GROUPS = {
     ("Prefill", "pp128"): ("101.00 tok/s", "51.00 tok/s", "RAFTInfer 1.980x"),
-    ("Prefill", "pp512"): ("202.00 tok/s", "102.00 tok/s", "RAFTInfer 1.980x"),
+    ("Prefill", "pp512"): ("202.00 tok/s", "103.00 tok/s", "RAFTInfer 1.961x"),
     ("Generation", "pp128"): ("111.00 tok/s", "61.00 tok/s", "RAFTInfer 1.820x"),
-    ("Generation", "pp512"): ("212.00 tok/s", "112.00 tok/s", "RAFTInfer 1.890x"),
+    ("Generation", "pp512"): ("212.00 tok/s", "113.00 tok/s", "RAFTInfer 1.876x"),
     ("Generation", "tg128 pp512"): ("313.00 tok/s", "163.00 tok/s", "RAFTInfer 1.920x"),
 }
 
@@ -82,6 +82,8 @@ class BenchmarkChartTest(unittest.TestCase):
 
     def test_scopes_each_series_label_to_its_panel_and_arm_group(self):
         """Catches labels swapped between chart groups despite matching global text."""
+        expected_ratios = [labels[2] for labels in EXPECTED_GROUPS.values()]
+        self.assertEqual(len(set(expected_ratios)), 5, "fixture ratios must be unique")
         completed, output = self.run_renderer(VALID_RECORDS)
         self.assertEqual(completed.returncode, 0, completed.stderr)
         root = ET.parse(output).getroot()

@@ -72,6 +72,15 @@ llama.cpp value, and ratio exactly once in its Prefill/Generation arm group,
 with 10 value labels and 5 ratio labels overall. Invalid schema, missing arm,
 parity, and performance-floor refusals remain covered.
 
+## Fix round 2
+
+Fix round 1 incorrectly described every displayed ratio as distinct while the
+two Prefill groups both used `1.980x`. The hand-written fixture now derives
+each ratio from its unique throughput pair and produces five distinct displayed
+ratios. An explicit `len(set(expected_ratios)) == 5` guard was first observed
+RED (`4 != 5`) and now prevents the fixture from silently degenerating again;
+the existing XML panel/arm group assertions and invalid-input cases remain.
+
 ## Concerns
 
 The accepted comparison is limited to the recorded Qwen3.5-9B BF16 RTX 5090
