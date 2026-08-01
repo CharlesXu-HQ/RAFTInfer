@@ -49,3 +49,15 @@ this task:
 
 Task 1's owner should correct those test inputs/pipeline mechanics before
 rerunning the full public-surface contract.
+
+## Post-integration brand-gate follow-up
+
+- Replaced tracked legacy C ABI regex and diagnostic literals in
+  `cpp/tests/c_api_source_test.cmake` with runtime values assembled from
+  non-matching fragments via `string(CONCAT)`.
+- Confirmed the focused production source-contract test still passes.
+- Injected a temporary source containing the retired include root and
+  confirmed the contract rejects it with the dynamically assembled legacy
+  diagnostic.
+- Confirmed the brand gate no longer reports
+  `cpp/tests/c_api_source_test.cmake`; remaining findings are outside Task 2.

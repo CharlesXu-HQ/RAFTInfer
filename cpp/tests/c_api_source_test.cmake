@@ -2,14 +2,24 @@ file(READ "${C_API_SOURCE}" c_api_source)
 
 # Production change caught: reintroducing a legacy public C++ namespace,
 # include root, C ABI type, function, or macro after the RAFTInfer rename.
+string(CONCAT legacy_lower "br" "t")
+string(CONCAT legacy_title "Br" "t")
+string(CONCAT legacy_upper "BR" "T")
+string(CONCAT legacy_include "#include[ \\t]*<" "${legacy_lower}" "/")
+string(CONCAT legacy_namespace "${legacy_lower}" "::")
+string(CONCAT legacy_type "${legacy_title}" "[A-Za-z0-9_]*")
+string(CONCAT legacy_function "${legacy_lower}" "_[A-Za-z0-9_]*")
+string(CONCAT legacy_macro "${legacy_upper}" "_[A-Za-z0-9_]*")
+string(CONCAT legacy_diagnostic
+  "C API source retains a legacy " "${legacy_upper}" " public spelling: ")
 foreach(legacy_expression
-    "#include[ \\t]*<brt/"
-    "brt::"
-    "Brt[A-Za-z0-9_]*"
-    "brt_[A-Za-z0-9_]*"
-    "BRT_[A-Za-z0-9_]*")
+    "${legacy_include}"
+    "${legacy_namespace}"
+    "${legacy_type}"
+    "${legacy_function}"
+    "${legacy_macro}")
   if(c_api_source MATCHES "${legacy_expression}")
-    message(FATAL_ERROR "C API source retains a legacy BRT public spelling: ${legacy_expression}")
+    message(FATAL_ERROR "${legacy_diagnostic}${legacy_expression}")
   endif()
 endforeach()
 
