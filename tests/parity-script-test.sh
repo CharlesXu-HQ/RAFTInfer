@@ -58,7 +58,7 @@ case "${url}" in
 esac
 EOF
 
-cat >"${fake_bin}/raftinfer-cli" <<'EOF'
+cat >"${fake_bin}/raftinfer" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 kv_cache_dtype=''
@@ -118,7 +118,7 @@ run_parity() {
   PATH="${fake_bin}:${PATH}" \
     RAFTINFER_MODEL="${fixture_root}/raftinfer.gguf" \
     LLAMA_MODEL="${fixture_root}/llama.gguf" \
-    RAFTINFER_CLI="${fake_bin}/raftinfer-cli" \
+    RAFTINFER_CLI="${fake_bin}/raftinfer" \
     LLAMA_SERVER_BIN="${fake_bin}/llama-server" \
     GPU_PREFLIGHT="${fake_bin}/gpu-preflight" \
     RAFTINFER_GPU_LOCK="${fixture_root}/gpu.lock" \
@@ -147,6 +147,28 @@ jq -e -s 'all(.[]; .execution.attention == "online_tiled" and
 [[ "$(wc -l <"${fixture_root}/preflight.log" | tr -d ' ')" -eq 5 ]]
 [[ "$(wc -l <"${fixture_root}/raftinfer-args.log" | tr -d ' ')" -eq 4 ]]
 grep -Fx 'dtype= layout=' "${fixture_root}/raftinfer-args.log"
+
+# The default must resolve the sole release binary, not the removed -cli name.
+isolated_root="${fixture_root}/isolated-repo"
+mkdir -p "${isolated_root}/scripts" "${isolated_root}/target/release" \
+  "${isolated_root}/tests/parity"
+cp "${repo_root}/scripts/qwen35-parity.sh" \
+  "${isolated_root}/scripts/qwen35-parity.sh"
+cp "${repo_root}/tests/parity/qwen35-generation-corpus.jsonl" \
+  "${isolated_root}/tests/parity/qwen35-generation-corpus.jsonl"
+cp "${fake_bin}/raftinfer" "${isolated_root}/target/release/raftinfer"
+: >"${fixture_root}/default-cli-args.log"
+PATH="${fake_bin}:${PATH}" \
+  RAFTINFER_MODEL="${fixture_root}/raftinfer.gguf" \
+  LLAMA_MODEL="${fixture_root}/llama.gguf" \
+  LLAMA_SERVER_BIN="${fake_bin}/llama-server" \
+  GPU_PREFLIGHT="${fake_bin}/gpu-preflight" \
+  RAFTINFER_GPU_LOCK="${fixture_root}/default-cli.lock" \
+  RAFTINFER_TEST_PREFLIGHT_LOG="${fixture_root}/default-cli-preflight.log" \
+  RAFTINFER_TEST_RAFTINFER_ARG_LOG="${fixture_root}/default-cli-args.log" \
+  PARITY_OUTPUT="${fixture_root}/default-cli-parity.jsonl" \
+  "${isolated_root}/scripts/qwen35-parity.sh"
+[[ "$(wc -l <"${fixture_root}/default-cli-args.log" | tr -d ' ')" -eq 4 ]]
 
 : >"${fixture_root}/preflight.log"
 : >"${fixture_root}/raftinfer-args.log"

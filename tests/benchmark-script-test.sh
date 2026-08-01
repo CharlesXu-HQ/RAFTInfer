@@ -131,7 +131,7 @@ case "${url}" in
 esac
 EOF
 
-cat >"${fake_bin}/raftinfer-cli" <<'EOF'
+cat >"${fake_bin}/raftinfer" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 prompt_tokens=''
@@ -193,7 +193,7 @@ run_benchmark() {
   PATH="${fake_bin}:${PATH}" \
     RAFTINFER_MODEL="${fixture_root}/raftinfer.gguf" \
     LLAMA_MODEL="${fixture_root}/llama.gguf" \
-    RAFTINFER_CLI="${fake_bin}/raftinfer-cli" \
+    RAFTINFER_CLI="${fake_bin}/raftinfer" \
     LLAMA_SERVER_BIN="${fake_bin}/llama-server" \
     GPU_PREFLIGHT="${fake_bin}/gpu-preflight" \
     RAFTINFER_GPU_LOCK="${fixture_root}/gpu.lock" \
@@ -283,6 +283,20 @@ legacy_field_status=$?
 set -e
 [[ "${legacy_field_status}" -ne 0 ]]
 grep -F 'measured model SHA256' "${fixture_root}/legacy-field-stderr"
+
+# A legacy top-level benchmark namespace is rejected even with valid v2
+# provenance and all other RAFTInfer fields intact.
+jq -c '.brt = .raftinfer | del(.raftinfer)' \
+  "${fixture_root}/benchmark.jsonl" >"${fixture_root}/legacy-namespace.jsonl"
+set +e
+"${repo_root}/scripts/qwen35-bf16-gate.sh" "${fixture_root}/legacy-namespace.jsonl" \
+  >"${fixture_root}/legacy-namespace-stdout" \
+  2>"${fixture_root}/legacy-namespace-stderr"
+legacy_namespace_status=$?
+set -e
+[[ "${legacy_namespace_status}" -ne 0 ]]
+grep -F 'resolved attention must be online_tiled' \
+  "${fixture_root}/legacy-namespace-stderr"
 
 printf 'different bytes\n' >"${fixture_root}/llama.gguf"
 set +e

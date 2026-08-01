@@ -51,3 +51,27 @@ layout); its SHA-256 is consequently updated. The retained old-brand strings
 are limited to the deliberate negative fixture and legacy-detection tests,
 which make rejected inputs and scans observable; production automation,
 schemas, and wire producers/parsers have no legacy spelling.
+
+## Fix round 1
+
+The automation defaults now resolve the sole Rust release binary at
+`target/release/raftinfer` (without the removed `-cli` suffix). Before the
+change, an isolated repository layout containing only that binary failed with
+`RAFTINFER_CLI is not executable: .../target/release/raftinfer-cli`; the
+updated parity test executes the default path successfully and records all
+four calls.
+
+The benchmark gate test also now replaces a valid schema-v2 top-level
+`.raftinfer` object with legacy `.brt`, while leaving the provenance fields
+valid. The gate rejects it with `resolved attention must be online_tiled`.
+
+Fix-round covering commands passed:
+
+```text
+bash -n scripts/qwen35-parity.sh scripts/qwen35-benchmark.sh \
+  tests/parity-script-test.sh tests/benchmark-script-test.sh             PASS
+tests/parity-script-test.sh                                               PASS
+tests/benchmark-script-test.sh                                            PASS
+tests/bf16-gate-script-test.sh                                            PASS
+git diff --check                                                          PASS
+```
