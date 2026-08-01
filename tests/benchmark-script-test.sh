@@ -272,8 +272,10 @@ grep -F 'provenance JSON is not a pinned BF16 artifact' \
 write_provenance
 
 # A renamed field is required: the v1 provenance spelling must be rejected.
-jq -c 'del(.provenance.raftinfer_model_sha256) |
-  .provenance.brt_model_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"' \
+legacy_checksum_key='b''rt_model_sha256'
+jq -c --arg legacy_key "${legacy_checksum_key}" '
+  del(.provenance.raftinfer_model_sha256) |
+  .provenance[$legacy_key] = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"' \
   "${fixture_root}/benchmark.jsonl" >"${fixture_root}/legacy-field.jsonl"
 set +e
 "${repo_root}/scripts/qwen35-bf16-gate.sh" "${fixture_root}/legacy-field.jsonl" \

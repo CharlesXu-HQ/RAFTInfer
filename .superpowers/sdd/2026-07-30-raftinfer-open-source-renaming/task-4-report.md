@@ -75,3 +75,11 @@ tests/benchmark-script-test.sh                                            PASS
 tests/bf16-gate-script-test.sh                                            PASS
 git diff --check                                                          PASS
 ```
+
+## Post-integration brand fix
+
+The legacy checksum-key rejection fixture now constructs the old key only at
+runtime from adjacent shell fragments and passes it to `jq` with
+`--arg legacy_key`. This preserves the executable negative coverage while
+preventing the tracked test source from itself tripping the project brand
+gate. The benchmark and BF16 gate tests still reject the resulting record.
