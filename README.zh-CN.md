@@ -67,8 +67,8 @@ scripts/qwen35-benchmark.sh
 scripts/qwen35-bf16-gate.sh build/evidence/qwen35-benchmark.jsonl
 ```
 
-脚本需要的 model 与 llama.cpp environment variables 请参阅其实现。已提交数据用以下命令
-确定性渲染：
+脚本需要的 model 与 llama.cpp environment variables 请参阅
+[脚本环境变量参考](docs/environment.md)。已提交数据用以下命令确定性渲染：
 
 ```bash
 python3 tools/render_benchmark_chart.py benchmarks/results/qwen35-9b-bf16-rtx5090.jsonl docs/assets/qwen35-bf16-rtx5090.svg

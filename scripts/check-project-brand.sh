@@ -24,7 +24,11 @@ for path in "${required[@]}"; do
   }
 done
 
-legacy_pattern='Blackwell RAFT Runtime|namespace[[:space:]]+brt|include/brt|Brt[A-Z]|brt_[A-Za-z]|(^|[^[:alnum:]_])BRT(_[A-Za-z0-9]+)?([^[:alnum:]_]|$)|brt-(sys|runtime|cli|dev|smoke|qwen35-logits)|(^|[^[:alnum:]_])brt_cpp([^[:alnum:]_]|$)|(^|[^[:alnum:]_])project[[:space:]]*\([[:space:]]*brt[[:space:]]*\)|\.brt([."]|$)|brt_model_sha256'
+legacy_word='b''rt'
+legacy_title='B''rt'
+legacy_upper='B''RT'
+legacy_brand='Blackwell RAFT'
+legacy_pattern="${legacy_brand} Runtime|namespace[[:space:]]+${legacy_word}|include/${legacy_word}|${legacy_title}[A-Z]|${legacy_word}_[A-Za-z]|(^|[^[:alnum:]_])${legacy_upper}(_[A-Za-z0-9]+)?([^[:alnum:]_]|$)|${legacy_word}-(sys|runtime|cli|dev|smoke|qwen35-logits)|(^|[^[:alnum:]_])${legacy_word}_cpp([^[:alnum:]_]|$)|(^|[^[:alnum:]_])project[[:space:]]*\\([[:space:]]*${legacy_word}[[:space:]]*\\)|\\.${legacy_word}([.\"]|$)|${legacy_word}_model_sha256"
 if git grep -I -nE "${legacy_pattern}" -- \
   . \
   ':!docs/superpowers/specs/2026-07-30-raftinfer-open-source-renaming-design.md' \

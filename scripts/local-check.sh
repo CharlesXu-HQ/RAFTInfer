@@ -13,6 +13,7 @@ python3 "${repo_root}/tests/benchmark-chart-test.py"
 "${repo_root}/tests/benchmark-asset-test.sh"
 "${repo_root}/tests/prepare-qwen35-gguf-test.sh"
 "${repo_root}/tests/public-surface-test.sh"
+"${repo_root}/tests/script-env-docs-test.sh"
 "${repo_root}/scripts/check-project-brand.sh"
 python3 "${repo_root}/tests/readme-links-test.py"
 cargo fmt --check

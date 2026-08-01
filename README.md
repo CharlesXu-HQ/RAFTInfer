@@ -74,8 +74,9 @@ scripts/qwen35-benchmark.sh
 scripts/qwen35-bf16-gate.sh build/evidence/qwen35-benchmark.jsonl
 ```
 
-Set the required model and llama.cpp environment variables described by the
-scripts. The checked-in data is rendered deterministically with:
+Set the required model and llama.cpp environment variables from the
+[script environment reference](docs/environment.md). The checked-in data is
+rendered deterministically with:
 
 ```bash
 python3 tools/render_benchmark_chart.py \
