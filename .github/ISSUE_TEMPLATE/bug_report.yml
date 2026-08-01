@@ -1,0 +1,52 @@
+name: Bug report
+description: Report a reproducible RAFTInfer problem.
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Remove secrets, tokens, and private model paths from all submitted logs.
+  - type: input
+    id: version
+    attributes:
+      label: RAFTInfer version or commit
+      placeholder: e.g. v0.1.0 or abcdef0
+    validations: { required: true }
+  - type: input
+    id: gpu
+    attributes: { label: GPU }
+    validations: { required: true }
+  - type: input
+    id: driver
+    attributes: { label: NVIDIA driver version }
+    validations: { required: true }
+  - type: input
+    id: cuda
+    attributes: { label: CUDA version }
+    validations: { required: true }
+  - type: input
+    id: model
+    attributes: { label: Model }
+    validations: { required: true }
+  - type: input
+    id: precision
+    attributes: { label: Precision }
+    validations: { required: true }
+  - type: textarea
+    id: reproduce
+    attributes: { label: Reproduction commands }
+    validations: { required: true }
+  - type: textarea
+    id: expected
+    attributes: { label: Expected result }
+    validations: { required: true }
+  - type: textarea
+    id: actual
+    attributes: { label: Actual result }
+    validations: { required: true }
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs (with secrets removed)
+      description: Include relevant logs only after removing secrets and private paths.
+    validations: { required: true }

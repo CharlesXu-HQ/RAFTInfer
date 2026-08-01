@@ -110,7 +110,7 @@ One engine may load multiple models at the API level, but v0.1 activates only on
 ├── CMakeLists.txt
 ├── Cargo.toml
 ├── cpp/
-│   ├── include/brt/
+│   ├── include/raftinfer/
 │   │   ├── c_api.h
 │   │   ├── tensor.h
 │   │   └── status.h
@@ -123,9 +123,9 @@ One engine may load multiple models at the API level, but v0.1 activates only on
 │   ├── execution/
 │   └── tests/
 ├── rust/
-│   ├── brt-sys/
-│   ├── brt-runtime/
-│   └── brt-cli/
+│   ├── raftinfer-sys/
+│   ├── raftinfer-runtime/
+│   └── raftinfer-cli/
 ├── benchmarks/
 ├── tests/
 │   ├── fixtures/
@@ -135,7 +135,7 @@ One engine may load multiple models at the API level, but v0.1 activates only on
 └── THIRD_PARTY_LICENSES/
 ```
 
-`brt` (Blackwell RAFT Runtime) is the stable technical namespace and ABI prefix. A later public repository name does not change this namespace.
+`raftinfer` (RAFTInfer) is the stable technical namespace and ABI prefix. A later public repository name does not change this namespace.
 
 ## 5. C++/Rust ABI
 
@@ -146,23 +146,23 @@ typedef struct EngineHandle EngineHandle;
 typedef struct ModelHandle ModelHandle;
 typedef struct SessionHandle SessionHandle;
 
-BrtStatus brt_engine_create(const BrtEngineConfig*, EngineHandle**);
-BrtStatus brt_engine_load_model(EngineHandle*, const char* gguf_path, ModelHandle**);
-BrtStatus brt_model_copy_tokenizer_spec(ModelHandle*, BrtOwnedBuffer*);
-BrtStatus brt_session_create(ModelHandle*, const BrtSessionConfig*, SessionHandle**);
-BrtStatus brt_session_prefill(SessionHandle*, const int32_t*, size_t, BrtPrefillResult*);
-BrtStatus brt_session_decode(SessionHandle*, const BrtDecodeParams*, BrtDecodeResult*);
-BrtStatus brt_session_reset(SessionHandle*);
+RaftInferStatus raftinfer_engine_create(const RaftInferEngineConfig*, EngineHandle**);
+RaftInferStatus raftinfer_engine_load_model(EngineHandle*, const char* gguf_path, ModelHandle**);
+RaftInferStatus raftinfer_model_copy_tokenizer_spec(ModelHandle*, RaftInferOwnedBuffer*);
+RaftInferStatus raftinfer_session_create(ModelHandle*, const RaftInferSessionConfig*, SessionHandle**);
+RaftInferStatus raftinfer_session_prefill(SessionHandle*, const int32_t*, size_t, RaftInferPrefillResult*);
+RaftInferStatus raftinfer_session_decode(SessionHandle*, const RaftInferDecodeParams*, RaftInferDecodeResult*);
+RaftInferStatus raftinfer_session_reset(SessionHandle*);
 
-void brt_owned_buffer_free(BrtOwnedBuffer*);
-void brt_session_destroy(SessionHandle*);
-void brt_model_destroy(ModelHandle*);
-void brt_engine_destroy(EngineHandle*);
+void raftinfer_owned_buffer_free(RaftInferOwnedBuffer*);
+void raftinfer_session_destroy(SessionHandle*);
+void raftinfer_model_destroy(ModelHandle*);
+void raftinfer_engine_destroy(EngineHandle*);
 ```
 
 Rust wraps the C ABI in RAII types. Normal generation transfers token IDs and small result structs, not full logits or GPU buffers. Full logits are available only in explicit diagnostic mode.
 
-The C++ GGUF loader is the single authority for model and tokenizer metadata. After model loading, `brt_model_copy_tokenizer_spec` returns a versioned, owned tokenizer-spec buffer containing the vocabulary, merges, special-token IDs, normalization rules, and chat-template metadata required by Rust. Rust copies/parses the buffer and releases it with `brt_owned_buffer_free`; it does not reopen and independently reinterpret the GGUF file.
+The C++ GGUF loader is the single authority for model and tokenizer metadata. After model loading, `raftinfer_model_copy_tokenizer_spec` returns a versioned, owned tokenizer-spec buffer containing the vocabulary, merges, special-token IDs, normalization rules, and chat-template metadata required by Rust. Rust copies/parses the buffer and releases it with `raftinfer_owned_buffer_free`; it does not reopen and independently reinterpret the GGUF file.
 
 One `session_decode` call performs the complete decode step, including graph replay or ordinary execution, logits processing, sampling, KV state update, and device counter update. Rust does not call C++ once per layer or operator.
 
@@ -389,7 +389,7 @@ GPU evidence is stored as machine-readable JSONL. Every published performance re
 
 ### 11.1 Target validation host and shared-GPU policy
 
-The initial remote validation host is `192.168.124.8`, accessed as user `charles`. Authentication secrets are never written to the repository, build scripts, logs, command history, benchmark evidence, or documentation. Tests use an interactive credential prompt or an approved secret mechanism.
+The initial remote validation host is `<validation-root>`, accessed as user `charles`. Authentication secrets are never written to the repository, build scripts, logs, command history, benchmark evidence, or documentation. Tests use an interactive credential prompt or an approved secret mechanism.
 
 The target GPU may be shared with unrelated workloads. Remote test automation must therefore follow these rules:
 

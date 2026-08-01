@@ -205,16 +205,16 @@ pass.
 The public ABI grows only at model/session granularity:
 
 ```c
-BrtStatus brt_engine_load_model(
-    BrtEngineHandle*, const char* gguf_path, BrtModelHandle**);
-BrtStatus brt_model_copy_tokenizer_spec(
-    const BrtModelHandle*, BrtOwnedBuffer*);
-BrtStatus brt_session_create(
-    BrtModelHandle*, const BrtSessionConfig*, BrtSessionHandle**);
-BrtStatus brt_session_prefill(
-    BrtSessionHandle*, const int32_t*, size_t, BrtPrefillResult*);
-BrtStatus brt_session_decode(
-    BrtSessionHandle*, const BrtDecodeParams*, BrtDecodeResult*);
+RaftInferStatus raftinfer_engine_load_model(
+    RaftInferEngineHandle*, const char* gguf_path, RaftInferModelHandle**);
+RaftInferStatus raftinfer_model_copy_tokenizer_spec(
+    const RaftInferModelHandle*, RaftInferOwnedBuffer*);
+RaftInferStatus raftinfer_session_create(
+    RaftInferModelHandle*, const RaftInferSessionConfig*, RaftInferSessionHandle**);
+RaftInferStatus raftinfer_session_prefill(
+    RaftInferSessionHandle*, const int32_t*, size_t, RaftInferPrefillResult*);
+RaftInferStatus raftinfer_session_decode(
+    RaftInferSessionHandle*, const RaftInferDecodeParams*, RaftInferDecodeResult*);
 ```
 
 Rust never submits individual blocks or operators. C++ builds the hybrid plan

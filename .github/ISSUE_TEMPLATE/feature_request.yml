@@ -1,0 +1,45 @@
+name: Feature request
+description: Propose a bounded RAFTInfer improvement.
+title: "[Feature]: "
+labels: [enhancement]
+body:
+  - type: input
+    id: version
+    attributes: { label: RAFTInfer version or commit }
+    validations: { required: true }
+  - type: input
+    id: gpu
+    attributes: { label: GPU }
+    validations: { required: true }
+  - type: input
+    id: driver
+    attributes: { label: NVIDIA driver version }
+    validations: { required: true }
+  - type: input
+    id: cuda
+    attributes: { label: CUDA version }
+    validations: { required: true }
+  - type: input
+    id: model
+    attributes: { label: Model }
+    validations: { required: true }
+  - type: input
+    id: precision
+    attributes: { label: Precision }
+    validations: { required: true }
+  - type: textarea
+    id: reproduce
+    attributes: { label: Reproduction commands or motivating workflow }
+    validations: { required: true }
+  - type: textarea
+    id: expected
+    attributes: { label: Expected result }
+    validations: { required: true }
+  - type: textarea
+    id: actual
+    attributes: { label: Current result or limitation }
+    validations: { required: true }
+  - type: textarea
+    id: logs
+    attributes: { label: Relevant logs (with secrets removed) }
+    validations: { required: true }

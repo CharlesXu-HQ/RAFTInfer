@@ -36,8 +36,8 @@ cpp/
     ├── benchmark_record_test.cpp
     └── qwen35_executor_test.cu
 rust/
-├── brt-runtime/src/lib.rs
-└── brt-cli/
+├── raftinfer-runtime/src/lib.rs
+└── raftinfer-cli/
     ├── src/main.rs
     └── tests/cli.rs
 scripts/
@@ -149,9 +149,9 @@ record with an undisclosed fallback.
 - [ ] **Step 2: Run the focused host tests and verify RED**
 
 ```bash
-cmake --build build/host --target brt_benchmark_record_test
+cmake --build build/host --target raftinfer_benchmark_record_test
 ctest --test-dir build/host \
-  -R '^brt_benchmark_record_test$' --output-on-failure
+  -R '^raftinfer_benchmark_record_test$' --output-on-failure
 ```
 
 Expected: compilation fails because schema-version-2 fields are absent.
@@ -182,8 +182,8 @@ state and peak RMM bytes are session observations.
 
 ```bash
 scripts/local-check.sh
-ctest --test-dir /home/charles/brt-builds/m5/cuda \
-  -R 'brt_(benchmark_record|qwen35_executor)_test' --output-on-failure
+ctest --test-dir <build-root>/m5/cuda \
+  -R 'raftinfer_(benchmark_record|qwen35_executor)_test' --output-on-failure
 ```
 
 Expected: all schema tests pass, executor records the selected paths, and no
@@ -202,19 +202,19 @@ git commit -m "feat: version Qwen3.5 release diagnostics"
 ### Task 2: Expose schema-version-2 evidence through the coarse Rust API
 
 **Files:**
-- Modify: `cpp/include/brt/c_api.h`
+- Modify: `cpp/include/raftinfer/c_api.h`
 - Modify: `cpp/src/c_api.cpp`
-- Modify: `rust/brt-sys/src/lib.rs`
-- Modify: `rust/brt-runtime/src/lib.rs`
-- Modify: `rust/brt-runtime/tests/engine.rs`
-- Modify: `rust/brt-cli/src/main.rs`
-- Modify: `rust/brt-cli/tests/cli.rs`
+- Modify: `rust/raftinfer-sys/src/lib.rs`
+- Modify: `rust/raftinfer-runtime/src/lib.rs`
+- Modify: `rust/raftinfer-runtime/tests/engine.rs`
+- Modify: `rust/raftinfer-cli/src/main.rs`
+- Modify: `rust/raftinfer-cli/tests/cli.rs`
 
 **Interfaces:**
 - Adds one request-level diagnostics read:
 
 ```c
-typedef struct BrtQwen35DiagnosticsV1 {
+typedef struct RaftInferQwen35DiagnosticsV1 {
   size_t struct_size;
   uint32_t schema_version;
   const char* weight_format;
@@ -227,10 +227,10 @@ typedef struct BrtQwen35DiagnosticsV1 {
   uint32_t quant_repack_version;
   uint64_t peak_rmm_bytes;
   uint8_t optimized_path_complete;
-} BrtQwen35DiagnosticsV1;
+} RaftInferQwen35DiagnosticsV1;
 
-BrtStatus brt_session_qwen35_diagnostics(
-    const BrtSessionHandle* session, BrtQwen35DiagnosticsV1* output);
+RaftInferStatus raftinfer_session_qwen35_diagnostics(
+    const RaftInferSessionHandle* session, RaftInferQwen35DiagnosticsV1* output);
 ```
 
 - Rust copies the borrowed C strings into:
@@ -261,7 +261,7 @@ request-level FFI call per prefill/decode step rather than one call per operator
 - [ ] **Step 2: Run and verify RED**
 
 ```bash
-cargo test -p brt-runtime -p brt-cli
+cargo test -p raftinfer-runtime -p raftinfer-cli
 ```
 
 Expected: diagnostics types and symbol are absent.
@@ -269,7 +269,7 @@ Expected: diagnostics types and symbol are absent.
 - [ ] **Step 3: Implement the read-only ABI**
 
 Keep string storage owned by the C++ session and valid until the next session
-mutation; copy immediately in Rust. Return `BRT_STATUS_INVALID_ARGUMENT` for a
+mutation; copy immediately in Rust. Return `RAFTINFER_STATUS_INVALID_ARGUMENT` for a
 null output or undersized structure. Do not expose raw device addresses or add
 operator-level entry points.
 
@@ -285,10 +285,10 @@ Expected: ABI source checks, runtime tests, and CLI JSON snapshots pass.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cpp/include/brt/c_api.h cpp/src/c_api.cpp \
-  rust/brt-sys/src/lib.rs rust/brt-runtime/src/lib.rs \
-  rust/brt-runtime/tests/engine.rs rust/brt-cli/src/main.rs \
-  rust/brt-cli/tests/cli.rs
+git add cpp/include/raftinfer/c_api.h cpp/src/c_api.cpp \
+  rust/raftinfer-sys/src/lib.rs rust/raftinfer-runtime/src/lib.rs \
+  rust/raftinfer-runtime/tests/engine.rs rust/raftinfer-cli/src/main.rs \
+  rust/raftinfer-cli/tests/cli.rs
 git commit -m "feat: expose Qwen3.5 execution diagnostics"
 ```
 
@@ -344,15 +344,15 @@ compute capability `12.0`, no foreign compute application, and utilization
 within the configured idle threshold before timing. Preserve `gpu-preflight.sh`
 as the human-readable refusal wrapper over the JSON snapshot.
 
-- [ ] **Step 4: Interleave BRT and llama.cpp measured arms**
+- [ ] **Step 4: Interleave RAFTINFER and llama.cpp measured arms**
 
 For each workload execute:
 
 ```text
-BRT warmup -> BRT seven measurements -> idle snapshot
+RAFTINFER warmup -> RAFTINFER seven measurements -> idle snapshot
 llama warmup -> llama seven measurements -> idle snapshot
 llama warmup -> llama seven measurements -> idle snapshot
-BRT warmup -> BRT seven measurements -> idle snapshot
+RAFTINFER warmup -> RAFTINFER seven measurements -> idle snapshot
 ```
 
 Record both arm medians and use the median of the valid samples for the ratio.
@@ -572,7 +572,7 @@ Document:
 
 ```bash
 cmake -S . -B build/release -G Ninja \
-  -DBRT_ENABLE_CUDA=ON \
+  -DRAFTINFER_ENABLE_CUDA=ON \
   -DCMAKE_CUDA_ARCHITECTURES=120a-real \
   -DCMAKE_BUILD_TYPE=Release
 cmake --build build/release
@@ -650,8 +650,8 @@ source override.
 - [ ] **Step 3: Build and run the target CUDA suite**
 
 ```bash
-cmake --build /home/charles/brt-builds/m5/cuda
-ctest --test-dir /home/charles/brt-builds/m5/cuda --output-on-failure
+cmake --build <build-root>/m5/cuda
+ctest --test-dir <build-root>/m5/cuda --output-on-failure
 ```
 
 Expected: all CUDA tests pass on compute capability 12.0.
@@ -662,16 +662,16 @@ Expected: all CUDA tests pass on compute capability 12.0.
 scripts/qwen35-parity.sh
 scripts/qwen35-q4-parity.sh
 env \
-  BRT_WEIGHT_FORMAT=BF16 \
-  BRT_MODEL=/home/charles/brt-artifacts/Qwen3.5-9B-GGUF/Qwen3.5-9B-c202236-bf16.gguf \
-  LLAMA_MODEL=/home/charles/brt-artifacts/Qwen3.5-9B-GGUF/Qwen3.5-9B-c202236-bf16.gguf \
+  RAFTINFER_WEIGHT_FORMAT=BF16 \
+  RAFTINFER_MODEL=<artifact-root>/Qwen3.5-9B-GGUF/Qwen3.5-9B-c202236-bf16.gguf \
+  LLAMA_MODEL=<artifact-root>/Qwen3.5-9B-GGUF/Qwen3.5-9B-c202236-bf16.gguf \
   PARITY_REPORT=build/evidence/qwen35-bf16-parity.jsonl \
   BENCHMARK_OUTPUT=build/evidence/qwen35-bf16.jsonl \
   scripts/qwen35-benchmark.sh
 env \
-  BRT_WEIGHT_FORMAT=Q4_K_M \
-  BRT_MODEL=/home/charles/brt-artifacts/Qwen3.5-9B-GGUF/Qwen3.5-9B-c202236-q4_k_m.gguf \
-  LLAMA_MODEL=/home/charles/brt-artifacts/Qwen3.5-9B-GGUF/Qwen3.5-9B-c202236-q4_k_m.gguf \
+  RAFTINFER_WEIGHT_FORMAT=Q4_K_M \
+  RAFTINFER_MODEL=<artifact-root>/Qwen3.5-9B-GGUF/Qwen3.5-9B-c202236-q4_k_m.gguf \
+  LLAMA_MODEL=<artifact-root>/Qwen3.5-9B-GGUF/Qwen3.5-9B-c202236-q4_k_m.gguf \
   PARITY_REPORT=build/evidence/qwen35-q4-parity.jsonl \
   BENCHMARK_OUTPUT=build/evidence/qwen35-q4-k-m.jsonl \
   scripts/qwen35-benchmark.sh
@@ -694,7 +694,7 @@ and performance gates with no foreign GPU process and no undisclosed fallback.
 
 ```bash
 scripts/v01-release-check.sh \
-  --build-dir /home/charles/brt-builds/m5/cuda \
+  --build-dir <build-root>/m5/cuda \
   --gate-manifest build/evidence/v0.1-gate.json \
   --provenance-manifest build/evidence/provenance.json \
   --evidence-commit "$(jq -r .project_commit build/evidence/v0.1-gate.json)"
@@ -721,7 +721,7 @@ git commit -m "docs: record v0.1 release evidence"
 ```bash
 scripts/local-check.sh
 scripts/v01-release-check.sh \
-  --build-dir /home/charles/brt-builds/m5/cuda \
+  --build-dir <build-root>/m5/cuda \
   --gate-manifest build/evidence/v0.1-gate.json \
   --provenance-manifest build/evidence/provenance.json \
   --evidence-commit "$(jq -r .project_commit build/evidence/v0.1-gate.json)"

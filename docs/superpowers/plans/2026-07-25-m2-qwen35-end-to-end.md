@@ -112,7 +112,7 @@ Rust 2024, GGUF v3, pinned llama.cpp.
 
 **Interfaces:**
 
-- Consumes: `brt::model::Qwen35Config`.
+- Consumes: `raftinfer::model::Qwen35Config`.
 - Produces:
   - `qwen35_rms_norm(input, weight, output, rows, cols, epsilon)`
   - `qwen35_gated_full_attention(input, output, FullAttentionReferenceArgs)`
@@ -129,7 +129,7 @@ Rust 2024, GGUF v3, pinned llama.cpp.
 - [x] **Step 2: Run the reference target and observe RED**
 
   Run:
-  `cmake --build build/host --target brt_qwen35_reference_test -j4`
+  `cmake --build build/host --target raftinfer_qwen35_reference_test -j4`
 
   Expected: compilation fails because `reference/qwen35.hpp` and its symbols
   do not exist.
@@ -152,7 +152,7 @@ Rust 2024, GGUF v3, pinned llama.cpp.
 - [x] **Step 5: Run tests and commit**
 
   Run:
-  `ctest --test-dir build/host -R brt_qwen35_reference_test --output-on-failure`
+  `ctest --test-dir build/host -R raftinfer_qwen35_reference_test --output-on-failure`
 
   Commit: `feat: add Qwen3.5 hybrid FP32 references`
 
@@ -183,7 +183,7 @@ Rust 2024, GGUF v3, pinned llama.cpp.
 - [x] **Step 2: Verify RED**
 
   Run:
-  `cmake --build build/host --target brt_qwen35_state_test -j4`
+  `cmake --build build/host --target raftinfer_qwen35_state_test -j4`
 
   Expected: missing state-layout symbols.
 
@@ -243,39 +243,39 @@ Rust 2024, GGUF v3, pinned llama.cpp.
 
 **Files:**
 
-- Modify: `cpp/include/brt/c_api.h`
+- Modify: `cpp/include/raftinfer/c_api.h`
 - Modify: `cpp/src/c_api.cpp`
 - Create: `cpp/execution/session.hpp`
 - Create: `cpp/execution/session.cpp`
 - Modify: `cpp/model/model.hpp`
 - Modify: `cpp/model/model.cpp`
 - Modify: `cpp/tests/c_api_test.cpp`
-- Modify: `rust/brt-sys/src/lib.rs`
-- Modify: `rust/brt-runtime/src/lib.rs`
-- Modify: `rust/brt-runtime/tests/engine.rs`
+- Modify: `rust/raftinfer-sys/src/lib.rs`
+- Modify: `rust/raftinfer-runtime/src/lib.rs`
+- Modify: `rust/raftinfer-runtime/tests/engine.rs`
 
 **Interfaces:**
 
 - Produces:
 
   ```c
-  typedef struct BrtSessionHandle BrtSessionHandle;
-  typedef struct BrtSessionConfig {
+  typedef struct RaftInferSessionHandle RaftInferSessionHandle;
+  typedef struct RaftInferSessionConfig {
     size_t struct_size;
     uint32_t max_context_tokens;
-  } BrtSessionConfig;
-  typedef struct BrtTokenResult {
+  } RaftInferSessionConfig;
+  typedef struct RaftInferTokenResult {
     int32_t token_id;
     uint32_t position;
-  } BrtTokenResult;
-  BrtStatus brt_session_create(
-      BrtModelHandle*, const BrtSessionConfig*, BrtSessionHandle**);
-  BrtStatus brt_session_prefill(
-      BrtSessionHandle*, const int32_t*, size_t, BrtTokenResult*);
-  BrtStatus brt_session_decode(
-      BrtSessionHandle*, int32_t, BrtTokenResult*);
-  BrtStatus brt_session_reset(BrtSessionHandle*);
-  void brt_session_destroy(BrtSessionHandle*);
+  } RaftInferTokenResult;
+  RaftInferStatus raftinfer_session_create(
+      RaftInferModelHandle*, const RaftInferSessionConfig*, RaftInferSessionHandle**);
+  RaftInferStatus raftinfer_session_prefill(
+      RaftInferSessionHandle*, const int32_t*, size_t, RaftInferTokenResult*);
+  RaftInferStatus raftinfer_session_decode(
+      RaftInferSessionHandle*, int32_t, RaftInferTokenResult*);
+  RaftInferStatus raftinfer_session_reset(RaftInferSessionHandle*);
+  void raftinfer_session_destroy(RaftInferSessionHandle*);
   ```
 
 - [x] **Step 1: Add C and Rust compile/lifetime tests**
@@ -288,9 +288,9 @@ Rust 2024, GGUF v3, pinned llama.cpp.
 
 - [x] **Step 3: Implement opaque ownership**
 
-  `BrtSessionHandle` owns one `brt::Session`. Rust `Session<'model>` owns only
+  `RaftInferSessionHandle` owns one `raftinfer::Session`. Rust `Session<'model>` owns only
   the native handle and carries `PhantomData<&'model Model<'engine>>`.
-  Prefill/decode return `BRT_STATUS_UNAVAILABLE` in host-only builds.
+  Prefill/decode return `RAFTINFER_STATUS_UNAVAILABLE` in host-only builds.
 
 - [x] **Step 4: Run host CTest/Cargo tests and commit**
 
@@ -437,9 +437,9 @@ Rust 2024, GGUF v3, pinned llama.cpp.
 
 **Files:**
 
-- Create: `rust/brt-runtime/src/tokenizer.rs`
-- Modify: `rust/brt-runtime/src/lib.rs`
-- Create: `rust/brt-runtime/tests/tokenizer.rs`
+- Create: `rust/raftinfer-runtime/src/tokenizer.rs`
+- Modify: `rust/raftinfer-runtime/src/lib.rs`
+- Create: `rust/raftinfer-runtime/tests/tokenizer.rs`
 - Create: `tests/parity/qwen35-tokenizer-corpus.jsonl`
 
 **Interfaces:**
@@ -483,9 +483,9 @@ Rust 2024, GGUF v3, pinned llama.cpp.
 
 **Files:**
 
-- Modify: `rust/brt-runtime/src/lib.rs`
-- Modify: `rust/brt-cli/src/main.rs`
-- Modify: `rust/brt-cli/tests/cli.rs`
+- Modify: `rust/raftinfer-runtime/src/lib.rs`
+- Modify: `rust/raftinfer-cli/src/main.rs`
+- Modify: `rust/raftinfer-cli/tests/cli.rs`
 - Create: `tests/parity/qwen35-generation-corpus.jsonl`
 
 **Interfaces:**
@@ -494,7 +494,7 @@ Rust 2024, GGUF v3, pinned llama.cpp.
   `Session::reset`, and:
 
   ```text
-  brt-cli generate --model MODEL.gguf --prompt TEXT
+  raftinfer-cli generate --model MODEL.gguf --prompt TEXT
                    --max-new-tokens N --context N
   ```
 
@@ -543,7 +543,7 @@ Rust 2024, GGUF v3, pinned llama.cpp.
   least four prompts: English factual, English code, Simplified Chinese, and
   mixed Chinese/English punctuation. Store token IDs, not only decoded text.
 
-- [x] **Step 3: Run BRT parity under GPU preflight**
+- [x] **Step 3: Run RAFTINFER parity under GPU preflight**
 
   Require prompt tokens and every greedy generated token to match exactly.
   On the first mismatch, record step, expected/actual token, and the nearest
@@ -554,7 +554,7 @@ Rust 2024, GGUF v3, pinned llama.cpp.
   Measure prompt processing at 128 and 512 tokens and decode for 128 tokens,
   with 5 warmups and 20 measured runs. Record median, p95, tokens/s, peak
   allocated GPU bytes, GPU model/driver, CUDA/RAFT/RMM versions, clocks, and
-  llama.cpp comparison. Flag any BRT result below 0.8x llama.cpp for follow-up
+  llama.cpp comparison. Flag any RAFTINFER result below 0.8x llama.cpp for follow-up
   before M2 is accepted.
 
 - [x] **Step 5: Run all host and GPU checks**

@@ -48,9 +48,9 @@ overflow, out-of-file tensor spans, and overlap.
 Run:
 
 ```bash
-cmake -S . -B build-m2a -DBRT_ENABLE_CUDA=OFF -DBRT_BUILD_TESTS=ON
-cmake --build build-m2a --target brt_gguf_reader_test
-ctest --test-dir build-m2a -R brt_gguf_reader_test --output-on-failure
+cmake -S . -B build-m2a -DRAFTINFER_ENABLE_CUDA=OFF -DRAFTINFER_BUILD_TESTS=ON
+cmake --build build-m2a --target raftinfer_gguf_reader_test
+ctest --test-dir build-m2a -R raftinfer_gguf_reader_test --output-on-failure
 ```
 
 Commit: `feat: parse and validate GGUF v3 catalogs`
@@ -73,8 +73,8 @@ conventional-Qwen3 metadata and any unknown block type.
 Run:
 
 ```bash
-cmake --build build-m2a --target brt_qwen35_config_test
-ctest --test-dir build-m2a -R brt_qwen35_config_test --output-on-failure
+cmake --build build-m2a --target raftinfer_qwen35_config_test
+ctest --test-dir build-m2a -R raftinfer_qwen35_config_test --output-on-failure
 ```
 
 Commit: `feat: derive Qwen3.5 hybrid block plans`
@@ -99,7 +99,7 @@ Commit: `feat: validate Qwen3.5 text tensor manifests`
 
 **Files**
 
-- Modify: `cpp/include/brt/c_api.h`
+- Modify: `cpp/include/raftinfer/c_api.h`
 - Modify: `cpp/src/c_api.cpp`
 - Modify: `cpp/src/engine.hpp`
 - Modify: `cpp/src/engine.cpp`
@@ -107,8 +107,8 @@ Commit: `feat: validate Qwen3.5 text tensor manifests`
 - Create: `cpp/model/model.cpp`
 - Extend: `cpp/tests/c_api_test.cpp`
 - Extend: `cpp/tests/c_api_source_test.cmake`
-- Modify: `rust/brt-sys/src/lib.rs`
-- Extend: `rust/brt-runtime/tests/engine.rs`
+- Modify: `rust/raftinfer-sys/src/lib.rs`
+- Extend: `rust/raftinfer-runtime/tests/engine.rs`
 
 Add opaque model ownership and atomic load failure. Initially the model owns the
 mapped catalog/config/manifest, not GPU weights. Add an owned, versioned

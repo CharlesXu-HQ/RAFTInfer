@@ -18,13 +18,13 @@
 - Correctness and algorithmic invariants gate performance publication.
 - No `bw24` source is imported in M1.
 - Already optimized `bw24` kernels may later be reused directly only after license, provenance, correctness, algorithmic, and RTX 50 performance validation.
-- Never stop or alter unrelated GPU processes on `192.168.124.8`; CUDA validation runs only after the existing fail-closed preflight succeeds.
+- Never stop or alter unrelated GPU processes on `<validation-root>`; CUDA validation runs only after the existing fail-closed preflight succeeds.
 
 ## Planned file structure
 
 ```text
 cpp/
-├── include/brt/
+├── include/raftinfer/
 │   ├── status.h
 │   └── tensor.h
 ├── operators/
@@ -61,17 +61,17 @@ cpp/
 ### Task 1: ABI-safe tensor descriptors and validation
 
 **Files:**
-- Modify: `cpp/include/brt/status.h`
-- Create: `cpp/include/brt/tensor.h`
+- Modify: `cpp/include/raftinfer/status.h`
+- Create: `cpp/include/raftinfer/tensor.h`
 - Create: `cpp/operators/tensor_validation.hpp`
 - Create: `cpp/operators/tensor_validation.cpp`
 - Create: `cpp/tests/tensor_validation_test.cpp`
 - Modify: `cpp/CMakeLists.txt`
-- Modify: `rust/brt-sys/src/lib.rs`
+- Modify: `rust/raftinfer-sys/src/lib.rs`
 
 **Interfaces:**
-- Produces: `BrtDataType`, `BrtQuantFormat`, `BrtMemoryType`, `BrtTensorDesc`, and `brt::validate_tensor_desc(const BrtTensorDesc&)`.
-- Consumes: `BrtStatusCode`.
+- Produces: `RaftInferDataType`, `RaftInferQuantFormat`, `RaftInferMemoryType`, `RaftInferTensorDesc`, and `raftinfer::validate_tensor_desc(const RaftInferTensorDesc&)`.
+- Consumes: `RaftInferStatusCode`.
 
 - [ ] **Step 1: Write the failing descriptor test**
 
@@ -88,45 +88,45 @@ scale metadata:
 
 int main() {
   float values[6]{};
-  BrtTensorDesc valid{
+  RaftInferTensorDesc valid{
       values, nullptr, nullptr, 24, {2, 3, 0, 0}, {12, 4, 0, 0},
-      2, BRT_DTYPE_F32, BRT_QUANT_NONE, BRT_MEMORY_HOST};
-  brt::validate_tensor_desc(valid);
+      2, RAFTINFER_DTYPE_F32, RAFTINFER_QUANT_NONE, RAFTINFER_MEMORY_HOST};
+  raftinfer::validate_tensor_desc(valid);
 
   auto invalid = valid;
   invalid.rank = 5;
-  try { brt::validate_tensor_desc(invalid); assert(false); }
+  try { raftinfer::validate_tensor_desc(invalid); assert(false); }
   catch (const std::invalid_argument&) {}
 
   invalid = valid;
   invalid.shape[1] = 0;
-  try { brt::validate_tensor_desc(invalid); assert(false); }
+  try { raftinfer::validate_tensor_desc(invalid); assert(false); }
   catch (const std::invalid_argument&) {}
 
   invalid = valid;
   invalid.byte_size = 20;
-  try { brt::validate_tensor_desc(invalid); assert(false); }
+  try { raftinfer::validate_tensor_desc(invalid); assert(false); }
   catch (const std::invalid_argument&) {}
 
   unsigned char packed[32]{};
   float scales[2]{};
-  BrtTensorDesc quant{
+  RaftInferTensorDesc quant{
       packed, scales, nullptr, sizeof(packed), {2, 32, 0, 0}, {16, 0, 0, 0},
-      2, BRT_DTYPE_Q4_K, BRT_QUANT_Q4_K, BRT_MEMORY_HOST};
-  brt::validate_tensor_desc(quant);
+      2, RAFTINFER_DTYPE_Q4_K, RAFTINFER_QUANT_Q4_K, RAFTINFER_MEMORY_HOST};
+  raftinfer::validate_tensor_desc(quant);
 }
 ```
 
 - [ ] **Step 2: Register and run the test to verify it fails**
 
-Add a `brt_tensor_validation_test` executable and CTest entry in
+Add a `raftinfer_tensor_validation_test` executable and CTest entry in
 `cpp/CMakeLists.txt`.
 
 Run:
 
 ```bash
-cmake -S . -B build/host -G Ninja -DBRT_ENABLE_CUDA=OFF
-cmake --build build/host --target brt_tensor_validation_test
+cmake -S . -B build/host -G Ninja -DRAFTINFER_ENABLE_CUDA=OFF
+cmake --build build/host --target raftinfer_tensor_validation_test
 ```
 
 Expected: compilation fails because `tensor_validation.hpp` is absent.
@@ -136,15 +136,15 @@ Expected: compilation fails because `tensor_validation.hpp` is absent.
 Add status values with stable integers:
 
 ```c
-BRT_STATUS_UNSUPPORTED = 5,
-BRT_STATUS_RESOURCE_EXHAUSTED = 6
+RAFTINFER_STATUS_UNSUPPORTED = 5,
+RAFTINFER_STATUS_RESOURCE_EXHAUSTED = 6
 ```
 
-Define the enums and descriptor in `cpp/include/brt/tensor.h`. Use explicit
+Define the enums and descriptor in `cpp/include/raftinfer/tensor.h`. Use explicit
 integer values, fixed arrays of length four, and this field order:
 
 ```c
-typedef struct BrtTensorDesc {
+typedef struct RaftInferTensorDesc {
   void* data;
   const void* scales;
   const void* zero_points;
@@ -152,26 +152,26 @@ typedef struct BrtTensorDesc {
   int64_t shape[4];
   int64_t strides[4];
   uint32_t rank;
-  BrtDataType dtype;
-  BrtQuantFormat quant;
-  BrtMemoryType memory;
-} BrtTensorDesc;
+  RaftInferDataType dtype;
+  RaftInferQuantFormat quant;
+  RaftInferMemoryType memory;
+} RaftInferTensorDesc;
 ```
 
 Implement checked byte-bound validation for unquantized tensors. For quantized
 tensors validate non-null data, non-null scales, positive dimensions, known
 enums, and non-zero bytes without interpreting packed blocks.
 
-Mirror the new status integers in `rust/brt-sys/src/lib.rs`.
+Mirror the new status integers in `rust/raftinfer-sys/src/lib.rs`.
 
 - [ ] **Step 4: Run tensor and ABI tests**
 
 Run:
 
 ```bash
-cmake --build build/host --target brt_tensor_validation_test brt_c_api_test
-ctest --test-dir build/host -R 'brt_(tensor_validation|c_api)_test' --output-on-failure
-cargo test -p brt-runtime
+cmake --build build/host --target raftinfer_tensor_validation_test raftinfer_c_api_test
+ctest --test-dir build/host -R 'raftinfer_(tensor_validation|c_api)_test' --output-on-failure
+cargo test -p raftinfer-runtime
 ```
 
 Expected: all selected tests pass.
@@ -179,7 +179,7 @@ Expected: all selected tests pass.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cpp/include/brt/status.h cpp/include/brt/tensor.h cpp/operators cpp/tests/tensor_validation_test.cpp cpp/CMakeLists.txt rust/brt-sys/src/lib.rs
+git add cpp/include/raftinfer/status.h cpp/include/raftinfer/tensor.h cpp/operators cpp/tests/tensor_validation_test.cpp cpp/CMakeLists.txt rust/raftinfer-sys/src/lib.rs
 git commit -m "feat: add tensor metadata contract"
 ```
 
@@ -212,7 +212,7 @@ git commit -m "feat: add tensor metadata contract"
 #include <stdexcept>
 
 int main() {
-  brt::WorkspaceLayout layout{256};
+  raftinfer::WorkspaceLayout layout{256};
   assert(layout.allocate(3, 1) == 0);
   assert(layout.allocate(16, 16) == 16);
   assert(layout.used() == 32);
@@ -228,7 +228,7 @@ int main() {
 
 - [ ] **Step 2: Run it and verify the missing-header failure**
 
-Register `brt_workspace_layout_test`, configure, and build that target.
+Register `raftinfer_workspace_layout_test`, configure, and build that target.
 Expected: compilation fails because `workspace_layout.hpp` is absent.
 
 - [ ] **Step 3: Implement checked layout arithmetic**
@@ -257,8 +257,8 @@ allocation/reset probe invoked by the existing smoke path.
 Run:
 
 ```bash
-cmake --build build/host --target brt_workspace_layout_test
-ctest --test-dir build/host -R 'brt_(workspace_layout|device_context_source)_test' --output-on-failure
+cmake --build build/host --target raftinfer_workspace_layout_test
+ctest --test-dir build/host -R 'raftinfer_(workspace_layout|device_context_source)_test' --output-on-failure
 ```
 
 Expected: selected tests pass. The target GPU build is deferred to Task 7.
@@ -306,13 +306,13 @@ reasons, and nondeterministic kernels cannot satisfy deterministic requests.
 
 - [ ] **Step 2: Run and verify the missing-header failure**
 
-Register `brt_operator_registry_test` and build it. Expected: compilation fails
+Register `raftinfer_operator_registry_test` and build it. Expected: compilation fails
 because `operator_registry.hpp` is absent.
 
 - [ ] **Step 3: Implement registry types and matching**
 
 Use enum classes for operator kind and execution regime. Store tensor metadata
-in comparable value types rather than pointer-bearing `BrtTensorDesc`.
+in comparable value types rather than pointer-bearing `RaftInferTensorDesc`.
 `OperatorSignature` implements equality and a complete hash.
 
 `KernelCapability::matches` checks operator, regime, architecture, dtype,
@@ -324,8 +324,8 @@ throws `DispatchError` with per-kernel reasons when no match exists.
 - [ ] **Step 4: Run dispatch tests twice**
 
 ```bash
-cmake --build build/host --target brt_operator_registry_test
-ctest --test-dir build/host -R brt_operator_registry_test --repeat until-fail:2 --output-on-failure
+cmake --build build/host --target raftinfer_operator_registry_test
+ctest --test-dir build/host -R raftinfer_operator_registry_test --repeat until-fail:2 --output-on-failure
 ```
 
 Expected: both deterministic runs pass.
@@ -350,7 +350,7 @@ git commit -m "feat: add deterministic operator registry"
 
 **Interfaces:**
 - Produces: `rms_norm`, `rope`, `bf16_linear`, `softmax`, `argmax`,
-  `embedding`, `add`, and `swiglu` under `brt::reference`.
+  `embedding`, `add`, and `swiglu` under `raftinfer::reference`.
 - Consumes: standard C++ spans and explicit dimension structs only.
 
 - [ ] **Step 1: Write deterministic fixture tests**
@@ -375,7 +375,7 @@ for (int trial = 0; trial < 32; ++trial) {
 
 - [ ] **Step 2: Build and verify failure**
 
-Register `brt_reference_operators_test` and build it. Expected: compilation
+Register `raftinfer_reference_operators_test` and build it. Expected: compilation
 fails because `reference/operators.hpp` is absent.
 
 - [ ] **Step 3: Implement BF16 conversion and references**
@@ -388,8 +388,8 @@ validated before writes begin.
 - [ ] **Step 4: Run reference tests**
 
 ```bash
-cmake --build build/host --target brt_reference_operators_test
-ctest --test-dir build/host -R brt_reference_operators_test --output-on-failure
+cmake --build build/host --target raftinfer_reference_operators_test
+ctest --test-dir build/host -R raftinfer_reference_operators_test --output-on-failure
 ```
 
 Expected: the fixture, randomized, and invalid-input cases pass.
@@ -423,14 +423,14 @@ vectors, one zero vector, unequal span lengths, and exact-index equality.
 Verify the relative-error floor prevents division by zero:
 
 ```cpp
-auto metrics = brt::reference::compare(
+auto metrics = raftinfer::reference::compare(
     std::array{1.0e-9F}, std::array{2.0e-9F}, 1.0e-6F);
 assert(std::abs(metrics.max_relative_error - 0.001) < 1.0e-6);
 ```
 
 - [ ] **Step 2: Build and verify failure**
 
-Register `brt_correctness_test` and build it. Expected: missing-header failure.
+Register `raftinfer_correctness_test` and build it. Expected: missing-header failure.
 
 - [ ] **Step 3: Implement metrics**
 
@@ -442,8 +442,8 @@ separate `indices_equal` for exact index spans.
 - [ ] **Step 4: Run tests**
 
 ```bash
-cmake --build build/host --target brt_correctness_test
-ctest --test-dir build/host -R brt_correctness_test --output-on-failure
+cmake --build build/host --target raftinfer_correctness_test
+ctest --test-dir build/host -R raftinfer_correctness_test --output-on-failure
 ```
 
 Expected: all metric semantics pass.
@@ -485,7 +485,7 @@ Create a complete record containing a quoted kernel name and assert the output:
 
 - [ ] **Step 2: Build and verify failure**
 
-Register `brt_benchmark_record_test` and build it. Expected: missing-header
+Register `raftinfer_benchmark_record_test` and build it. Expected: missing-header
 failure.
 
 - [ ] **Step 3: Implement the serializer**
@@ -528,13 +528,13 @@ git commit -m "feat: add benchmark evidence records"
 - Modify: `docs/provenance/dependencies.md`
 
 **Interfaces:**
-- Produces: fresh M1 build/smoke evidence on `192.168.124.8`.
+- Produces: fresh M1 build/smoke evidence on `<validation-root>`.
 - Consumes: all prior tasks and the existing fail-closed GPU preflight.
 
 - [ ] **Step 1: Extend smoke validation**
 
 Make the smoke build execute the workspace allocation/reset probe through the
-existing `brt_engine_run_smoke` path. Keep the golden JSON unchanged so M0 ABI
+existing `raftinfer_engine_run_smoke` path. Keep the golden JSON unchanged so M0 ABI
 consumers remain compatible.
 
 - [ ] **Step 2: Run remote preflight**

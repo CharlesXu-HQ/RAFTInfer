@@ -27,8 +27,8 @@ Debug:
 ```bash
 cmake -S . -B build/m2a-debug -G Ninja \
   -DCMAKE_BUILD_TYPE=Debug \
-  -DBRT_ENABLE_CUDA=OFF \
-  -DBRT_BUILD_TESTS=ON
+  -DRAFTINFER_ENABLE_CUDA=OFF \
+  -DRAFTINFER_BUILD_TESTS=ON
 cmake --build build/m2a-debug -j4
 ctest --test-dir build/m2a-debug --output-on-failure
 ```
@@ -40,8 +40,8 @@ Release:
 ```bash
 cmake -S . -B build/m2a-release -G Ninja \
   -DCMAKE_BUILD_TYPE=Release \
-  -DBRT_ENABLE_CUDA=OFF \
-  -DBRT_BUILD_TESTS=ON
+  -DRAFTINFER_ENABLE_CUDA=OFF \
+  -DRAFTINFER_BUILD_TESTS=ON
 cmake --build build/m2a-release -j4
 ctest --test-dir build/m2a-release --output-on-failure
 ```

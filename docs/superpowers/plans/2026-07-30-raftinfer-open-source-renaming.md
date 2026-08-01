@@ -708,7 +708,7 @@ Use the approved section order. The top contains:
 ```markdown
 # RAFTInfer
 
-[简体中文](README.zh-CN.md)
+[简体中文](../../../README.zh-CN.md)
 
 Correctness-gated RAFT/RMM inference with custom CUDA kernels for RTX
 50-series GPUs.
@@ -723,7 +723,7 @@ contribution, security, citation, and Apache-2.0 license.
 Mirror the English structure and facts. Link back with:
 
 ```markdown
-[English](README.md)
+[English](../../../README.md)
 ```
 
 Do not translate command names, paths, model identifiers, revisions, or

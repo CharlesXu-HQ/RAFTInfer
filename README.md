@@ -1,6 +1,6 @@
-# Blackwell RAFT Runtime
+# RAFTInfer
 
-Blackwell RAFT Runtime (BRT) is an open-source Qwen3.5 inference runtime for
+RAFTInfer is an open-source Qwen3.5 inference runtime for
 RTX 50-series GPUs. RAFT and RMM provide the device-resource, stream, and memory
 foundation; performance-critical model operators are implemented in project
 C++/CUDA code and selected through stable execution plans.
@@ -10,7 +10,7 @@ CUDA build and all 23 target CTest tests pass, four real-model prompts match a
 pinned llama.cpp reference exactly under greedy decoding, and both PP128/TG128
 and PP512/TG128 exceed the required 0.8 throughput ratio. Exact evidence and
 reproduction paths are recorded in
-[docs/m2-verification.md](docs/m2-verification.md).
+[docs/verification/m2.md](docs/verification/m2.md).
 
 ## Scope
 
@@ -64,14 +64,14 @@ development image supplies this environment.
 
 ```bash
 cmake -S . -B build/cuda -G Ninja \
-  -DBRT_ENABLE_CUDA=ON \
-  -DBRT_BUILD_TESTS=ON
+  -DRAFTINFER_ENABLE_CUDA=ON \
+  -DRAFTINFER_BUILD_TESTS=ON
 cmake --build build/cuda
 scripts/gpu-preflight.sh
 ctest --test-dir build/cuda --output-on-failure
 
-BRT_ENABLE_CUDA=ON cargo build --release -p brt-cli
-target/release/brt-cli generate \
+RAFTINFER_ENABLE_CUDA=ON cargo build --release -p raftinfer-cli
+target/release/raftinfer generate \
   --model /path/to/Qwen3.5-9B-bf16.gguf \
   --prompt "用一句话解释 RAFT 在本项目中的作用。" \
   --max-new-tokens 32 \
@@ -79,9 +79,9 @@ target/release/brt-cli generate \
   --output-format json
 ```
 
-CUDA builds default `brt_cpp` to a shared native library so the CMake target
+CUDA builds default `raftinfer_cpp` to a shared native library so the CMake target
 encapsulates the CUDA/RAFT/RMM/cuBLASLt dependency closure. Host builds default
-to a static library. `BRT_NATIVE_LIBRARY_TYPE=STATIC|SHARED` can override this
+to a static library. `RAFTINFER_NATIVE_LIBRARY_TYPE=STATIC|SHARED` can override this
 choice explicitly.
 
 ## Parity and performance
@@ -105,11 +105,11 @@ scripts/prepare-qwen35-gguf.sh
 Then run exact token parity before benchmarking:
 
 ```bash
-BRT_MODEL=/path/to/Qwen3.5-9B-bf16.gguf \
+RAFTINFER_MODEL=/path/to/Qwen3.5-9B-bf16.gguf \
 LLAMA_SERVER_BIN=/path/to/llama-server \
 scripts/qwen35-parity.sh
 
-BRT_MODEL=/path/to/Qwen3.5-9B-bf16.gguf \
+RAFTINFER_MODEL=/path/to/Qwen3.5-9B-bf16.gguf \
 LLAMA_SERVER_BIN=/path/to/llama-server \
 scripts/qwen35-benchmark.sh
 ```
@@ -119,8 +119,8 @@ Both GPU scripts take a cooperative lock and execute
 record passes. On a shared GPU, do not bypass this guard or stop unrelated
 processes.
 
-See [docs/m2-verification.md](docs/m2-verification.md) for the current evidence,
+See [docs/verification/m2.md](docs/verification/m2.md) for the current evidence,
 [docs/provenance/qwen35-9b.md](docs/provenance/qwen35-9b.md) for artifact
-provenance status, [docs/m1-verification.md](docs/m1-verification.md) for M1,
+provenance status, [docs/verification/m1.md](docs/verification/m1.md) for M1,
 and [docs/provenance/dependencies.md](docs/provenance/dependencies.md) for
 dependency provenance.

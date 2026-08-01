@@ -1,0 +1,25 @@
+name: Host CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  host:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Install host build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build jq python3
+      - name: Run host checks
+        run: scripts/local-check.sh
+      - name: Lint Rust workspace
+        run: cargo clippy --workspace --all-targets -- -D warnings

@@ -35,7 +35,7 @@ The completed M2 baseline is functionally correct and has exact greedy-token
 parity on the fixed acceptance corpus, but its performance is uneven on the RTX
 5090 target:
 
-| Workload | BRT tok/s | llama.cpp tok/s | Ratio |
+| Workload | RAFTINFER tok/s | llama.cpp tok/s | Ratio |
 |---|---:|---:|---:|
 | PP128 | 6065.34 | 3435.46 | 1.7655 |
 | TG128 after PP128 | 82.00 | 84.23 | 0.9735 |
@@ -198,7 +198,7 @@ The decode kernel:
 
 The implementation may reuse scheduling patterns from llama.cpp's tiled
 FlashAttention implementation, subject to license and provenance requirements,
-but it is adapted to BRT's tensor layout and execution plan rather than wrapped
+but it is adapted to RAFTINFER's tensor layout and execution plan rather than wrapped
 through GGML.
 
 An unoptimized reference attention path remains test-only and diagnostic. It is
@@ -319,7 +319,7 @@ For each candidate:
    assumptions;
 3. test the unmodified or minimally adapted kernel against the independent
    project reference;
-4. benchmark it against the existing BRT implementation on RTX 50;
+4. benchmark it against the existing RAFTINFER implementation on RTX 50;
 5. reuse it directly when it is compatible and faster;
 6. retain attribution and document material modifications.
 
@@ -366,10 +366,10 @@ The acceptance runner performs:
 5. at least three warmup rounds;
 6. seven measured rounds;
 7. median and dispersion calculation;
-8. BRT/llama ratio evaluation;
+8. RAFTINFER/llama ratio evaluation;
 9. structured artifact emission.
 
-The runner uses a pinned llama.cpp commit and records its build flags. BRT and
+The runner uses a pinned llama.cpp commit and records its build flags. RAFTINFER and
 llama.cpp run sequentially on the same target with matching weight format, KV
 cache dtype, prompt tokens, context, and generation settings. Throughput gates
 compare the median of seven measured rounds. A coefficient of variation above

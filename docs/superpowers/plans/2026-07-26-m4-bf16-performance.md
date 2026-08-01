@@ -62,7 +62,7 @@ docs/
 - Produces:
 
 ```cpp
-namespace brt {
+namespace raftinfer {
 enum class Qwen35AttentionImplementation : std::uint8_t {
   materialized_reference,
   online_tiled,
@@ -89,11 +89,11 @@ struct Qwen35ExecutionPolicy {
 };
 }
 
-namespace brt::kernels {
+namespace raftinfer::kernels {
 struct Qwen35AttentionLaunchPolicy {
-  brt::Qwen35AttentionImplementation implementation;
-  brt::Qwen35KvCacheDType kv_cache_dtype;
-  brt::Qwen35KvCacheLayout kv_cache_layout;
+  raftinfer::Qwen35AttentionImplementation implementation;
+  raftinfer::Qwen35KvCacheDType kv_cache_dtype;
+  raftinfer::Qwen35KvCacheLayout kv_cache_layout;
 };
 }
 ```
@@ -108,15 +108,15 @@ an incorrectly sized buffer, and verify that the reference policy still
 produces the existing output:
 
 ```cpp
-const brt::kernels::Qwen35AttentionLaunchPolicy reference{
+const raftinfer::kernels::Qwen35AttentionLaunchPolicy reference{
     .implementation =
-        brt::Qwen35AttentionImplementation::materialized_reference,
-    .kv_cache_dtype = brt::Qwen35KvCacheDType::f32,
+        raftinfer::Qwen35AttentionImplementation::materialized_reference,
+    .kv_cache_dtype = raftinfer::Qwen35KvCacheDType::f32,
 };
-assert(brt::kernels::qwen35_attention_cache_bytes(shape, reference) ==
+assert(raftinfer::kernels::qwen35_attention_cache_bytes(shape, reference) ==
        2 * shape.max_context_tokens * shape.kv_heads * shape.head_dim *
            sizeof(float));
-assert(brt::kernels::qwen35_attention_workspace_bytes(shape, reference) ==
+assert(raftinfer::kernels::qwen35_attention_workspace_bytes(shape, reference) ==
        shape.tokens * shape.query_heads *
            (shape.past_tokens + shape.tokens) * sizeof(float));
 ```
@@ -126,9 +126,9 @@ assert(brt::kernels::qwen35_attention_workspace_bytes(shape, reference) ==
 Run on the RTX 50 target:
 
 ```bash
-cmake --build /home/charles/brt-builds/m4/cuda --target brt_qwen35_cuda_attention_test
-ctest --test-dir /home/charles/brt-builds/m4/cuda \
-  -R '^brt_qwen35_cuda_attention_test$' --output-on-failure
+cmake --build <build-root>/m4/cuda --target raftinfer_qwen35_cuda_attention_test
+ctest --test-dir <build-root>/m4/cuda \
+  -R '^raftinfer_qwen35_cuda_attention_test$' --output-on-failure
 ```
 
 Expected: compilation fails because the policy types and byte-sized API do not
@@ -143,7 +143,7 @@ void qwen35_causal_attention_materialized(
     const void* query, const void* key, const void* value, const void* gate,
     void* output, void* kv_cache, std::size_t kv_cache_bytes,
     void* workspace, std::size_t workspace_bytes, Qwen35AttentionShape shape,
-    BrtDataType activation_dtype, Qwen35KvCacheDType cache_dtype,
+    RaftInferDataType activation_dtype, Qwen35KvCacheDType cache_dtype,
     cudaStream_t stream);
 ```
 
@@ -156,8 +156,8 @@ non-F32 cache dtype.
 Run:
 
 ```bash
-ctest --test-dir /home/charles/brt-builds/m4/cuda \
-  -R '^brt_qwen35_cuda_attention_test$' --output-on-failure
+ctest --test-dir <build-root>/m4/cuda \
+  -R '^raftinfer_qwen35_cuda_attention_test$' --output-on-failure
 scripts/local-check.sh
 ```
 
@@ -193,7 +193,7 @@ std::size_t qwen35_online_attention_workspace_bytes(
 void qwen35_online_attention_prefill(
     const void* query, const void* key, const void* value, const void* gate,
     void* output, void* kv_cache, std::size_t kv_cache_bytes,
-    Qwen35AttentionShape shape, BrtDataType activation_dtype,
+    Qwen35AttentionShape shape, RaftInferDataType activation_dtype,
     Qwen35KvCacheDType cache_dtype, cudaStream_t stream);
 ```
 
@@ -281,7 +281,7 @@ git commit -m "feat: add tiled online-softmax prefill attention"
 void qwen35_online_attention_decode(
     const void* query, const void* key, const void* value, const void* gate,
     void* output, void* kv_cache, std::size_t kv_cache_bytes,
-    Qwen35AttentionShape shape, BrtDataType activation_dtype,
+    Qwen35AttentionShape shape, RaftInferDataType activation_dtype,
     Qwen35KvCacheDType cache_dtype, const std::uint32_t* device_position,
     cudaStream_t stream);
 ```
@@ -636,8 +636,8 @@ current kernel median separately for prefill and decode.
 - [x] **Step 2: Run the focused tests before optimization**
 
 ```bash
-ctest --test-dir /home/charles/brt-builds/m4/cuda \
-  -R '^brt_qwen35_cuda_delta_test$' --output-on-failure
+ctest --test-dir <build-root>/m4/cuda \
+  -R '^raftinfer_qwen35_cuda_delta_test$' --output-on-failure
 ```
 
 Expected: the current register-resident schedule passes and establishes the
@@ -676,12 +676,12 @@ token IDs.
 Final Task 8 commit `ffc99ed` passed target CUDA 13.2 `sm_120a` compile and
 focused GPU CTest 3/3: delta 0.51s, executor 0.54s, graph 1.71s. The focused
 microbenchmark evidence is
-`/home/charles/brt-validation/task8-ffc99ed/task8-delta-microbench.jsonl`:
+`<artifact-root>/task8-ffc99ed/task8-delta-microbench.jsonl`:
 bucket `1` current/candidate medians 0.014368/0.008192 ms, bucket `128`
 0.607232/0.14336 ms, and bucket `512` 2.40742/0.548864 ms; all candidates were
 correctness-passing and accepted. Independent review is APPROVE. Real
 Qwen3.5-9B parity passed 4/4 prompts × 32 exact tokens at
-`/home/charles/brt-validation/task8-ffc99ed/qwen35-task8-parity.jsonl`, and
+`<artifact-root>/task8-ffc99ed/qwen35-task8-parity.jsonl`, and
 post-validation preflight reported the GPU idle. The 64-dim fixture
 microbenchmark is a focused schedule-selection diagnostic, not end-to-end
 throughput evidence; the real 128-dim model path is covered by exact parity.

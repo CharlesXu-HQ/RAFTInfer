@@ -59,7 +59,7 @@ M1 is complete when:
 
 ### 4.1 Tensor contract
 
-`cpp/include/brt/tensor.h` contains ABI-safe enums and `BrtTensorDesc`. The
+`cpp/include/raftinfer/tensor.h` contains ABI-safe enums and `RaftInferTensorDesc`. The
 descriptor uses fixed-size shape and stride arrays with an explicit rank and
 byte size. It contains non-owning pointers only. Quantized packing remains
 opaque to the execution layer.
@@ -151,7 +151,7 @@ A record cannot claim publishable performance unless correctness passed.
 ## 5. Data flow
 
 ```text
-BrtTensorDesc
+RaftInferTensorDesc
   -> metadata validation
   -> OperatorSignature
   -> OperatorRegistry::resolve
@@ -167,9 +167,9 @@ BrtTensorDesc
 
 ## 6. Error handling
 
-- Public tensor validation failures use `BRT_STATUS_INVALID_ARGUMENT`.
-- Unsupported signatures use a new `BRT_STATUS_UNSUPPORTED` status.
-- Workspace exhaustion uses `BRT_STATUS_RESOURCE_EXHAUSTED`.
+- Public tensor validation failures use `RAFTINFER_STATUS_INVALID_ARGUMENT`.
+- Unsupported signatures use a new `RAFTINFER_STATUS_UNSUPPORTED` status.
+- Workspace exhaustion uses `RAFTINFER_STATUS_RESOURCE_EXHAUSTED`.
 - A selected kernel launch failure remains a CUDA or internal error according
   to its source.
 - Registry resolution returns a structured error containing the complete

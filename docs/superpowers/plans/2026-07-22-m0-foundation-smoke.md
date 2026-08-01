@@ -4,7 +4,7 @@
 
 **Goal:** Build a reproducible C++20/CUDA plus Rust project spine in which Rust creates a C++ engine, the C++ engine owns RAFT 26.06 resources and an RMM 26.06 pool, and a target RTX 5090 executes and verifies one GPU smoke kernel.
 
-**Architecture:** macOS builds a host-only C++ stub and Rust safe wrapper to validate the ABI without CUDA. GPU builds run in the pinned `rapidsai/base:26.06-cuda13-py3.13` container, where C++ owns RAFT/RMM/CUDA state and exposes opaque handles through a stable `brt_*` C ABI. The remote smoke runner checks shared-GPU state before starting and never modifies system GPU settings or interferes with other processes.
+**Architecture:** macOS builds a host-only C++ stub and Rust safe wrapper to validate the ABI without CUDA. GPU builds run in the pinned `rapidsai/base:26.06-cuda13-py3.13` container, where C++ owns RAFT/RMM/CUDA state and exposes opaque handles through a stable `raftinfer_*` C ABI. The remote smoke runner checks shared-GPU state before starting and never modifies system GPU settings or interferes with other processes.
 
 **Tech Stack:** C++20, CUDA 13.x, RAFT 26.06, RMM 26.06, CMake 3.26.4+, Ninja, Rust 1.96.0, Cargo, Docker 29+, NVIDIA Container Toolkit 1.19+, RTX 50 `sm_120a`.
 
@@ -15,10 +15,10 @@ This plan intentionally covers M0 only. M1 through M5 each require a separate im
 - v0.1 targets RTX 50-series consumer Blackwell only; compile CUDA code for `sm_120a`.
 - RAFT/RMM own common GPU resource and memory infrastructure; custom CUDA owns hot kernels.
 - C++ owns every GPU pointer, stream, event, allocation, and graph; Rust receives opaque handles only.
-- Public C symbols use the `brt_` prefix and public headers live under `cpp/include/brt/`.
+- Public C symbols use the `raftinfer_` prefix and public headers live under `cpp/include/raftinfer/`.
 - C++ exceptions must not cross the C ABI.
 - No GPU allocation occurs in the host-only build.
-- The target host is `192.168.124.8`, user `charles`; authentication secrets never enter repository files, scripts, logs, or evidence.
+- The target host is `<validation-root>`, user `charles`; authentication secrets never enter repository files, scripts, logs, or evidence.
 - Never stop or alter unrelated GPU processes. Abort a GPU test if the shared-GPU preflight detects compute activity or insufficient memory headroom.
 - Use Apache-2.0 for original project code and retain third-party notices.
 - M0 does not load a model, parse GGUF, implement operators, or benchmark inference.
@@ -33,10 +33,10 @@ This plan intentionally covers M0 only. M1 through M5 each require a separate im
 ├── LICENSE                            Apache License 2.0
 ├── NOTICE                             Project and third-party notice entry point
 ├── cmake/
-│   └── BrtOptions.cmake               CUDA/backend configuration checks
+│   └── RaftInferOptions.cmake               CUDA/backend configuration checks
 ├── cpp/
 │   ├── CMakeLists.txt                 C++ library, tests, and smoke executable
-│   ├── include/brt/
+│   ├── include/raftinfer/
 │   │   ├── c_api.h                    Stable opaque-handle C ABI
 │   │   └── status.h                   ABI-safe status codes
 │   ├── src/
@@ -52,17 +52,17 @@ This plan intentionally covers M0 only. M1 through M5 each require a separate im
 │   ├── tests/
 │   │   └── c_api_test.cpp             Host-only ABI lifecycle tests
 │   └── tools/
-│       └── brt_smoke.cpp              GPU smoke CLI
+│       └── raftinfer_smoke.cpp              GPU smoke CLI
 ├── rust/
-│   ├── brt-sys/
+│   ├── raftinfer-sys/
 │   │   ├── Cargo.toml                 Raw ABI crate
 │   │   ├── build.rs                   CMake build and native link configuration
 │   │   └── src/lib.rs                 Raw FFI declarations
-│   ├── brt-runtime/
+│   ├── raftinfer-runtime/
 │   │   ├── Cargo.toml                 Safe Rust API
 │   │   ├── src/lib.rs                 RAII Engine wrapper
 │   │   └── tests/engine.rs            Rust lifecycle/error tests
-│   └── brt-cli/
+│   └── raftinfer-cli/
 │       ├── Cargo.toml                 Smoke CLI crate
 │       └── src/main.rs                Host/GPU smoke command
 ├── containers/
@@ -87,14 +87,14 @@ This plan intentionally covers M0 only. M1 through M5 each require a separate im
 - Create: `LICENSE`
 - Create: `NOTICE`
 - Create: `CMakeLists.txt`
-- Create: `cmake/BrtOptions.cmake`
+- Create: `cmake/RaftInferOptions.cmake`
 - Create: `cpp/CMakeLists.txt`
-- Create: `cpp/include/brt/status.h`
+- Create: `cpp/include/raftinfer/status.h`
 - Create: `cpp/src/status.cpp`
 - Create: `cpp/tests/c_api_test.cpp`
 
 **Interfaces:**
-- Produces: `BrtStatusCode`, `BrtStatus`, `BRT_ENABLE_CUDA`, and the `brt_cpp` build target used by every later task.
+- Produces: `RaftInferStatusCode`, `RaftInferStatus`, `RAFTINFER_ENABLE_CUDA`, and the `raftinfer_cpp` build target used by every later task.
 - Consumes: no project code.
 
 - [ ] **Step 1: Add repository metadata and build exclusions**
@@ -116,8 +116,8 @@ compile_commands.json
 Create `LICENSE` using the complete Apache License 2.0 text published at `https://www.apache.org/licenses/LICENSE-2.0.txt`. Create `NOTICE` with:
 
 ```text
-Blackwell RAFT Runtime (BRT)
-Copyright 2026 BRT contributors
+RAFTInfer
+Copyright 2026 RAFTINFER contributors
 
 This product includes software developed by third parties. Their notices and
 license texts are recorded under THIRD_PARTY_LICENSES/ and docs/provenance/.
@@ -128,16 +128,16 @@ license texts are recorded under THIRD_PARTY_LICENSES/ and docs/provenance/.
 Create `cpp/tests/c_api_test.cpp`:
 
 ```cpp
-#include <brt/status.h>
+#include <raftinfer/status.h>
 
 #include <cassert>
 #include <type_traits>
 
 int main() {
-  static_assert(std::is_standard_layout_v<BrtStatus>);
-  static_assert(std::is_trivially_copyable_v<BrtStatus>);
-  BrtStatus ok{BRT_STATUS_OK, nullptr};
-  assert(ok.code == BRT_STATUS_OK);
+  static_assert(std::is_standard_layout_v<RaftInferStatus>);
+  static_assert(std::is_trivially_copyable_v<RaftInferStatus>);
+  RaftInferStatus ok{RAFTINFER_STATUS_OK, nullptr};
+  assert(ok.code == RAFTINFER_STATUS_OK);
   assert(ok.message == nullptr);
   return 0;
 }
@@ -149,19 +149,19 @@ Create `CMakeLists.txt`:
 
 ```cmake
 cmake_minimum_required(VERSION 3.26.4)
-project(brt VERSION 0.1.0 LANGUAGES CXX)
+project(raftinfer VERSION 0.1.0 LANGUAGES CXX)
 
-include(cmake/BrtOptions.cmake)
+include(cmake/RaftInferOptions.cmake)
 add_subdirectory(cpp)
 ```
 
-Create `cmake/BrtOptions.cmake`:
+Create `cmake/RaftInferOptions.cmake`:
 
 ```cmake
-option(BRT_ENABLE_CUDA "Build the RAFT/RMM CUDA backend" OFF)
-option(BRT_BUILD_TESTS "Build BRT tests" ON)
+option(RAFTINFER_ENABLE_CUDA "Build the RAFT/RMM CUDA backend" OFF)
+option(RAFTINFER_BUILD_TESTS "Build RAFTINFER tests" ON)
 
-if(BRT_ENABLE_CUDA)
+if(RAFTINFER_ENABLE_CUDA)
   enable_language(CUDA)
   set(CMAKE_CUDA_ARCHITECTURES 120a CACHE STRING "CUDA architectures" FORCE)
 endif()
@@ -170,41 +170,41 @@ endif()
 Create `cpp/CMakeLists.txt`:
 
 ```cmake
-add_library(brt_cpp STATIC src/status.cpp)
-target_compile_features(brt_cpp PUBLIC cxx_std_20)
-target_include_directories(brt_cpp PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+add_library(raftinfer_cpp STATIC src/status.cpp)
+target_compile_features(raftinfer_cpp PUBLIC cxx_std_20)
+target_include_directories(raftinfer_cpp PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
-if(BRT_BUILD_TESTS)
+if(RAFTINFER_BUILD_TESTS)
   enable_testing()
-  add_executable(brt_c_api_test tests/c_api_test.cpp)
-  target_link_libraries(brt_c_api_test PRIVATE brt_cpp)
-  add_test(NAME brt_c_api_test COMMAND brt_c_api_test)
+  add_executable(raftinfer_c_api_test tests/c_api_test.cpp)
+  target_link_libraries(raftinfer_c_api_test PRIVATE raftinfer_cpp)
+  add_test(NAME raftinfer_c_api_test COMMAND raftinfer_c_api_test)
 endif()
 ```
 
 Create `cpp/src/status.cpp`:
 
 ```cpp
-#include <brt/status.h>
+#include <raftinfer/status.h>
 
 #include <type_traits>
 
-static_assert(std::is_standard_layout_v<BrtStatus>);
-static_assert(std::is_trivially_copyable_v<BrtStatus>);
+static_assert(std::is_standard_layout_v<RaftInferStatus>);
+static_assert(std::is_trivially_copyable_v<RaftInferStatus>);
 ```
 
 Run:
 
 ```bash
-cmake -S . -B build/host -G Ninja -DBRT_ENABLE_CUDA=OFF
+cmake -S . -B build/host -G Ninja -DRAFTINFER_ENABLE_CUDA=OFF
 cmake --build build/host
 ```
 
-Expected: compile fails because `brt/status.h` does not exist.
+Expected: compile fails because `raftinfer/status.h` does not exist.
 
 - [ ] **Step 4: Implement the ABI-safe status types**
 
-Create `cpp/include/brt/status.h`:
+Create `cpp/include/raftinfer/status.h`:
 
 ```cpp
 #pragma once
@@ -213,18 +213,18 @@ Create `cpp/include/brt/status.h`:
 extern "C" {
 #endif
 
-typedef enum BrtStatusCode {
-  BRT_STATUS_OK = 0,
-  BRT_STATUS_INVALID_ARGUMENT = 1,
-  BRT_STATUS_UNAVAILABLE = 2,
-  BRT_STATUS_CUDA_ERROR = 3,
-  BRT_STATUS_INTERNAL = 4
-} BrtStatusCode;
+typedef enum RaftInferStatusCode {
+  RAFTINFER_STATUS_OK = 0,
+  RAFTINFER_STATUS_INVALID_ARGUMENT = 1,
+  RAFTINFER_STATUS_UNAVAILABLE = 2,
+  RAFTINFER_STATUS_CUDA_ERROR = 3,
+  RAFTINFER_STATUS_INTERNAL = 4
+} RaftInferStatusCode;
 
-typedef struct BrtStatus {
-  BrtStatusCode code;
+typedef struct RaftInferStatus {
+  RaftInferStatusCode code;
   const char* message;
-} BrtStatus;
+} RaftInferStatus;
 
 #ifdef __cplusplus
 }
@@ -245,7 +245,7 @@ Expected: `100% tests passed, 0 tests failed out of 1`.
 - [ ] **Step 6: Commit the build spine**
 
 ```bash
-git add .gitignore LICENSE NOTICE CMakeLists.txt cmake/BrtOptions.cmake cpp/CMakeLists.txt cpp/include/brt/status.h cpp/src/status.cpp cpp/tests/c_api_test.cpp
+git add .gitignore LICENSE NOTICE CMakeLists.txt cmake/RaftInferOptions.cmake cpp/CMakeLists.txt cpp/include/raftinfer/status.h cpp/src/status.cpp cpp/tests/c_api_test.cpp
 git commit -m "build: add host-only C++ project spine"
 ```
 
@@ -254,7 +254,7 @@ git commit -m "build: add host-only C++ project spine"
 ### Task 2: Opaque C ABI and host engine lifecycle
 
 **Files:**
-- Create: `cpp/include/brt/c_api.h`
+- Create: `cpp/include/raftinfer/c_api.h`
 - Create: `cpp/src/engine.hpp`
 - Create: `cpp/src/engine.cpp`
 - Create: `cpp/src/c_api.cpp`
@@ -262,35 +262,35 @@ git commit -m "build: add host-only C++ project spine"
 - Modify: `cpp/tests/c_api_test.cpp`
 
 **Interfaces:**
-- Consumes: `BrtStatus` from Task 1.
-- Produces: `BrtEngineHandle`, `BrtEngineConfig`, `brt_engine_create`, `brt_engine_destroy`, `brt_engine_is_cuda_enabled`, and `brt_last_error_message` for the Rust wrapper.
+- Consumes: `RaftInferStatus` from Task 1.
+- Produces: `RaftInferEngineHandle`, `RaftInferEngineConfig`, `raftinfer_engine_create`, `raftinfer_engine_destroy`, `raftinfer_engine_is_cuda_enabled`, and `raftinfer_last_error_message` for the Rust wrapper.
 
 - [ ] **Step 1: Extend the test with lifecycle and argument failures**
 
 Replace `cpp/tests/c_api_test.cpp` with:
 
 ```cpp
-#include <brt/c_api.h>
+#include <raftinfer/c_api.h>
 
 #include <cassert>
 #include <cstring>
 
 int main() {
-  BrtEngineConfig config{};
-  config.struct_size = sizeof(BrtEngineConfig);
+  RaftInferEngineConfig config{};
+  config.struct_size = sizeof(RaftInferEngineConfig);
   config.device_id = 0;
   config.initial_pool_bytes = 64U * 1024U * 1024U;
 
-  assert(brt_engine_create(nullptr, nullptr).code == BRT_STATUS_INVALID_ARGUMENT);
+  assert(raftinfer_engine_create(nullptr, nullptr).code == RAFTINFER_STATUS_INVALID_ARGUMENT);
 
-  BrtEngineHandle* engine = nullptr;
-  BrtStatus status = brt_engine_create(&config, &engine);
-  assert(status.code == BRT_STATUS_OK);
+  RaftInferEngineHandle* engine = nullptr;
+  RaftInferStatus status = raftinfer_engine_create(&config, &engine);
+  assert(status.code == RAFTINFER_STATUS_OK);
   assert(engine != nullptr);
-  assert(brt_engine_is_cuda_enabled(engine) == 0);
+  assert(raftinfer_engine_is_cuda_enabled(engine) == 0);
 
-  brt_engine_destroy(engine);
-  assert(std::strlen(brt_last_error_message()) == 0);
+  raftinfer_engine_destroy(engine);
+  assert(std::strlen(raftinfer_last_error_message()) == 0);
   return 0;
 }
 ```
@@ -303,16 +303,16 @@ Run:
 cmake --build build/host
 ```
 
-Expected: compile fails because `brt/c_api.h` does not exist.
+Expected: compile fails because `raftinfer/c_api.h` does not exist.
 
 - [ ] **Step 3: Define the public ABI**
 
-Create `cpp/include/brt/c_api.h`:
+Create `cpp/include/raftinfer/c_api.h`:
 
 ```cpp
 #pragma once
 
-#include <brt/status.h>
+#include <raftinfer/status.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -320,18 +320,18 @@ Create `cpp/include/brt/c_api.h`:
 extern "C" {
 #endif
 
-typedef struct BrtEngineHandle BrtEngineHandle;
+typedef struct RaftInferEngineHandle RaftInferEngineHandle;
 
-typedef struct BrtEngineConfig {
+typedef struct RaftInferEngineConfig {
   size_t struct_size;
   int32_t device_id;
   uint64_t initial_pool_bytes;
-} BrtEngineConfig;
+} RaftInferEngineConfig;
 
-BrtStatus brt_engine_create(const BrtEngineConfig* config, BrtEngineHandle** out_engine);
-void brt_engine_destroy(BrtEngineHandle* engine);
-int32_t brt_engine_is_cuda_enabled(const BrtEngineHandle* engine);
-const char* brt_last_error_message(void);
+RaftInferStatus raftinfer_engine_create(const RaftInferEngineConfig* config, RaftInferEngineHandle** out_engine);
+void raftinfer_engine_destroy(RaftInferEngineHandle* engine);
+int32_t raftinfer_engine_is_cuda_enabled(const RaftInferEngineHandle* engine);
+const char* raftinfer_last_error_message(void);
 
 #ifdef __cplusplus
 }
@@ -345,13 +345,13 @@ Create `cpp/src/engine.hpp`:
 ```cpp
 #pragma once
 
-#include <brt/c_api.h>
+#include <raftinfer/c_api.h>
 
-namespace brt {
+namespace raftinfer {
 
 class Engine {
  public:
-  explicit Engine(const BrtEngineConfig& config);
+  explicit Engine(const RaftInferEngineConfig& config);
   bool cuda_enabled() const noexcept;
 
  private:
@@ -359,7 +359,7 @@ class Engine {
   uint64_t initial_pool_bytes_;
 };
 
-}  // namespace brt
+}  // namespace raftinfer
 ```
 
 Create `cpp/src/engine.cpp`:
@@ -369,29 +369,29 @@ Create `cpp/src/engine.cpp`:
 
 #include <stdexcept>
 
-namespace brt {
+namespace raftinfer {
 
-Engine::Engine(const BrtEngineConfig& config)
+Engine::Engine(const RaftInferEngineConfig& config)
     : device_id_(config.device_id), initial_pool_bytes_(config.initial_pool_bytes) {
   if (device_id_ < 0) throw std::invalid_argument("device_id must be non-negative");
   if (initial_pool_bytes_ == 0) throw std::invalid_argument("initial_pool_bytes must be non-zero");
 }
 
 bool Engine::cuda_enabled() const noexcept {
-#if BRT_ENABLE_CUDA
+#if RAFTINFER_ENABLE_CUDA
   return true;
 #else
   return false;
 #endif
 }
 
-}  // namespace brt
+}  // namespace raftinfer
 ```
 
 Create `cpp/src/c_api.cpp`:
 
 ```cpp
-#include <brt/c_api.h>
+#include <raftinfer/c_api.h>
 
 #include "engine.hpp"
 
@@ -400,48 +400,48 @@ Create `cpp/src/c_api.cpp`:
 #include <stdexcept>
 #include <string>
 
-struct BrtEngineHandle { brt::Engine engine; };
+struct RaftInferEngineHandle { raftinfer::Engine engine; };
 static thread_local std::string g_last_error;
 
-static BrtStatus fail(BrtStatusCode code, const char* message) {
+static RaftInferStatus fail(RaftInferStatusCode code, const char* message) {
   g_last_error = message;
-  return BrtStatus{code, g_last_error.c_str()};
+  return RaftInferStatus{code, g_last_error.c_str()};
 }
 
-extern "C" BrtStatus brt_engine_create(
-    const BrtEngineConfig* config, BrtEngineHandle** out_engine) {
+extern "C" RaftInferStatus raftinfer_engine_create(
+    const RaftInferEngineConfig* config, RaftInferEngineHandle** out_engine) {
   g_last_error.clear();
   if (config == nullptr || out_engine == nullptr) {
-    return fail(BRT_STATUS_INVALID_ARGUMENT, "config and out_engine are required");
+    return fail(RAFTINFER_STATUS_INVALID_ARGUMENT, "config and out_engine are required");
   }
-  if (config->struct_size != sizeof(BrtEngineConfig)) {
-    return fail(BRT_STATUS_INVALID_ARGUMENT, "BrtEngineConfig size mismatch");
+  if (config->struct_size != sizeof(RaftInferEngineConfig)) {
+    return fail(RAFTINFER_STATUS_INVALID_ARGUMENT, "RaftInferEngineConfig size mismatch");
   }
   try {
-    auto handle = std::make_unique<BrtEngineHandle>(BrtEngineHandle{brt::Engine{*config}});
+    auto handle = std::make_unique<RaftInferEngineHandle>(RaftInferEngineHandle{raftinfer::Engine{*config}});
     *out_engine = handle.release();
-    return BrtStatus{BRT_STATUS_OK, nullptr};
+    return RaftInferStatus{RAFTINFER_STATUS_OK, nullptr};
   } catch (const std::invalid_argument& error) {
-    return fail(BRT_STATUS_INVALID_ARGUMENT, error.what());
+    return fail(RAFTINFER_STATUS_INVALID_ARGUMENT, error.what());
   } catch (const std::exception& error) {
-    return fail(BRT_STATUS_INTERNAL, error.what());
+    return fail(RAFTINFER_STATUS_INTERNAL, error.what());
   }
 }
 
-extern "C" void brt_engine_destroy(BrtEngineHandle* engine) { delete engine; }
+extern "C" void raftinfer_engine_destroy(RaftInferEngineHandle* engine) { delete engine; }
 
-extern "C" int32_t brt_engine_is_cuda_enabled(const BrtEngineHandle* engine) {
+extern "C" int32_t raftinfer_engine_is_cuda_enabled(const RaftInferEngineHandle* engine) {
   return engine != nullptr && engine->engine.cuda_enabled() ? 1 : 0;
 }
 
-extern "C" const char* brt_last_error_message(void) { return g_last_error.c_str(); }
+extern "C" const char* raftinfer_last_error_message(void) { return g_last_error.c_str(); }
 ```
 
 Add to `cpp/CMakeLists.txt`:
 
 ```cmake
-target_sources(brt_cpp PRIVATE src/c_api.cpp src/engine.cpp)
-target_compile_definitions(brt_cpp PRIVATE BRT_ENABLE_CUDA=$<BOOL:${BRT_ENABLE_CUDA}>)
+target_sources(raftinfer_cpp PRIVATE src/c_api.cpp src/engine.cpp)
+target_compile_definitions(raftinfer_cpp PRIVATE RAFTINFER_ENABLE_CUDA=$<BOOL:${RAFTINFER_ENABLE_CUDA}>)
 ```
 
 - [ ] **Step 5: Run lifecycle tests**
@@ -458,7 +458,7 @@ Expected: the single C++ test passes and reports no leaked exception across the 
 - [ ] **Step 6: Commit the ABI**
 
 ```bash
-git add cpp/include/brt/c_api.h cpp/src cpp/CMakeLists.txt cpp/tests/c_api_test.cpp
+git add cpp/include/raftinfer/c_api.h cpp/src cpp/CMakeLists.txt cpp/tests/c_api_test.cpp
 git commit -m "feat: add opaque engine C ABI"
 ```
 
@@ -468,18 +468,18 @@ git commit -m "feat: add opaque engine C ABI"
 
 **Files:**
 - Create: `Cargo.toml`
-- Create: `rust/brt-sys/Cargo.toml`
-- Create: `rust/brt-sys/build.rs`
-- Create: `rust/brt-sys/src/lib.rs`
-- Create: `rust/brt-runtime/Cargo.toml`
-- Create: `rust/brt-runtime/src/lib.rs`
-- Create: `rust/brt-runtime/tests/engine.rs`
-- Create: `rust/brt-cli/Cargo.toml`
-- Create: `rust/brt-cli/src/main.rs`
+- Create: `rust/raftinfer-sys/Cargo.toml`
+- Create: `rust/raftinfer-sys/build.rs`
+- Create: `rust/raftinfer-sys/src/lib.rs`
+- Create: `rust/raftinfer-runtime/Cargo.toml`
+- Create: `rust/raftinfer-runtime/src/lib.rs`
+- Create: `rust/raftinfer-runtime/tests/engine.rs`
+- Create: `rust/raftinfer-cli/Cargo.toml`
+- Create: `rust/raftinfer-cli/src/main.rs`
 
 **Interfaces:**
 - Consumes: the complete C ABI from Task 2.
-- Produces: safe `brt_runtime::Engine`, `EngineConfig`, `Error`, and a `brt-cli info` command.
+- Produces: safe `raftinfer_runtime::Engine`, `EngineConfig`, `Error`, and a `raftinfer-cli info` command.
 
 - [ ] **Step 1: Create the Rust workspace and failing safe-wrapper test**
 
@@ -488,13 +488,13 @@ Create root `Cargo.toml`:
 ```toml
 [workspace]
 resolver = "2"
-members = ["rust/brt-sys", "rust/brt-runtime", "rust/brt-cli"]
+members = ["rust/raftinfer-sys", "rust/raftinfer-runtime", "rust/raftinfer-cli"]
 ```
 
-Create `rust/brt-runtime/tests/engine.rs`:
+Create `rust/raftinfer-runtime/tests/engine.rs`:
 
 ```rust
-use brt_runtime::{Engine, EngineConfig};
+use raftinfer_runtime::{Engine, EngineConfig};
 
 #[test]
 fn creates_host_engine_and_reports_backend() {
@@ -515,60 +515,60 @@ fn rejects_zero_pool_size() {
 
 - [ ] **Step 2: Add crate manifests and verify the test cannot compile**
 
-Create `rust/brt-sys/Cargo.toml`:
+Create `rust/raftinfer-sys/Cargo.toml`:
 
 ```toml
 [package]
-name = "brt-sys"
+name = "raftinfer-sys"
 version = "0.1.0"
 edition = "2024"
-links = "brt_cpp"
+links = "raftinfer_cpp"
 
 [build-dependencies]
 cmake = "0.1"
 ```
 
-Create `rust/brt-runtime/Cargo.toml`:
+Create `rust/raftinfer-runtime/Cargo.toml`:
 
 ```toml
 [package]
-name = "brt-runtime"
+name = "raftinfer-runtime"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-brt-sys = { path = "../brt-sys" }
+raftinfer-sys = { path = "../raftinfer-sys" }
 ```
 
-Create `rust/brt-cli/Cargo.toml`:
+Create `rust/raftinfer-cli/Cargo.toml`:
 
 ```toml
 [package]
-name = "brt-cli"
+name = "raftinfer-cli"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-brt-runtime = { path = "../brt-runtime" }
+raftinfer-runtime = { path = "../raftinfer-runtime" }
 ```
 
-Run `cargo test -p brt-runtime`.
+Run `cargo test -p raftinfer-runtime`.
 
-Expected: compile fails because the three crate source files and `brt-sys/build.rs` do not exist.
+Expected: compile fails because the three crate source files and `raftinfer-sys/build.rs` do not exist.
 
 - [ ] **Step 3: Implement the raw bindings and native build**
 
-Create `rust/brt-sys/build.rs`:
+Create `rust/raftinfer-sys/build.rs`:
 
 ```rust
 fn main() {
-    let cuda = std::env::var("BRT_ENABLE_CUDA").unwrap_or_else(|_| "OFF".into());
+    let cuda = std::env::var("RAFTINFER_ENABLE_CUDA").unwrap_or_else(|_| "OFF".into());
     let dst = cmake::Config::new("../..")
-        .define("BRT_ENABLE_CUDA", cuda)
-        .define("BRT_BUILD_TESTS", "OFF")
+        .define("RAFTINFER_ENABLE_CUDA", cuda)
+        .define("RAFTINFER_BUILD_TESTS", "OFF")
         .build();
     println!("cargo:rustc-link-search=native={}/lib", dst.display());
-    println!("cargo:rustc-link-lib=static=brt_cpp");
+    println!("cargo:rustc-link-lib=static=raftinfer_cpp");
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
         println!("cargo:rustc-link-lib=c++");
     } else {
@@ -583,44 +583,44 @@ The root CMake project must install the static library. Append to `cpp/CMakeList
 
 ```cmake
 include(GNUInstallDirs)
-install(TARGETS brt_cpp ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
+install(TARGETS raftinfer_cpp ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
 install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 ```
 
-Create `rust/brt-sys/src/lib.rs`:
+Create `rust/raftinfer-sys/src/lib.rs`:
 
 ```rust
 use std::ffi::{c_char, c_int};
 
 #[repr(C)]
-pub struct BrtEngineHandle { _private: [u8; 0] }
+pub struct RaftInferEngineHandle { _private: [u8; 0] }
 
 #[repr(C)]
-pub struct BrtEngineConfig {
+pub struct RaftInferEngineConfig {
     pub struct_size: usize,
     pub device_id: i32,
     pub initial_pool_bytes: u64,
 }
 
 #[repr(C)]
-pub struct BrtStatus {
+pub struct RaftInferStatus {
     pub code: c_int,
     pub message: *const c_char,
 }
 
 unsafe extern "C" {
-    pub fn brt_engine_create(
-        config: *const BrtEngineConfig,
-        out_engine: *mut *mut BrtEngineHandle,
-    ) -> BrtStatus;
-    pub fn brt_engine_destroy(engine: *mut BrtEngineHandle);
-    pub fn brt_engine_is_cuda_enabled(engine: *const BrtEngineHandle) -> i32;
+    pub fn raftinfer_engine_create(
+        config: *const RaftInferEngineConfig,
+        out_engine: *mut *mut RaftInferEngineHandle,
+    ) -> RaftInferStatus;
+    pub fn raftinfer_engine_destroy(engine: *mut RaftInferEngineHandle);
+    pub fn raftinfer_engine_is_cuda_enabled(engine: *const RaftInferEngineHandle) -> i32;
 }
 ```
 
 - [ ] **Step 4: Implement the safe RAII wrapper and CLI**
 
-Create `rust/brt-runtime/src/lib.rs`:
+Create `rust/raftinfer-runtime/src/lib.rs`:
 
 ```rust
 use std::{ffi::CStr, fmt, ptr::NonNull};
@@ -642,24 +642,24 @@ pub struct Error { code: i32, message: String }
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "BRT error {}: {}", self.code, self.message)
+        write!(f, "RAFTINFER error {}: {}", self.code, self.message)
     }
 }
 
 impl std::error::Error for Error {}
 
 #[derive(Debug)]
-pub struct Engine { raw: NonNull<brt_sys::BrtEngineHandle> }
+pub struct Engine { raw: NonNull<raftinfer_sys::RaftInferEngineHandle> }
 
 impl Engine {
     pub fn new(config: EngineConfig) -> Result<Self, Error> {
-        let native = brt_sys::BrtEngineConfig {
-            struct_size: std::mem::size_of::<brt_sys::BrtEngineConfig>(),
+        let native = raftinfer_sys::RaftInferEngineConfig {
+            struct_size: std::mem::size_of::<raftinfer_sys::RaftInferEngineConfig>(),
             device_id: config.device_id,
             initial_pool_bytes: config.initial_pool_bytes,
         };
         let mut raw = std::ptr::null_mut();
-        let status = unsafe { brt_sys::brt_engine_create(&native, &mut raw) };
+        let status = unsafe { raftinfer_sys::raftinfer_engine_create(&native, &mut raw) };
         if status.code != 0 {
             let message = if status.message.is_null() {
                 "unknown native error".to_owned()
@@ -672,19 +672,19 @@ impl Engine {
     }
 
     pub fn cuda_enabled(&self) -> bool {
-        unsafe { brt_sys::brt_engine_is_cuda_enabled(self.raw.as_ptr()) != 0 }
+        unsafe { raftinfer_sys::raftinfer_engine_is_cuda_enabled(self.raw.as_ptr()) != 0 }
     }
 }
 
 impl Drop for Engine {
-    fn drop(&mut self) { unsafe { brt_sys::brt_engine_destroy(self.raw.as_ptr()) } }
+    fn drop(&mut self) { unsafe { raftinfer_sys::raftinfer_engine_destroy(self.raw.as_ptr()) } }
 }
 ```
 
-Create `rust/brt-cli/src/main.rs`:
+Create `rust/raftinfer-cli/src/main.rs`:
 
 ```rust
-use brt_runtime::{Engine, EngineConfig};
+use raftinfer_runtime::{Engine, EngineConfig};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let command = std::env::args().nth(1).unwrap_or_else(|| "info".into());
@@ -702,7 +702,7 @@ Run:
 ```bash
 cargo fmt --check
 cargo test --workspace
-cargo run -p brt-cli -- info
+cargo run -p raftinfer-cli -- info
 ```
 
 Expected: all Rust tests pass and the CLI prints `backend=host`.
@@ -722,38 +722,38 @@ git commit -m "feat: add safe Rust engine wrapper"
 - Create: `cpp/foundation/device_context.hpp`
 - Create: `cpp/foundation/device_context.cu`
 - Create: `cpp/kernels/smoke.cu`
-- Create: `cpp/tools/brt_smoke.cpp`
+- Create: `cpp/tools/raftinfer_smoke.cpp`
 - Modify: `cpp/src/engine.hpp`
 - Modify: `cpp/src/engine.cpp`
-- Modify: `cpp/include/brt/c_api.h`
+- Modify: `cpp/include/raftinfer/c_api.h`
 - Modify: `cpp/src/c_api.cpp`
 - Modify: `cpp/CMakeLists.txt`
 
 **Interfaces:**
 - Consumes: opaque engine ABI and RMM pool-size configuration.
-- Produces: `brt_engine_run_smoke`, `BrtSmokeResult`, `DeviceContext::run_smoke`, and the `brt-smoke` executable.
+- Produces: `raftinfer_engine_run_smoke`, `RaftInferSmokeResult`, `DeviceContext::run_smoke`, and the `raftinfer-smoke` executable.
 
 - [ ] **Step 1: Add a failing CUDA smoke ABI test to the tool**
 
-Create `cpp/tools/brt_smoke.cpp`:
+Create `cpp/tools/raftinfer_smoke.cpp`:
 
 ```cpp
-#include <brt/c_api.h>
+#include <raftinfer/c_api.h>
 
 #include <iostream>
 
 int main() {
-  BrtEngineConfig config{sizeof(BrtEngineConfig), 0, 64U * 1024U * 1024U};
-  BrtEngineHandle* engine = nullptr;
-  BrtStatus status = brt_engine_create(&config, &engine);
-  if (status.code != BRT_STATUS_OK) {
+  RaftInferEngineConfig config{sizeof(RaftInferEngineConfig), 0, 64U * 1024U * 1024U};
+  RaftInferEngineHandle* engine = nullptr;
+  RaftInferStatus status = raftinfer_engine_create(&config, &engine);
+  if (status.code != RAFTINFER_STATUS_OK) {
     std::cerr << status.message << '\n';
     return 1;
   }
-  BrtSmokeResult result{};
-  status = brt_engine_run_smoke(engine, &result);
-  brt_engine_destroy(engine);
-  if (status.code != BRT_STATUS_OK) {
+  RaftInferSmokeResult result{};
+  status = raftinfer_engine_run_smoke(engine, &result);
+  raftinfer_engine_destroy(engine);
+  if (status.code != RAFTINFER_STATUS_OK) {
     std::cerr << status.message << '\n';
     return 1;
   }
@@ -769,11 +769,11 @@ int main() {
 Inside the RAPIDS container, run:
 
 ```bash
-cmake -S . -B build/gpu -G Ninja -DBRT_ENABLE_CUDA=ON -DCMAKE_BUILD_TYPE=Release
-cmake --build build/gpu --target brt-smoke
+cmake -S . -B build/gpu -G Ninja -DRAFTINFER_ENABLE_CUDA=ON -DCMAKE_BUILD_TYPE=Release
+cmake --build build/gpu --target raftinfer-smoke
 ```
 
-Expected: compile fails because `BrtSmokeResult` and `brt_engine_run_smoke` are not defined.
+Expected: compile fails because `RaftInferSmokeResult` and `raftinfer_engine_run_smoke` are not defined.
 
 - [ ] **Step 3: Define DeviceContext with RAFT 26.06 and RMM 26.06 value resources**
 
@@ -782,19 +782,19 @@ Create `cpp/foundation/device_context.hpp`:
 ```cpp
 #pragma once
 
-#include <brt/c_api.h>
+#include <raftinfer/c_api.h>
 #include <raft/core/device_resources.hpp>
 #include <rmm/mr/device/cuda_memory_resource.hpp>
 #include <rmm/mr/device/pool_memory_resource.hpp>
 
 #include <cstdint>
 
-namespace brt {
+namespace raftinfer {
 
 class DeviceContext {
  public:
   DeviceContext(int device_id, uint64_t initial_pool_bytes);
-  BrtSmokeResult run_smoke();
+  RaftInferSmokeResult run_smoke();
 
  private:
   static int select_device(int device_id);
@@ -804,7 +804,7 @@ class DeviceContext {
   rmm::mr::pool_memory_resource pool_;
 };
 
-}  // namespace brt
+}  // namespace raftinfer
 ```
 
 Create `cpp/foundation/device_context.cu` with a stream-ordered allocation, launch, copy, synchronization, and deallocation:
@@ -821,9 +821,9 @@ Create `cpp/foundation/device_context.cu` with a stream-ordered allocation, laun
 #include <stdexcept>
 #include <vector>
 
-extern void brt_launch_smoke(uint32_t* values, uint32_t count, cudaStream_t stream);
+extern void raftinfer_launch_smoke(uint32_t* values, uint32_t count, cudaStream_t stream);
 
-namespace brt {
+namespace raftinfer {
 
 int DeviceContext::select_device(int device_id) {
   cudaError_t error = cudaSetDevice(device_id);
@@ -837,14 +837,14 @@ DeviceContext::DeviceContext(int device_id, uint64_t initial_pool_bytes)
       cuda_resource_(),
       pool_(cuda_resource_, initial_pool_bytes) {}
 
-BrtSmokeResult DeviceContext::run_smoke() {
+RaftInferSmokeResult DeviceContext::run_smoke() {
   constexpr uint32_t count = 1024;
   auto stream_view = raft::resource::get_cuda_stream(resources_);
   cudaStream_t stream = stream_view.value();
   auto stream_ref = cuda::stream_ref{stream};
   auto resource = rmm::device_async_resource_ref{pool_};
   auto* device = static_cast<uint32_t*>(resource.allocate(stream_ref, count * sizeof(uint32_t)));
-  brt_launch_smoke(device, count, stream);
+  raftinfer_launch_smoke(device, count, stream);
   cudaError_t error = cudaGetLastError();
   if (error != cudaSuccess) {
     resource.deallocate(stream_ref, device, count * sizeof(uint32_t));
@@ -857,10 +857,10 @@ BrtSmokeResult DeviceContext::run_smoke() {
   resource.deallocate(stream_ref, device, count * sizeof(uint32_t));
   if (error != cudaSuccess) throw std::runtime_error(cudaGetErrorString(error));
   uint64_t checksum = std::accumulate(host.begin(), host.end(), uint64_t{0});
-  return BrtSmokeResult{device_id_, count, checksum};
+  return RaftInferSmokeResult{device_id_, count, checksum};
 }
 
-}  // namespace brt
+}  // namespace raftinfer
 ```
 
 - [ ] **Step 4: Implement the custom CUDA kernel and ABI method**
@@ -871,26 +871,26 @@ Create `cpp/kernels/smoke.cu`:
 #include <cuda_runtime.h>
 #include <cstdint>
 
-__global__ void brt_smoke_kernel(uint32_t* values, uint32_t count) {
+__global__ void raftinfer_smoke_kernel(uint32_t* values, uint32_t count) {
   uint32_t index = blockIdx.x * blockDim.x + threadIdx.x;
   if (index < count) values[index] = index;
 }
 
-void brt_launch_smoke(uint32_t* values, uint32_t count, cudaStream_t stream) {
-  brt_smoke_kernel<<<(count + 255) / 256, 256, 0, stream>>>(values, count);
+void raftinfer_launch_smoke(uint32_t* values, uint32_t count, cudaStream_t stream) {
+  raftinfer_smoke_kernel<<<(count + 255) / 256, 256, 0, stream>>>(values, count);
 }
 ```
 
-Add to `cpp/include/brt/c_api.h`:
+Add to `cpp/include/raftinfer/c_api.h`:
 
 ```cpp
-typedef struct BrtSmokeResult {
+typedef struct RaftInferSmokeResult {
   int32_t device_id;
   uint32_t element_count;
   uint64_t checksum;
-} BrtSmokeResult;
+} RaftInferSmokeResult;
 
-BrtStatus brt_engine_run_smoke(BrtEngineHandle* engine, BrtSmokeResult* out_result);
+RaftInferStatus raftinfer_engine_run_smoke(RaftInferEngineHandle* engine, RaftInferSmokeResult* out_result);
 ```
 
 Replace `cpp/src/engine.hpp` with:
@@ -898,31 +898,31 @@ Replace `cpp/src/engine.hpp` with:
 ```cpp
 #pragma once
 
-#include <brt/c_api.h>
+#include <raftinfer/c_api.h>
 #include <memory>
 
-namespace brt {
+namespace raftinfer {
 
-#if BRT_ENABLE_CUDA
+#if RAFTINFER_ENABLE_CUDA
 class DeviceContext;
 #endif
 
 class Engine {
  public:
-  explicit Engine(const BrtEngineConfig& config);
+  explicit Engine(const RaftInferEngineConfig& config);
   ~Engine();
   bool cuda_enabled() const noexcept;
-  BrtSmokeResult run_smoke();
+  RaftInferSmokeResult run_smoke();
 
  private:
   int device_id_;
   uint64_t initial_pool_bytes_;
-#if BRT_ENABLE_CUDA
+#if RAFTINFER_ENABLE_CUDA
   std::unique_ptr<DeviceContext> device_;
 #endif
 };
 
-}  // namespace brt
+}  // namespace raftinfer
 ```
 
 Replace `cpp/src/engine.cpp` with:
@@ -930,19 +930,19 @@ Replace `cpp/src/engine.cpp` with:
 ```cpp
 #include "engine.hpp"
 
-#if BRT_ENABLE_CUDA
+#if RAFTINFER_ENABLE_CUDA
 #include "../foundation/device_context.hpp"
 #endif
 
 #include <stdexcept>
 
-namespace brt {
+namespace raftinfer {
 
-Engine::Engine(const BrtEngineConfig& config)
+Engine::Engine(const RaftInferEngineConfig& config)
     : device_id_(config.device_id), initial_pool_bytes_(config.initial_pool_bytes) {
   if (device_id_ < 0) throw std::invalid_argument("device_id must be non-negative");
   if (initial_pool_bytes_ == 0) throw std::invalid_argument("initial_pool_bytes must be non-zero");
-#if BRT_ENABLE_CUDA
+#if RAFTINFER_ENABLE_CUDA
   device_ = std::make_unique<DeviceContext>(device_id_, initial_pool_bytes_);
 #endif
 }
@@ -950,41 +950,41 @@ Engine::Engine(const BrtEngineConfig& config)
 Engine::~Engine() = default;
 
 bool Engine::cuda_enabled() const noexcept {
-#if BRT_ENABLE_CUDA
+#if RAFTINFER_ENABLE_CUDA
   return true;
 #else
   return false;
 #endif
 }
 
-BrtSmokeResult Engine::run_smoke() {
-#if BRT_ENABLE_CUDA
+RaftInferSmokeResult Engine::run_smoke() {
+#if RAFTINFER_ENABLE_CUDA
   return device_->run_smoke();
 #else
   throw std::runtime_error("CUDA backend is not enabled");
 #endif
 }
 
-}  // namespace brt
+}  // namespace raftinfer
 ```
 
 Add to `cpp/src/c_api.cpp`:
 
 ```cpp
-extern "C" BrtStatus brt_engine_run_smoke(
-    BrtEngineHandle* engine, BrtSmokeResult* out_result) {
+extern "C" RaftInferStatus raftinfer_engine_run_smoke(
+    RaftInferEngineHandle* engine, RaftInferSmokeResult* out_result) {
   g_last_error.clear();
   if (engine == nullptr || out_result == nullptr) {
-    return fail(BRT_STATUS_INVALID_ARGUMENT, "engine and out_result are required");
+    return fail(RAFTINFER_STATUS_INVALID_ARGUMENT, "engine and out_result are required");
   }
   if (!engine->engine.cuda_enabled()) {
-    return fail(BRT_STATUS_UNAVAILABLE, "CUDA backend is not enabled");
+    return fail(RAFTINFER_STATUS_UNAVAILABLE, "CUDA backend is not enabled");
   }
   try {
     *out_result = engine->engine.run_smoke();
-    return BrtStatus{BRT_STATUS_OK, nullptr};
+    return RaftInferStatus{RAFTINFER_STATUS_OK, nullptr};
   } catch (const std::exception& error) {
-    return fail(BRT_STATUS_CUDA_ERROR, error.what());
+    return fail(RAFTINFER_STATUS_CUDA_ERROR, error.what());
   }
 }
 ```
@@ -992,18 +992,18 @@ extern "C" BrtStatus brt_engine_run_smoke(
 Update `cpp/CMakeLists.txt`:
 
 ```cmake
-if(BRT_ENABLE_CUDA)
+if(RAFTINFER_ENABLE_CUDA)
   find_package(CUDAToolkit REQUIRED)
   find_package(raft 26.06 CONFIG REQUIRED)
   find_package(rmm 26.06 CONFIG REQUIRED)
-  target_sources(brt_cpp PRIVATE foundation/device_context.cu kernels/smoke.cu)
-  target_link_libraries(brt_cpp PUBLIC raft::raft rmm::rmm CUDA::cudart)
-  target_compile_options(brt_cpp PRIVATE
+  target_sources(raftinfer_cpp PRIVATE foundation/device_context.cu kernels/smoke.cu)
+  target_link_libraries(raftinfer_cpp PUBLIC raft::raft rmm::rmm CUDA::cudart)
+  target_compile_options(raftinfer_cpp PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--expt-extended-lambda --expt-relaxed-constexpr>)
 endif()
 
-add_executable(brt-smoke tools/brt_smoke.cpp)
-target_link_libraries(brt-smoke PRIVATE brt_cpp)
+add_executable(raftinfer-smoke tools/raftinfer_smoke.cpp)
+target_link_libraries(raftinfer-smoke PRIVATE raftinfer_cpp)
 ```
 
 - [ ] **Step 5: Build and run on an idle RTX 5090**
@@ -1011,9 +1011,9 @@ target_link_libraries(brt-smoke PRIVATE brt_cpp)
 Run inside the GPU container:
 
 ```bash
-cmake -S . -B build/gpu -G Ninja -DBRT_ENABLE_CUDA=ON -DCMAKE_BUILD_TYPE=Release
-cmake --build build/gpu --target brt-smoke
-./build/gpu/cpp/brt-smoke
+cmake -S . -B build/gpu -G Ninja -DRAFTINFER_ENABLE_CUDA=ON -DCMAKE_BUILD_TYPE=Release
+cmake --build build/gpu --target raftinfer-smoke
+./build/gpu/cpp/raftinfer-smoke
 ```
 
 Expected output:
@@ -1025,7 +1025,7 @@ Expected output:
 - [ ] **Step 6: Commit the GPU foundation**
 
 ```bash
-git add cpp/foundation cpp/kernels/smoke.cu cpp/tools/brt_smoke.cpp cpp/include/brt/c_api.h cpp/src cpp/CMakeLists.txt
+git add cpp/foundation cpp/kernels/smoke.cu cpp/tools/raftinfer_smoke.cpp cpp/include/raftinfer/c_api.h cpp/src cpp/CMakeLists.txt
 git commit -m "feat: add RAFT RMM GPU smoke context"
 ```
 
@@ -1042,8 +1042,8 @@ git commit -m "feat: add RAFT RMM GPU smoke context"
 - Create: `tests/golden/smoke_result.json`
 
 **Interfaces:**
-- Consumes: `brt-smoke` from Task 4.
-- Produces: `brt-dev:26.06-cuda13`, a no-side-effect preflight command, and repeatable local/remote verification scripts.
+- Consumes: `raftinfer-smoke` from Task 4.
+- Produces: `raftinfer-dev:26.06-cuda13`, a no-side-effect preflight command, and repeatable local/remote verification scripts.
 
 - [ ] **Step 1: Write the shared-GPU preflight script and its shell syntax test**
 
@@ -1053,7 +1053,7 @@ Create `scripts/gpu-preflight.sh`:
 #!/usr/bin/env bash
 set -euo pipefail
 
-minimum_free_mib="${BRT_MIN_FREE_MIB:-2048}"
+minimum_free_mib="${RAFTINFER_MIN_FREE_MIB:-2048}"
 compute_apps="$(nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv,noheader,nounits)"
 gpu_row="$(nvidia-smi --query-gpu=memory.free,utilization.gpu,temperature.gpu --format=csv,noheader,nounits | head -n 1)"
 IFS=',' read -r free_mib utilization temperature <<<"${gpu_row}"
@@ -1062,16 +1062,16 @@ utilization="${utilization// /}"
 temperature="${temperature// /}"
 
 if [[ -n "${compute_apps}" ]]; then
-  echo "BRT GPU preflight refused: active compute applications detected" >&2
+  echo "RAFTINFER GPU preflight refused: active compute applications detected" >&2
   echo "${compute_apps}" >&2
   exit 20
 fi
 if (( free_mib < minimum_free_mib )); then
-  echo "BRT GPU preflight refused: free=${free_mib}MiB required=${minimum_free_mib}MiB" >&2
+  echo "RAFTINFER GPU preflight refused: free=${free_mib}MiB required=${minimum_free_mib}MiB" >&2
   exit 21
 fi
 if (( utilization > 5 )); then
-  echo "BRT GPU preflight refused: utilization=${utilization}%" >&2
+  echo "RAFTINFER GPU preflight refused: utilization=${utilization}%" >&2
   exit 22
 fi
 
@@ -1110,10 +1110,10 @@ CMD ["bash"]
 Build with:
 
 ```bash
-docker build -f containers/Dockerfile.dev -t brt-dev:26.06-cuda13 .
+docker build -f containers/Dockerfile.dev -t raftinfer-dev:26.06-cuda13 .
 ```
 
-Expected: image build completes and `docker run --rm brt-dev:26.06-cuda13 rustc --version` prints Rust 1.96.0.
+Expected: image build completes and `docker run --rm raftinfer-dev:26.06-cuda13 rustc --version` prints Rust 1.96.0.
 
 - [ ] **Step 3: Add local and GPU runners**
 
@@ -1122,7 +1122,7 @@ Create `scripts/local-check.sh`:
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
-cmake -S . -B build/host -G Ninja -DBRT_ENABLE_CUDA=OFF
+cmake -S . -B build/host -G Ninja -DRAFTINFER_ENABLE_CUDA=OFF
 cmake --build build/host
 ctest --test-dir build/host --output-on-failure
 cargo fmt --check
@@ -1139,8 +1139,8 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 docker run --rm --gpus all \
   --shm-size=1g --ulimit memlock=-1 --ulimit stack=67108864 \
   -v "${repo_root}:/workspace" -w /workspace \
-  brt-dev:26.06-cuda13 \
-  bash -lc 'cmake -S . -B build/gpu -G Ninja -DBRT_ENABLE_CUDA=ON -DCMAKE_BUILD_TYPE=Release && cmake --build build/gpu --target brt-smoke && ./build/gpu/cpp/brt-smoke'
+  raftinfer-dev:26.06-cuda13 \
+  bash -lc 'cmake -S . -B build/gpu -G Ninja -DRAFTINFER_ENABLE_CUDA=ON -DCMAKE_BUILD_TYPE=Release && cmake --build build/gpu --target raftinfer-smoke && ./build/gpu/cpp/raftinfer-smoke'
 ```
 
 Create `scripts/sync-target.sh`:
@@ -1148,8 +1148,8 @@ Create `scripts/sync-target.sh`:
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
-target="${BRT_TARGET:-charles@192.168.124.8}"
-destination="${BRT_TARGET_DIR:-/home/charles/brt-workspace}"
+target="${RAFTINFER_TARGET:-<validation-root>}"
+destination="${RAFTINFER_TARGET_DIR:-<repo>}"
 ssh "${target}" "mkdir -p '${destination}'"
 rsync -a \
   --exclude .git --exclude build --exclude target --exclude evidence/local \
@@ -1177,7 +1177,7 @@ Sync and run the remote preflight in the project-specific target directory:
 
 ```bash
 scripts/sync-target.sh
-ssh charles@192.168.124.8 'cd /home/charles/brt-workspace && scripts/gpu-preflight.sh'
+ssh <validation-root> 'cd <repo> && scripts/gpu-preflight.sh'
 ```
 
 Expected on the currently observed idle target: a single `gpu_preflight=ok` line. If another process is using the GPU, exit 20, 21, or 22 is the correct result and the GPU smoke is deferred.
@@ -1187,11 +1187,11 @@ Expected on the currently observed idle target: a single `gpu_preflight=ok` line
 Run on the target after `scripts/sync-target.sh`:
 
 ```bash
-ssh charles@192.168.124.8 'cd /home/charles/brt-workspace && scripts/gpu-smoke.sh' | tee /tmp/brt-smoke-output.txt
-tail -n 1 /tmp/brt-smoke-output.txt | diff -u tests/golden/smoke_result.json -
+ssh <validation-root> 'cd <repo> && scripts/gpu-smoke.sh' | tee /tmp/raftinfer-smoke-output.txt
+tail -n 1 /tmp/raftinfer-smoke-output.txt | diff -u tests/golden/smoke_result.json -
 ```
 
-Expected: `diff` exits 0. Re-run `nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv,noheader` and confirm the BRT container is gone.
+Expected: `diff` exits 0. Re-run `nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv,noheader` and confirm the RAFTINFER container is gone.
 
 - [ ] **Step 6: Commit the reproducible runners**
 
@@ -1248,7 +1248,7 @@ Create `docs/m0-verification.md` containing:
 
 ## Target GPU
 
-- Host: `192.168.124.8`
+- Host: `<validation-root>`
 - GPU: NVIDIA GeForce RTX 5090, compute capability 12.0, 32607 MiB
 - Driver: 580.159.03
 - Safety preflight: PASS with no active compute applications
@@ -1270,7 +1270,7 @@ Do not mark the target result PASS until the remote command has actually succeed
 Create `README.md`:
 
 ````markdown
-# Blackwell RAFT Runtime
+# RAFTInfer
 
 An RTX 50-series LLM inference runtime using RAFT/RMM as the GPU foundation and
 custom CUDA/CUTLASS kernels for performance-critical operators.
@@ -1286,7 +1286,7 @@ scripts/local-check.sh
 ## RTX 50 GPU smoke
 
 ```bash
-docker build -f containers/Dockerfile.dev -t brt-dev:26.06-cuda13 .
+docker build -f containers/Dockerfile.dev -t raftinfer-dev:26.06-cuda13 .
 scripts/gpu-smoke.sh
 ```
 
@@ -1310,7 +1310,7 @@ Run remotely only after preflight passes:
 scripts/gpu-smoke.sh
 ```
 
-Expected: host checks pass, GPU JSON matches the golden file, no BRT process remains on the GPU, and the working tree contains only the documentation changes for this task.
+Expected: host checks pass, GPU JSON matches the golden file, no RAFTINFER process remains on the GPU, and the working tree contains only the documentation changes for this task.
 
 - [ ] **Step 5: Commit the M0 record**
 
