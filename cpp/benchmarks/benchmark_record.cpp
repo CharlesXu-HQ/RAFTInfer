@@ -267,7 +267,7 @@ std::string BenchmarkRecord::to_json_line() const {
   out << std::setprecision(std::numeric_limits<double>::max_digits10);
   out << '{';
   bool first = true;
-  append_number_field(out, "schema_version", 1, first);
+  append_number_field(out, "schema_version", 2, first);
   append_string_field(out, "utc_timestamp", utc_timestamp, first);
   append_string_field(out, "project_commit", project_commit, first);
   append_string_field(out, "device", device, first);

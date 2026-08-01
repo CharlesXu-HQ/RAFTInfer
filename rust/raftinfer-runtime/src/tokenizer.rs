@@ -5,7 +5,7 @@ use std::{
     fmt,
 };
 
-const MAGIC_PREFIX: &[u8; 7] = b"BRTTOK\0";
+const MAGIC_PREFIX: &[u8; 7] = b"RIFTOK\0";
 const TYPE_U8: u32 = 0;
 const TYPE_I8: u32 = 1;
 const TYPE_U16: u32 = 2;

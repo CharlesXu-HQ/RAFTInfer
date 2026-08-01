@@ -2,17 +2,17 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-target="${BRT_TARGET:-charles@192.168.124.8}"
-destination="${BRT_TARGET_DIR:-/home/charles/brt-workspace}"
+target="${RAFTINFER_TARGET:-charles@192.168.124.8}"
+destination="${RAFTINFER_TARGET_DIR:-/home/charles/raftinfer-workspace}"
 
 if ! [[ "${target}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*@[A-Za-z0-9][A-Za-z0-9.-]*$ ]]; then
-  echo "BRT target refused: invalid target format" >&2
+  echo "RAFTINFER target refused: invalid target format" >&2
   exit 40
 fi
-if ! [[ "${destination}" =~ ^/home/charles/brt-[A-Za-z0-9][A-Za-z0-9._/-]*$ ]] \
+if ! [[ "${destination}" =~ ^/home/charles/raftinfer-[A-Za-z0-9][A-Za-z0-9._/-]*$ ]] \
   || [[ "${destination}" == *'//' || "${destination}" == *'/./'* || "${destination}" == *'/../'* \
     || "${destination}" == */. || "${destination}" == */.. ]]; then
-  echo "BRT target refused: invalid project destination" >&2
+  echo "RAFTINFER target refused: invalid project destination" >&2
   exit 41
 fi
 

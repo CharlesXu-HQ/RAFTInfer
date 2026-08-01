@@ -2,7 +2,7 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-fixture_root="$(mktemp -d "${TMPDIR:-/tmp}/brt-bf16-gate.XXXXXX")"
+fixture_root="$(mktemp -d "${TMPDIR:-/tmp}/raftinfer-bf16-gate.XXXXXX")"
 trap 'rm -rf "${fixture_root}"' EXIT
 
 gate="${repo_root}/scripts/qwen35-bf16-gate.sh"
@@ -38,7 +38,7 @@ write_pass_fixture() {
       --argjson generation_ratio "${generation_ratio}" \
       --argjson graph_replayed "${graph_replayed}" '
         {
-          schema_version:1,
+          schema_version:2,
           arm:$arm,
           prompt_tokens:$prompt_tokens,
           generated_tokens:128,
@@ -50,7 +50,7 @@ write_pass_fixture() {
             weight_format:"bf16",
             llama_cpp_revision:"1234567890abcdef1234567890abcdef12345678",
             artifact_sha256:"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-            brt_model_sha256:"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            raftinfer_model_sha256:"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
             llama_model_sha256:"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
             llama_server_sha256:"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
             llama_server_version:"llama.cpp build 1234567890ab",
@@ -78,8 +78,8 @@ write_pass_fixture() {
             decode_graph_captured:$graph_replayed,
             decode_graph_replayed:$graph_replayed
           },
-          brt:{
-            schema_version:1,
+          raftinfer:{
+            schema_version:2,
             prompt_tokens:$prompt_tokens,
             generated_tokens:128,
             warmup_iterations:5,
@@ -112,7 +112,7 @@ write_pass_fixture() {
             }
           },
           llama_cpp:{
-            schema_version:1,
+            schema_version:2,
             prompt_tokens:$prompt_tokens,
             generated_tokens:128,
             warmup_iterations:5,
@@ -144,7 +144,7 @@ write_pass_fixture() {
           performance_floor:1.0,
           performance_floor_passed:true,
           peak_allocated_gpu_bytes:18000000000,
-          peak_memory_status:"measured_by_brt_rmm"
+          peak_memory_status:"measured_by_raftinfer_rmm"
         }
       ' >>"${jsonl}"
   done
@@ -240,9 +240,9 @@ expect_fail few_warmups \
 expect_fail few_measurements \
   'if .arm == "pp128" then .measured_iterations = 6 else . end' \
   'measurements'
-expect_fail brt_unstable \
-  'if .arm == "pp512" then .brt.prefill.coefficient_of_variation = 0.031 else . end' \
-  'BRT coefficient of variation'
+expect_fail raftinfer_unstable \
+  'if .arm == "pp512" then .raftinfer.prefill.coefficient_of_variation = 0.031 else . end' \
+  'RAFTINFER coefficient of variation'
 expect_fail llama_unstable \
   'if .arm == "pp512" then .llama_cpp.prefill.coefficient_of_variation = 0.031 else . end' \
   'llama coefficient of variation'

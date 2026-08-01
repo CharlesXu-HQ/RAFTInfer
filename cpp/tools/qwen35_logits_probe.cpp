@@ -157,7 +157,7 @@ int main(int argc, char **argv) {
       }
     }
 
-    std::cout << "{\"schema_version\":1,\"prefill_token\":" << prefill.token
+    std::cout << "{\"schema_version\":2,\"prefill_token\":" << prefill.token
               << ",\"stepped_token\":" << stepped.token
               << ",\"max_absolute_difference\":";
     if (non_finite_difference) {

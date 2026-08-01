@@ -11,7 +11,7 @@ reference_revision="${LLAMA_REFERENCE_REVISION:-}"
 python_bin="${PYTHON_BIN:-python3}"
 output_gguf="${OUTPUT_GGUF:-}"
 provenance_output="${PROVENANCE_OUTPUT:-}"
-model_revision_file="${HF_MODEL_REVISION_FILE:-${hf_model_dir}/.brt-source-revision}"
+model_revision_file="${HF_MODEL_REVISION_FILE:-${hf_model_dir}/.raftinfer-source-revision}"
 jq_bin="${JQ_BIN:-jq}"
 
 fail_usage() {
@@ -124,7 +124,7 @@ conversion_command_json="$(printf '%s\n' "${conversion_command[@]}" |
   --argjson size_bytes "${artifact_size}" \
   --argjson command "${conversion_command_json}" '
     {
-      schema_version:1,
+      schema_version:2,
       created_utc:$created_utc,
       model:{
         repository:"Qwen/Qwen3.5-9B",

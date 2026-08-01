@@ -31,7 +31,7 @@ check() {
 check '
   def valid_record:
     type == "object" and
-    (.schema_version == 1);
+    (.schema_version == 2);
   length > 0 and all(.[]; valid_record)
 ' "malformed benchmark JSONL"
 
@@ -86,7 +86,7 @@ check '
 check '
   all(.[]; (.provenance.artifact_sha256 | type == "string" and
              test("^[0-9a-fA-F]{64}$")) and
-           .provenance.brt_model_sha256 == .provenance.artifact_sha256 and
+           .provenance.raftinfer_model_sha256 == .provenance.artifact_sha256 and
            .provenance.llama_model_sha256 == .provenance.artifact_sha256)
 ' "measured model SHA256 must match provenance artifact SHA256"
 
@@ -109,19 +109,19 @@ check '
 
 check '
   all(.[]; .execution.attention == "online_tiled" and
-           .brt.execution.attention == .execution.attention)
+           .raftinfer.execution.attention == .execution.attention)
 ' "resolved attention must be online_tiled"
 
 check '
   all(.[]; (.execution.kv_cache_dtype | type == "string" and
              . == "bf16") and
-           .brt.execution.kv_cache_dtype == .execution.kv_cache_dtype)
+           .raftinfer.execution.kv_cache_dtype == .execution.kv_cache_dtype)
 ' "resolved kv_cache_dtype must be disclosed"
 
 check '
   all(.[]; (.execution.kv_cache_layout | type == "string" and
              (. == "head-major")) and
-           .brt.execution.kv_cache_layout == .execution.kv_cache_layout)
+           .raftinfer.execution.kv_cache_layout == .execution.kv_cache_layout)
 ' "resolved kv_cache_layout must be disclosed"
 
 check '
@@ -133,7 +133,7 @@ check '
 check '
   all(.[]; if .arm == "tg128_pp512" then
              .execution.decode_graph_replayed == true and
-             .brt.execution.decode_graph_replayed == true
+             .raftinfer.execution.decode_graph_replayed == true
            else true end)
 ' "TG128@PP512 must report decode graph replay"
 
@@ -146,16 +146,16 @@ check '
     (.max_us | type == "number" and isfinite and . > 0) and
     (.tokens_per_second | type == "number" and isfinite and . > 0) and
     (.coefficient_of_variation | type == "number" and isfinite and . >= 0);
-  all(.[]; .brt.prefill | summary_ok) and
-  all(.[]; .brt.generation | summary_ok) and
+  all(.[]; .raftinfer.prefill | summary_ok) and
+  all(.[]; .raftinfer.generation | summary_ok) and
   all(.[]; .llama_cpp.prefill | summary_ok) and
   all(.[]; .llama_cpp.generation | summary_ok)
 ' "latency summaries must contain finite positive numbers"
 
 check '
-  all(.[]; .brt.prefill.coefficient_of_variation <= 0.03 and
-           .brt.generation.coefficient_of_variation <= 0.03)
-' "BRT coefficient of variation must be at most 0.03"
+  all(.[]; .raftinfer.prefill.coefficient_of_variation <= 0.03 and
+           .raftinfer.generation.coefficient_of_variation <= 0.03)
+' "RAFTINFER coefficient of variation must be at most 0.03"
 
 check '
   all(.[]; .llama_cpp.prefill.coefficient_of_variation <= 0.03 and

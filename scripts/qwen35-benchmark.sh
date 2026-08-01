@@ -5,25 +5,25 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 parity_report="${PARITY_REPORT:-${repo_root}/build/evidence/qwen35-parity.jsonl}"
 provenance_json="${PROVENANCE_JSON:-${repo_root}/build/evidence/qwen35-bf16.provenance.json}"
 output="${BENCHMARK_OUTPUT:-${repo_root}/build/evidence/qwen35-benchmark.jsonl}"
-brt_model="${BRT_MODEL:-}"
-llama_model="${LLAMA_MODEL:-${brt_model}}"
-brt_cli="${BRT_CLI:-${repo_root}/target/release/brt-cli}"
+raftinfer_model="${RAFTINFER_MODEL:-}"
+llama_model="${LLAMA_MODEL:-${raftinfer_model}}"
+raftinfer_cli="${RAFTINFER_CLI:-${repo_root}/target/release/raftinfer-cli}"
 llama_server="${LLAMA_SERVER_BIN:-}"
 gpu_preflight="${GPU_PREFLIGHT:-${repo_root}/scripts/gpu-preflight.sh}"
-gpu_lock="${BRT_GPU_LOCK:-/tmp/brt-qwen35-gpu.lock}"
+gpu_lock="${RAFTINFER_GPU_LOCK:-/tmp/raftinfer-qwen35-gpu.lock}"
 curl_bin="${CURL_BIN:-curl}"
 jq_bin="${JQ_BIN:-jq}"
 nvidia_smi="${NVIDIA_SMI_BIN:-nvidia-smi}"
-context_tokens="${BRT_CONTEXT_TOKENS:-4096}"
+context_tokens="${RAFTINFER_CONTEXT_TOKENS:-4096}"
 warmup_iterations=5
 measured_iterations=20
 generated_tokens=128
-kv_cache_dtype="${BRT_KV_CACHE_DTYPE:-bf16}"
-kv_cache_layout="${BRT_KV_CACHE_LAYOUT:-head-major}"
+kv_cache_dtype="${RAFTINFER_KV_CACHE_DTYPE:-bf16}"
+kv_cache_layout="${RAFTINFER_KV_CACHE_LAYOUT:-head-major}"
 llama_port="${LLAMA_SERVER_PORT:-18081}"
 llama_url="http://127.0.0.1:${llama_port}"
-preflight_retries="${BRT_PREFLIGHT_RETRIES:-30}"
-preflight_retry_seconds="${BRT_PREFLIGHT_RETRY_SECONDS:-1}"
+preflight_retries="${RAFTINFER_PREFLIGHT_RETRIES:-30}"
+preflight_retry_seconds="${RAFTINFER_PREFLIGHT_RETRY_SECONDS:-1}"
 
 fail_usage() {
   printf 'qwen35-benchmark: %s\n' "$1" >&2
@@ -38,10 +38,10 @@ sha256_file() {
   fi
 }
 
-[[ -n "${brt_model}" ]] || fail_usage "BRT_MODEL is required"
-[[ -f "${brt_model}" ]] || fail_usage "BRT_MODEL does not exist: ${brt_model}"
+[[ -n "${raftinfer_model}" ]] || fail_usage "RAFTINFER_MODEL is required"
+[[ -f "${raftinfer_model}" ]] || fail_usage "RAFTINFER_MODEL does not exist: ${raftinfer_model}"
 [[ -f "${llama_model}" ]] || fail_usage "LLAMA_MODEL does not exist: ${llama_model}"
-[[ -x "${brt_cli}" ]] || fail_usage "BRT_CLI is not executable: ${brt_cli}"
+[[ -x "${raftinfer_cli}" ]] || fail_usage "RAFTINFER_CLI is not executable: ${raftinfer_cli}"
 [[ -n "${llama_server}" && -x "${llama_server}" ]] ||
   fail_usage "LLAMA_SERVER_BIN must name an executable"
 [[ -x "${gpu_preflight}" ]] ||
@@ -57,13 +57,13 @@ command -v "${jq_bin}" >/dev/null ||
 command -v "${nvidia_smi}" >/dev/null ||
   fail_usage "nvidia-smi command not found: ${nvidia_smi}"
 [[ "${preflight_retries}" =~ ^[1-9][0-9]*$ ]] ||
-  fail_usage "BRT_PREFLIGHT_RETRIES must be a positive integer"
+  fail_usage "RAFTINFER_PREFLIGHT_RETRIES must be a positive integer"
 [[ "${preflight_retry_seconds}" =~ ^[0-9]+$ ]] ||
-  fail_usage "BRT_PREFLIGHT_RETRY_SECONDS must be a non-negative integer"
+  fail_usage "RAFTINFER_PREFLIGHT_RETRY_SECONDS must be a non-negative integer"
 [[ "${kv_cache_dtype}" == "f32" || "${kv_cache_dtype}" == "bf16" ]] ||
-  fail_usage "BRT_KV_CACHE_DTYPE must be f32 or bf16"
+  fail_usage "RAFTINFER_KV_CACHE_DTYPE must be f32 or bf16"
 [[ "${kv_cache_layout}" == "token-major" || "${kv_cache_layout}" == "head-major" ]] ||
-  fail_usage "BRT_KV_CACHE_LAYOUT must be token-major or head-major"
+  fail_usage "RAFTINFER_KV_CACHE_LAYOUT must be token-major or head-major"
 
 wait_for_gpu_preflight() {
   local attempt=1
@@ -124,7 +124,7 @@ if ! "${jq_bin}" -e \
 fi
 
 if ! "${jq_bin}" -e '
-  .schema_version == 1 and
+  .schema_version == 2 and
   .conversion.outtype == "bf16" and
   (.llama_cpp.reference_revision | type == "string" and
     test("^[0-9a-fA-F]{40}$")) and
@@ -136,10 +136,10 @@ if ! "${jq_bin}" -e '
 fi
 
 artifact_sha="$("${jq_bin}" -er '.artifact.sha256' "${provenance_json}")"
-brt_model_sha="$(sha256_file "${brt_model}")"
+raftinfer_model_sha="$(sha256_file "${raftinfer_model}")"
 llama_model_sha="$(sha256_file "${llama_model}")"
 llama_server_sha="$(sha256_file "${llama_server}")"
-if [[ "${brt_model_sha}" != "${artifact_sha}" ||
+if [[ "${raftinfer_model_sha}" != "${artifact_sha}" ||
       "${llama_model_sha}" != "${artifact_sha}" ]]; then
   printf 'qwen35-benchmark: model SHA256 does not match provenance artifact\n' >&2
   exit 43
@@ -167,7 +167,7 @@ provenance_sha="$(sha256_file "${provenance_json}")"
 provenance_payload="$("${jq_bin}" -c \
   --arg path "${provenance_json}" \
   --arg sha "${provenance_sha}" \
-  --arg brt_model_sha "${brt_model_sha}" \
+  --arg raftinfer_model_sha "${raftinfer_model_sha}" \
   --arg llama_model_sha "${llama_model_sha}" \
   --arg llama_server_sha "${llama_server_sha}" \
   --arg llama_server_version "${llama_server_version}" '
@@ -178,7 +178,7 @@ provenance_payload="$("${jq_bin}" -c \
       llama_cpp_revision:.llama_cpp.reference_revision,
       model_revision:.model.revision,
       artifact_sha256:.artifact.sha256,
-      brt_model_sha256:$brt_model_sha,
+      raftinfer_model_sha256:$raftinfer_model_sha,
       llama_model_sha256:$llama_model_sha,
       llama_server_sha256:$llama_server_sha,
       llama_server_version:$llama_server_version,
@@ -197,10 +197,10 @@ parity_payload="$("${jq_bin}" -cs '
 ' "${parity_report}")"
 base_tokens="$("${jq_bin}" -cs '[.[].prompt_token_ids[]]' "${parity_report}")"
 mkdir -p "$(dirname "${output}")"
-brt_results="$(mktemp "${TMPDIR:-/tmp}/brt-qwen35-benchmark-brt.XXXXXX")"
-llama_results="$(mktemp "${TMPDIR:-/tmp}/brt-qwen35-benchmark-llama.XXXXXX")"
-timing_samples="$(mktemp "${TMPDIR:-/tmp}/brt-qwen35-benchmark-timings.XXXXXX")"
-server_log="$(mktemp "${TMPDIR:-/tmp}/brt-qwen35-benchmark-server.XXXXXX")"
+raftinfer_results="$(mktemp "${TMPDIR:-/tmp}/raftinfer-qwen35-benchmark-raftinfer.XXXXXX")"
+llama_results="$(mktemp "${TMPDIR:-/tmp}/raftinfer-qwen35-benchmark-llama.XXXXXX")"
+timing_samples="$(mktemp "${TMPDIR:-/tmp}/raftinfer-qwen35-benchmark-timings.XXXXXX")"
+server_log="$(mktemp "${TMPDIR:-/tmp}/raftinfer-qwen35-benchmark-server.XXXXXX")"
 server_pid=''
 
 cleanup() {
@@ -208,7 +208,7 @@ cleanup() {
     kill "${server_pid}" 2>/dev/null || true
     wait "${server_pid}" 2>/dev/null || true
   fi
-  rm -f "${brt_results}" "${llama_results}" "${timing_samples}" \
+  rm -f "${raftinfer_results}" "${llama_results}" "${timing_samples}" \
     "${server_log}"
 }
 trap cleanup EXIT
@@ -226,15 +226,15 @@ make_prompt_tokens() {
     '[range(0; $count) | $base[. % ($base | length)]]'
 }
 
-: >"${brt_results}"
+: >"${raftinfer_results}"
 for arm_spec in pp128:128 pp512:512 tg128_pp512:512; do
   arm="${arm_spec%%:*}"
   prompt_count="${arm_spec##*:}"
   prompt_tokens="$(make_prompt_tokens "${prompt_count}")"
   prompt_csv="$("${jq_bin}" -jr 'join(",")' <<<"${prompt_tokens}")"
   wait_for_gpu_preflight
-  brt_result="$("${brt_cli}" benchmark \
-    --model "${brt_model}" \
+  raftinfer_result="$("${raftinfer_cli}" benchmark \
+    --model "${raftinfer_model}" \
     --prompt-token-ids "${prompt_csv}" \
     --prompt-tokens "${prompt_count}" \
     --decode-tokens "${generated_tokens}" \
@@ -251,7 +251,7 @@ for arm_spec in pp128:128 pp512:512 tg128_pp512:512; do
     --argjson generated_tokens "${generated_tokens}" \
     --argjson warmups "${warmup_iterations}" \
     --argjson iterations "${measured_iterations}" '
-      .schema_version == 1 and
+      .schema_version == 2 and
       .prompt_tokens == $prompt_count and
       .generated_tokens == $generated_tokens and
       .warmup_iterations == $warmups and
@@ -270,19 +270,19 @@ for arm_spec in pp128:128 pp512:512 tg128_pp512:512; do
       (if $arm == "tg128_pp512" then
          .execution.decode_graph_replayed == true
        else true end)
-    ' <<<"${brt_result}" >/dev/null; then
-    printf 'qwen35-benchmark: malformed BRT benchmark output for %s\n' \
+    ' <<<"${raftinfer_result}" >/dev/null; then
+    printf 'qwen35-benchmark: malformed RAFTINFER benchmark output for %s\n' \
       "${arm}" >&2
     exit 32
   fi
-  "${jq_bin}" -c --arg arm "${arm}" '. + {arm:$arm}' <<<"${brt_result}" \
-    >>"${brt_results}"
+  "${jq_bin}" -c --arg arm "${arm}" '. + {arm:$arm}' <<<"${raftinfer_result}" \
+    >>"${raftinfer_results}"
 done
 
 gpu_row="$("${nvidia_smi}" \
   --query-gpu=name,driver_version,clocks.sm,clocks.mem \
   --format=csv,noheader,nounits \
-  --id="${BRT_GPU_ID:-0}")"
+  --id="${RAFTINFER_GPU_ID:-0}")"
 if [[ "$(wc -l <<<"${gpu_row}" | tr -d ' ')" -ne 1 ]]; then
   printf 'qwen35-benchmark: expected one nvidia-smi GPU row\n' >&2
   exit 33
@@ -402,7 +402,7 @@ for arm_spec in pp128:128 pp512:512 tg128_pp512:512; do
           )
         };
       {
-        schema_version:1,
+        schema_version:2,
         arm:$arm,
         prompt_tokens:$prompt_tokens,
         generated_tokens:$generated_tokens,
@@ -426,16 +426,16 @@ server_pid=''
 : >"${output}"
 floor_failed=0
 for arm in pp128 pp512 tg128_pp512; do
-  brt_result="$("${jq_bin}" -ec \
+  raftinfer_result="$("${jq_bin}" -ec \
     --arg arm "${arm}" \
-    'select(.arm == $arm)' "${brt_results}")"
+    'select(.arm == $arm)' "${raftinfer_results}")"
   if ! "${jq_bin}" -e \
     --argjson parity_execution "${parity_execution}" \
     '.execution.attention == $parity_execution.attention and
      .execution.kv_cache_dtype == $parity_execution.kv_cache_dtype and
      .execution.kv_cache_layout == $parity_execution.kv_cache_layout' \
-    <<<"${brt_result}" >/dev/null; then
-    printf 'qwen35-benchmark: BRT benchmark execution does not match parity execution\n' >&2
+    <<<"${raftinfer_result}" >/dev/null; then
+    printf 'qwen35-benchmark: RAFTINFER benchmark execution does not match parity execution\n' >&2
     exit 32
   fi
   llama_result="$("${jq_bin}" -ec \
@@ -445,7 +445,7 @@ for arm in pp128 pp512 tg128_pp512; do
     --argjson generated_tokens "${generated_tokens}" \
     --argjson warmups "${warmup_iterations}" \
     --argjson iterations "${measured_iterations}" \
-    --argjson brt "${brt_result}" \
+    --argjson raftinfer "${raftinfer_result}" \
     --argjson llama "${llama_result}" \
     --arg arm "${arm}" \
     --argjson provenance "${provenance_payload}" \
@@ -457,20 +457,20 @@ for arm in pp128 pp512 tg128_pp512; do
     --arg rmm_version "${RMM_VERSION:-26.06}" \
     --arg sm_clock_mhz "${sm_clock_mhz}" \
     --arg memory_clock_mhz "${memory_clock_mhz}" '
-      ($brt.prefill.tokens_per_second /
+      ($raftinfer.prefill.tokens_per_second /
         $llama.prefill.tokens_per_second) as $prefill_ratio |
-      ($brt.generation.tokens_per_second /
+      ($raftinfer.generation.tokens_per_second /
         $llama.generation.tokens_per_second) as $generation_ratio |
       {
-        schema_version:1,
+        schema_version:2,
         arm:$arm,
-        prompt_tokens:$brt.prompt_tokens,
+        prompt_tokens:$raftinfer.prompt_tokens,
         generated_tokens:$generated_tokens,
         warmup_iterations:$warmups,
         measured_iterations:$iterations,
         provenance:$provenance,
         parity:$parity,
-        execution:$brt.execution,
+        execution:$raftinfer.execution,
         gpu:{
           name:$gpu_name,
           driver_version:$driver_version,
@@ -482,7 +482,7 @@ for arm in pp128 pp512 tg128_pp512; do
           raft_version:$raft_version,
           rmm_version:$rmm_version
         },
-        brt:$brt,
+        raftinfer:$raftinfer,
         llama_cpp:$llama,
         throughput_ratio:{
           prefill:$prefill_ratio,
@@ -495,8 +495,8 @@ for arm in pp128 pp512 tg128_pp512; do
            else
              $prefill_ratio >= 1.0
            end),
-        peak_allocated_gpu_bytes:$brt.peak_allocated_gpu_bytes,
-        peak_memory_status:"measured_by_brt_rmm"
+        peak_allocated_gpu_bytes:$raftinfer.peak_allocated_gpu_bytes,
+        peak_memory_status:"measured_by_raftinfer_rmm"
       }
     ')"
   "${jq_bin}" -c . <<<"${record}" >>"${output}"

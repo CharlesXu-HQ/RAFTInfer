@@ -13,7 +13,7 @@ Pinned source:
   `0e2cd8dc50885b2701d26b116c585eedcdc62a24080ec34345af55b963126ded`
 - Generator seed: `20260725`
 - Fixture SHA-256:
-  `0baecdddc5cdf000e9bbcfeaea1820738a7d4b59212f6310860f40a7826517c8`
+  `800878611016996887aa9828ee97eb165e6bf1066543a8797b4c99e6eaf167e0`
 
 Generate with GPU access disabled:
 
@@ -24,7 +24,7 @@ CUDA_VISIBLE_DEVICES="" python tools/qwen35/export_reference_fixtures.py \
 
 The version-1 little-endian file begins with:
 
-1. magic `BRTQ35F1`
+1. magic `RIFQ35F1`
 2. `uint32` version
 3. `uint32` endian marker `0x01020304`
 4. `uint64` exact total file length

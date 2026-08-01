@@ -142,7 +142,7 @@ int main() {
   assert(buffer.version == 1);
   assert(buffer.data != nullptr);
   assert(buffer.size > 8);
-  assert(std::memcmp(buffer.data, "BRTTOK", 6) == 0);
+  assert(std::memcmp(buffer.data, "RIFTOK", 6) == 0);
 
   raftinfer_owned_buffer_free(&buffer);
   assert(buffer.data == nullptr);

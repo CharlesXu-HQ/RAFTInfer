@@ -21,7 +21,7 @@
 
 namespace {
 
-constexpr std::array<std::uint8_t, 8> kMagic{'B', 'R', 'T', 'Q',
+constexpr std::array<std::uint8_t, 8> kMagic{'R', 'I', 'F', 'Q',
                                              '3', '5', 'F', '1'};
 constexpr std::uint32_t kVersion = 1;
 constexpr std::uint32_t kEndianMarker = 0x01020304U;

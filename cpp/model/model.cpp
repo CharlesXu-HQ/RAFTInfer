@@ -209,7 +209,7 @@ serialize_tokenizer_spec(const gguf::Catalog &catalog) {
     throw ConfigError("Qwen3.5 tokenizer metadata is missing or too large");
   }
 
-  std::vector<std::uint8_t> result{'B', 'R', 'T', 'T', 'O', 'K', 0, 1};
+  std::vector<std::uint8_t> result{'R', 'I', 'F', 'T', 'O', 'K', 0, 1};
   append_integer<std::uint32_t>(result,
                                 static_cast<std::uint32_t>(entries.size()));
   for (const auto &[key, value] : entries) {

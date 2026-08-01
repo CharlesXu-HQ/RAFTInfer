@@ -468,7 +468,7 @@ fn benchmark_json(benchmark: &BenchmarkOutput) -> String {
     let generation_tokens_per_second =
         benchmark.generated_tokens as f64 * 1_000_000.0 / benchmark.generation.median_us;
     format!(
-        "{{\"schema_version\":1,\"prompt_tokens\":{},\"generated_tokens\":{},\
+        "{{\"schema_version\":2,\"prompt_tokens\":{},\"generated_tokens\":{},\
          \"warmup_iterations\":{},\"measured_iterations\":{},\
          \"peak_allocated_gpu_bytes\":{},\
          \"execution\":{{\"attention\":\"{}\",\"kv_cache_dtype\":\"{}\",\
@@ -532,7 +532,7 @@ fn kv_cache_layout_name(value: KvCacheLayout) -> &'static str {
 }
 
 fn generation_json(generation: &ChatGeneration, execution: ExecutionDiagnostics) -> String {
-    let mut output = String::from("{\"schema_version\":1,\"prompt_token_ids\":[");
+    let mut output = String::from("{\"schema_version\":2,\"prompt_token_ids\":[");
     append_token_ids(&mut output, &generation.prompt_token_ids);
     output.push_str("],\"generated_token_ids\":[");
     append_token_ids(&mut output, &generation.generated_token_ids);
@@ -614,7 +614,7 @@ mod tests {
 
         assert_eq!(
             output,
-            "{\"schema_version\":1,\"prompt_token_ids\":[10,11],\
+            "{\"schema_version\":2,\"prompt_token_ids\":[10,11],\
              \"generated_token_ids\":[20,21],\"text\":\"line\\n\\\"quoted\\\"\\\\tail\",\
              \"execution\":{\"attention\":\"online_tiled\",\"kv_cache_dtype\":\"f32\",\
              \"kv_cache_layout\":\"token-major\",\"decode_graph_enabled\":true,\
@@ -644,7 +644,7 @@ mod tests {
 
         assert_eq!(
             output,
-            "{\"schema_version\":1,\"prompt_token_ids\":[10],\
+            "{\"schema_version\":2,\"prompt_token_ids\":[10],\
              \"generated_token_ids\":[20],\"text\":\"ok\",\
              \"execution\":{\"attention\":\"materialized_reference\",\
              \"kv_cache_dtype\":\"bf16\",\"kv_cache_layout\":\"head-major\",\
@@ -707,7 +707,7 @@ mod tests {
 
         assert_eq!(
             output,
-            "{\"schema_version\":1,\"prompt_tokens\":128,\"generated_tokens\":128,\
+            "{\"schema_version\":2,\"prompt_tokens\":128,\"generated_tokens\":128,\
              \"warmup_iterations\":5,\"measured_iterations\":20,\
              \"peak_allocated_gpu_bytes\":18000000000,\
              \"execution\":{\"attention\":\"online_tiled\",\"kv_cache_dtype\":\"bf16\",\

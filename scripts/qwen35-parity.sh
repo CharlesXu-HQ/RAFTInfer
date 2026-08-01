@@ -4,32 +4,32 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 corpus="${QWEN35_GENERATION_CORPUS:-${repo_root}/tests/parity/qwen35-generation-corpus.jsonl}"
 output="${PARITY_OUTPUT:-${repo_root}/build/evidence/qwen35-parity.jsonl}"
-brt_model="${BRT_MODEL:-}"
-llama_model="${LLAMA_MODEL:-${brt_model}}"
-brt_cli="${BRT_CLI:-${repo_root}/target/release/brt-cli}"
+raftinfer_model="${RAFTINFER_MODEL:-}"
+llama_model="${LLAMA_MODEL:-${raftinfer_model}}"
+raftinfer_cli="${RAFTINFER_CLI:-${repo_root}/target/release/raftinfer-cli}"
 llama_server="${LLAMA_SERVER_BIN:-}"
 gpu_preflight="${GPU_PREFLIGHT:-${repo_root}/scripts/gpu-preflight.sh}"
-gpu_lock="${BRT_GPU_LOCK:-/tmp/brt-qwen35-gpu.lock}"
+gpu_lock="${RAFTINFER_GPU_LOCK:-/tmp/raftinfer-qwen35-gpu.lock}"
 curl_bin="${CURL_BIN:-curl}"
 jq_bin="${JQ_BIN:-jq}"
-context_tokens="${BRT_CONTEXT_TOKENS:-4096}"
-max_new_tokens="${BRT_MAX_NEW_TOKENS:-32}"
-kv_cache_dtype="${BRT_KV_CACHE_DTYPE:-}"
-kv_cache_layout="${BRT_KV_CACHE_LAYOUT:-}"
+context_tokens="${RAFTINFER_CONTEXT_TOKENS:-4096}"
+max_new_tokens="${RAFTINFER_MAX_NEW_TOKENS:-32}"
+kv_cache_dtype="${RAFTINFER_KV_CACHE_DTYPE:-}"
+kv_cache_layout="${RAFTINFER_KV_CACHE_LAYOUT:-}"
 llama_port="${LLAMA_SERVER_PORT:-18080}"
 llama_url="http://127.0.0.1:${llama_port}"
-preflight_retries="${BRT_PREFLIGHT_RETRIES:-30}"
-preflight_retry_seconds="${BRT_PREFLIGHT_RETRY_SECONDS:-1}"
+preflight_retries="${RAFTINFER_PREFLIGHT_RETRIES:-30}"
+preflight_retry_seconds="${RAFTINFER_PREFLIGHT_RETRY_SECONDS:-1}"
 
 fail_usage() {
   printf 'qwen35-parity: %s\n' "$1" >&2
   exit 2
 }
 
-[[ -n "${brt_model}" ]] || fail_usage "BRT_MODEL is required"
-[[ -f "${brt_model}" ]] || fail_usage "BRT_MODEL does not exist: ${brt_model}"
+[[ -n "${raftinfer_model}" ]] || fail_usage "RAFTINFER_MODEL is required"
+[[ -f "${raftinfer_model}" ]] || fail_usage "RAFTINFER_MODEL does not exist: ${raftinfer_model}"
 [[ -f "${llama_model}" ]] || fail_usage "LLAMA_MODEL does not exist: ${llama_model}"
-[[ -x "${brt_cli}" ]] || fail_usage "BRT_CLI is not executable: ${brt_cli}"
+[[ -x "${raftinfer_cli}" ]] || fail_usage "RAFTINFER_CLI is not executable: ${raftinfer_cli}"
 [[ -n "${llama_server}" && -x "${llama_server}" ]] ||
   fail_usage "LLAMA_SERVER_BIN must name an executable"
 [[ -x "${gpu_preflight}" ]] ||
@@ -40,32 +40,32 @@ command -v "${curl_bin}" >/dev/null ||
 command -v "${jq_bin}" >/dev/null ||
   fail_usage "jq command not found: ${jq_bin}"
 [[ "${context_tokens}" =~ ^[1-9][0-9]*$ ]] ||
-  fail_usage "BRT_CONTEXT_TOKENS must be a positive integer"
+  fail_usage "RAFTINFER_CONTEXT_TOKENS must be a positive integer"
 [[ "${max_new_tokens}" =~ ^[1-9][0-9]*$ ]] ||
-  fail_usage "BRT_MAX_NEW_TOKENS must be a positive integer"
+  fail_usage "RAFTINFER_MAX_NEW_TOKENS must be a positive integer"
 [[ "${llama_port}" =~ ^[1-9][0-9]*$ ]] ||
   fail_usage "LLAMA_SERVER_PORT must be a positive integer"
 [[ "${preflight_retries}" =~ ^[1-9][0-9]*$ ]] ||
-  fail_usage "BRT_PREFLIGHT_RETRIES must be a positive integer"
+  fail_usage "RAFTINFER_PREFLIGHT_RETRIES must be a positive integer"
 [[ "${preflight_retry_seconds}" =~ ^[0-9]+$ ]] ||
-  fail_usage "BRT_PREFLIGHT_RETRY_SECONDS must be a non-negative integer"
+  fail_usage "RAFTINFER_PREFLIGHT_RETRY_SECONDS must be a non-negative integer"
 if [[ -n "${kv_cache_dtype}" &&
       "${kv_cache_dtype}" != "f32" &&
       "${kv_cache_dtype}" != "bf16" ]]; then
-  fail_usage "BRT_KV_CACHE_DTYPE must be f32 or bf16"
+  fail_usage "RAFTINFER_KV_CACHE_DTYPE must be f32 or bf16"
 fi
 if [[ -n "${kv_cache_layout}" &&
       "${kv_cache_layout}" != "token-major" &&
       "${kv_cache_layout}" != "head-major" ]]; then
-  fail_usage "BRT_KV_CACHE_LAYOUT must be token-major or head-major"
+  fail_usage "RAFTINFER_KV_CACHE_LAYOUT must be token-major or head-major"
 fi
 
-brt_policy_args=()
+raftinfer_policy_args=()
 if [[ -n "${kv_cache_dtype}" ]]; then
-  brt_policy_args+=(--kv-cache-dtype "${kv_cache_dtype}")
+  raftinfer_policy_args+=(--kv-cache-dtype "${kv_cache_dtype}")
 fi
 if [[ -n "${kv_cache_layout}" ]]; then
-  brt_policy_args+=(--kv-cache-layout "${kv_cache_layout}")
+  raftinfer_policy_args+=(--kv-cache-layout "${kv_cache_layout}")
 fi
 
 wait_for_gpu_preflight() {
@@ -87,8 +87,8 @@ wait_for_gpu_preflight() {
 }
 
 mkdir -p "$(dirname "${output}")"
-reference_file="$(mktemp "${TMPDIR:-/tmp}/brt-qwen35-reference.XXXXXX")"
-server_log="$(mktemp "${TMPDIR:-/tmp}/brt-qwen35-llama-server.XXXXXX")"
+reference_file="$(mktemp "${TMPDIR:-/tmp}/raftinfer-qwen35-reference.XXXXXX")"
+server_log="$(mktemp "${TMPDIR:-/tmp}/raftinfer-qwen35-llama-server.XXXXXX")"
 server_pid=''
 
 cleanup() {
@@ -258,30 +258,30 @@ while IFS= read -r reference_line || [[ -n "${reference_line}" ]]; do
     <<<"${reference_line}")"
 
   wait_for_gpu_preflight
-  brt_response="$("${brt_cli}" generate \
-    --model "${brt_model}" \
+  raftinfer_response="$("${raftinfer_cli}" generate \
+    --model "${raftinfer_model}" \
     --prompt "${prompt}" \
     --max-new-tokens "${max_new_tokens}" \
     --context "${context_tokens}" \
-    ${brt_policy_args[@]+"${brt_policy_args[@]}"} \
+    ${raftinfer_policy_args[@]+"${raftinfer_policy_args[@]}"} \
     --output-format json)"
-  if ! brt_execution="$("${jq_bin}" -ec '
+  if ! raftinfer_execution="$("${jq_bin}" -ec '
     .execution |
     select(type == "object" and
       .attention == "online_tiled" and
       (.kv_cache_dtype | type == "string" and length > 0) and
       (.kv_cache_layout | type == "string" and length > 0))
-  ' <<<"${brt_response}")"; then
+  ' <<<"${raftinfer_response}")"; then
     printf 'qwen35-parity: resolved execution diagnostics are missing\n' >&2
     exit 44
   fi
-  validate_resolved_execution "${brt_execution}"
+  validate_resolved_execution "${raftinfer_execution}"
   actual_prompt="$("${jq_bin}" -ec '
     .prompt_token_ids | select(type == "array" and all(.[]; type == "number"))
-  ' <<<"${brt_response}")"
+  ' <<<"${raftinfer_response}")"
   actual_generated="$("${jq_bin}" -ec '
     .generated_token_ids | select(type == "array" and all(.[]; type == "number"))
-  ' <<<"${brt_response}")"
+  ' <<<"${raftinfer_response}")"
 
   mismatch_kind=''
   mismatch_index="$(first_mismatch "${expected_prompt}" "${actual_prompt}")"
@@ -307,23 +307,23 @@ while IFS= read -r reference_line || [[ -n "${reference_line}" ]]; do
       --arg name "${name}" \
       --arg prompt "${prompt}" \
       --argjson reference_prompt_token_ids "${expected_prompt}" \
-      --argjson brt_prompt_token_ids "${actual_prompt}" \
+      --argjson raftinfer_prompt_token_ids "${actual_prompt}" \
       --argjson reference_generated_token_ids "${expected_generated}" \
-      --argjson brt_generated_token_ids "${actual_generated}" \
+      --argjson raftinfer_generated_token_ids "${actual_generated}" \
       --arg kind "${mismatch_kind}" \
       --argjson index "${mismatch_index}" \
       --argjson expected "${expected_token_json}" \
       --argjson actual "${actual_token_json}" \
-      --argjson execution "${brt_execution}" \
+      --argjson execution "${raftinfer_execution}" \
       '{
-        schema_version:1,
+        schema_version:2,
         name:$name,
         prompt:$prompt,
         parity_passed:false,
         reference_prompt_token_ids:$reference_prompt_token_ids,
-        brt_prompt_token_ids:$brt_prompt_token_ids,
+        raftinfer_prompt_token_ids:$raftinfer_prompt_token_ids,
         reference_generated_token_ids:$reference_generated_token_ids,
-        brt_generated_token_ids:$brt_generated_token_ids,
+        raftinfer_generated_token_ids:$raftinfer_generated_token_ids,
         execution:$execution,
         mismatch:{kind:$kind,index:$index,expected:$expected,actual:$actual},
         diagnostic:"token-id mismatch; block/logit diagnostics unavailable through the stable C ABI"
@@ -339,9 +339,9 @@ while IFS= read -r reference_line || [[ -n "${reference_line}" ]]; do
     --arg prompt "${prompt}" \
     --argjson prompt_token_ids "${actual_prompt}" \
     --argjson generated_token_ids "${actual_generated}" \
-    --argjson execution "${brt_execution}" \
+    --argjson execution "${raftinfer_execution}" \
     '{
-      schema_version:1,
+      schema_version:2,
       name:$name,
       prompt:$prompt,
       parity_passed:true,

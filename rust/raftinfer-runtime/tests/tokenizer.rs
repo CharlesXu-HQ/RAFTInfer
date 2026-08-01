@@ -685,7 +685,7 @@ fn corrupt_special_id() -> TokenizerSpec {
 }
 
 fn corrupt_huge_entry_count() -> TokenizerSpec {
-    let mut bytes = b"BRTTOK\0\x01".to_vec();
+    let mut bytes = b"RIFTOK\0\x01".to_vec();
     push_u32(&mut bytes, u32::MAX);
     TokenizerSpec { version: 1, bytes }
 }
@@ -776,7 +776,7 @@ fn spec(mut entries: Vec<Entry>) -> TokenizerSpec {
 }
 
 fn spec_in_order(entries: Vec<Entry>) -> TokenizerSpec {
-    let mut bytes = b"BRTTOK\0\x01".to_vec();
+    let mut bytes = b"RIFTOK\0\x01".to_vec();
     push_u32(&mut bytes, entries.len() as u32);
     for entry in entries {
         push_string(&mut bytes, entry.key);

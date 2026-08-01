@@ -26,7 +26,7 @@ typedef struct RaftInferSmokeResult {
 
 typedef struct RaftInferOwnedBuffer {
   size_t struct_size;
-  /* Tokenizer-spec wire-format version. Version 1 starts with "BRTTOK\0\1". */
+  /* Tokenizer-spec wire-format version. Version 1 starts with "RIFTOK\0\1". */
   uint32_t version;
   uint8_t *data;
   size_t size;

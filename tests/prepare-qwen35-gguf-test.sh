@@ -2,7 +2,7 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-fixture_root="$(mktemp -d "${TMPDIR:-/tmp}/brt-prepare-qwen35.XXXXXX")"
+fixture_root="$(mktemp -d "${TMPDIR:-/tmp}/raftinfer-prepare-qwen35.XXXXXX")"
 trap 'rm -rf "${fixture_root}"' EXIT
 
 model_revision='1111111111111111111111111111111111111111'
@@ -15,7 +15,7 @@ converter_dir="${fixture_root}/converter"
 reference_dir="${fixture_root}/reference"
 fake_bin="${fixture_root}/bin"
 mkdir -p "${model_dir}" "${converter_dir}" "${reference_dir}" "${fake_bin}"
-printf '%s\n' "${model_revision}" >"${model_dir}/.brt-source-revision"
+printf '%s\n' "${model_revision}" >"${model_dir}/.raftinfer-source-revision"
 touch "${converter_dir}/convert_hf_to_gguf.py"
 
 cat >"${fake_bin}/git" <<'EOF'
@@ -28,8 +28,8 @@ if [[ "$1" == "-C" ]]; then
 fi
 [[ "$1" == "rev-parse" && "$2" == "HEAD" ]]
 case "${directory}" in
-  *'/converter') printf '%s\n' "${BRT_TEST_CONVERTER_REVISION}" ;;
-  *'/reference') printf '%s\n' "${BRT_TEST_REFERENCE_REVISION}" ;;
+  *'/converter') printf '%s\n' "${RAFTINFER_TEST_CONVERTER_REVISION}" ;;
+  *'/reference') printf '%s\n' "${RAFTINFER_TEST_REFERENCE_REVISION}" ;;
   *) exit 1 ;;
 esac
 EOF
@@ -64,8 +64,8 @@ PATH="${fake_bin}:${PATH}" \
   PYTHON_BIN="${fake_bin}/python" \
   OUTPUT_GGUF="${output_gguf}" \
   PROVENANCE_OUTPUT="${provenance_json}" \
-  BRT_TEST_CONVERTER_REVISION="${converter_revision}" \
-  BRT_TEST_REFERENCE_REVISION="${reference_revision}" \
+  RAFTINFER_TEST_CONVERTER_REVISION="${converter_revision}" \
+  RAFTINFER_TEST_REFERENCE_REVISION="${reference_revision}" \
   "${repo_root}/scripts/prepare-qwen35-gguf.sh"
 
 [[ -f "${output_gguf}" ]]
@@ -79,7 +79,7 @@ jq -e \
   --arg output_gguf "${output_gguf}" \
   --arg sha "${expected_sha}" \
   --argjson size "${expected_size}" '
-    .schema_version == 1 and
+    .schema_version == 2 and
     .model.revision == $model_revision and
     .transformers_revision == $transformers_revision and
     .llama_cpp.converter_revision == $converter_revision and
@@ -92,7 +92,7 @@ jq -e \
   ' "${provenance_json}" >/dev/null
 
 printf '%s\n' 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' \
-  >"${model_dir}/.brt-source-revision"
+  >"${model_dir}/.raftinfer-source-revision"
 set +e
 PATH="${fake_bin}:${PATH}" \
   HF_MODEL_DIR="${model_dir}" \
@@ -105,8 +105,8 @@ PATH="${fake_bin}:${PATH}" \
   PYTHON_BIN="${fake_bin}/python" \
   OUTPUT_GGUF="${output_gguf}" \
   PROVENANCE_OUTPUT="${provenance_json}" \
-  BRT_TEST_CONVERTER_REVISION="${converter_revision}" \
-  BRT_TEST_REFERENCE_REVISION="${reference_revision}" \
+  RAFTINFER_TEST_CONVERTER_REVISION="${converter_revision}" \
+  RAFTINFER_TEST_REFERENCE_REVISION="${reference_revision}" \
   "${repo_root}/scripts/prepare-qwen35-gguf.sh" \
   >"${fixture_root}/mismatch-stdout" \
   2>"${fixture_root}/mismatch-stderr"

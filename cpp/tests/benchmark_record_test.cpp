@@ -67,7 +67,7 @@ int main() {
   assert(json.back() == '\n');
   assert(std::count(json.begin(), json.end(), '\n') == 1);
   const std::string expected =
-      "{\"schema_version\":1,"
+      "{\"schema_version\":2,"
       "\"utc_timestamp\":\"2026-07-25T01:02:03Z\","
       "\"project_commit\":\"a9283f8\","
       "\"device\":\"NVIDIA GeForce RTX 5090\","
