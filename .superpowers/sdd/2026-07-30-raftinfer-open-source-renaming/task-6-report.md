@@ -33,13 +33,22 @@ variation, memory, and ratio evidence is retained.
 - `scripts/check-project-brand.sh`
 - `scripts/local-check.sh`
 
-All Task 6 tests, the README link check, public-surface test, host CTest, and
-Rust checks completed in `scripts/local-check.sh`. Its final brand-policy step
-is currently blocked only by two pre-existing negative-test literals outside
-Task 6 ownership: `cpp/tests/c_api_source_test.cmake` line 12 and
-`tests/benchmark-script-test.sh` line 276. Both intentionally construct or
-diagnose legacy input and are to be converted by their owning tasks to runtime
-construction before the project-brand check can be green.
+## Integration fix
+
+The published provenance path is now the portable
+`<artifact-root>/Qwen3.5-9B-GGUF/Qwen3.5-9B-c202236-bf16.provenance.json`, and
+`peak_memory_status` is `measured_by_raftinfer_rmm`. These are non-measurement
+metadata and brand portability changes. An independent normalizer reads the
+immutable formal source and the checked-in result, permits only schema-version,
+brand-key/object, portable-path, and memory-status changes, and reports:
+
+```text
+benchmark-normalization: pass records=3 allowed_changes=schema,brand,portable-path,memory-status
+```
+
+After the owning tasks converted their negative fixtures to runtime input
+construction, `scripts/check-project-brand.sh` and the complete
+`scripts/local-check.sh` are green.
 
 ## Concerns
 
