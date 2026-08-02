@@ -514,13 +514,22 @@ to `docs/verification/<milestone>.md`.
 
 Create `.github/workflows/ci.yml` with:
 
-- `actions/checkout@v4`;
-- `dtolnay/rust-toolchain@stable` with `rustfmt` and `clippy`;
+- `runs-on: ubuntu-24.04`; this is a versioned GitHub-hosted runner label,
+  not an immutable VM-image digest;
+- `actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0`;
+- `dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4` with
+  `toolchain: 1.97.1`, `rustfmt`, and `clippy`;
 - Ubuntu installation of CMake, Ninja, jq, and Python 3;
 - `scripts/local-check.sh`;
 - `cargo clippy --workspace --all-targets -- -D warnings`.
 
 The workflow must not claim CUDA or performance validation.
+
+**Review amendment — user ruling A:** The action inputs and Rust toolchain
+above are required immutable pins; mutable action tags, branches, and toolchain
+channels are not permitted. `ubuntu-24.04` remains acceptable as the
+versioned hosted-runner label described above, while acknowledging that it is
+not an immutable image digest.
 
 - [ ] **Step 3: Add GitHub ownership and templates**
 

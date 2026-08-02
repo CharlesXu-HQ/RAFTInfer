@@ -9,11 +9,12 @@ permissions:
 
 jobs:
   host:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
         with:
+          toolchain: 1.97.1
           components: rustfmt, clippy
       - name: Install host build tools
         run: |
