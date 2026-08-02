@@ -13,6 +13,7 @@ output_gguf="${OUTPUT_GGUF:-}"
 provenance_output="${PROVENANCE_OUTPUT:-}"
 model_revision_file="${HF_MODEL_REVISION_FILE:-${hf_model_dir}/.raftinfer-source-revision}"
 jq_bin="${JQ_BIN:-jq}"
+use_temp_file="${RAFTINFER_GGUF_USE_TEMP_FILE:-0}"
 
 fail_usage() {
   printf 'prepare-qwen35-gguf: %s\n' "$1" >&2
@@ -35,6 +36,8 @@ require_revision() {
 [[ -n "${output_gguf}" ]] || fail_usage "OUTPUT_GGUF is required"
 [[ -n "${provenance_output}" ]] || fail_usage "PROVENANCE_OUTPUT is required"
 [[ -x "${python_bin}" ]] || fail_usage "PYTHON_BIN is not executable: ${python_bin}"
+[[ "${use_temp_file}" == 0 || "${use_temp_file}" == 1 ]] ||
+  fail_usage "RAFTINFER_GGUF_USE_TEMP_FILE must be 0 or 1"
 [[ -f "${converter_dir}/convert_hf_to_gguf.py" ]] ||
   fail_usage "llama.cpp converter is missing: ${converter_dir}/convert_hf_to_gguf.py"
 [[ -f "${model_revision_file}" ]] ||
@@ -93,6 +96,9 @@ conversion_command=(
   --outtype
   bf16
 )
+if [[ "${use_temp_file}" == 1 ]]; then
+  conversion_command+=(--use-temp-file)
+fi
 "${conversion_command[@]}"
 [[ -s "${output_gguf}" ]] ||
   fail_usage "converter did not produce a non-empty GGUF: ${output_gguf}"
