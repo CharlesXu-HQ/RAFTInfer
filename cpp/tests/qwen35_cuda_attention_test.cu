@@ -272,6 +272,55 @@ void run_attention_policy_contract_tests(raftinfer::ExecutionContext &context) {
   assert(raftinfer::kernels::qwen35_attention_workspace_bytes(shape, bf16_online) ==
          0);
 
+  using Mode = raftinfer::Qwen35DecodeAttentionMode;
+  const raftinfer::kernels::Qwen35AttentionShape model_shape{
+      .tokens = 1,
+      .query_heads = 16,
+      .kv_heads = 4,
+      .head_dim = 256,
+      .max_context_tokens = 4096,
+      .past_tokens = 0,
+  };
+  const auto single = raftinfer::kernels::qwen35_online_decode_plan(
+      model_shape, Mode::single_block, 128);
+  assert(single.resolved_mode == Mode::single_block);
+  assert(single.context_bucket_tokens == 512);
+  assert(single.active_partition_capacity == 1);
+  assert(raftinfer::kernels::qwen35_online_decode_workspace_layout(
+             model_shape, single.resolved_mode)
+             .bytes == 0);
+
+  const auto split256 = raftinfer::kernels::qwen35_online_decode_plan(
+      model_shape, Mode::split_k_256, 513);
+  assert(split256.partition_tokens == 256);
+  assert(split256.split_k_threshold_tokens == 256);
+  assert(split256.context_bucket_tokens == 1024);
+  assert(split256.active_partition_capacity == 4);
+
+  const auto layout = raftinfer::kernels::qwen35_online_decode_workspace_layout(
+      model_shape, Mode::split_k_256);
+  assert(layout.partial_count == 16 * 16);
+  assert(layout.max_offset_bytes == 0);
+  assert(layout.sum_offset_bytes == layout.partial_count * sizeof(float));
+  assert(layout.value_offset_bytes == 2 * layout.partial_count * sizeof(float));
+  assert(layout.bytes ==
+         (2 * layout.partial_count + layout.partial_count * 256) * sizeof(float));
+
+  expect_primitive_error([&] {
+    (void)raftinfer::kernels::qwen35_online_decode_plan(
+        model_shape, Mode::single_block, 0);
+  });
+  expect_primitive_error([&] {
+    (void)raftinfer::kernels::qwen35_online_decode_plan(
+        model_shape, Mode::single_block, model_shape.max_context_tokens + 1);
+  });
+  auto non_model_shape = model_shape;
+  non_model_shape.head_dim = 255;
+  expect_primitive_error([&] {
+    (void)raftinfer::kernels::qwen35_online_decode_plan(
+        non_model_shape, Mode::split_k_256, 128);
+  });
+
   auto *pointer = reinterpret_cast<void *>(0x1000);
   auto *const_pointer = reinterpret_cast<const void *>(0x1000);
   expect_primitive_error([&] {

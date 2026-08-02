@@ -9,6 +9,13 @@ enum class Qwen35AttentionImplementation : std::uint8_t {
   online_tiled,
 };
 
+enum class Qwen35DecodeAttentionMode : std::uint8_t {
+  auto_select,
+  single_block,
+  split_k_256,
+  split_k_512,
+};
+
 enum class Qwen35KvCacheDType : std::uint8_t {
   f32,
   bf16,

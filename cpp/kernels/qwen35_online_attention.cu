@@ -23,6 +23,9 @@ constexpr int kModelQueryHeads = 16;
 constexpr int kModelKvHeads = 4;
 constexpr int kValuesPerLane = kModelHeadDim / kWarpSize;
 constexpr std::size_t kMaxGridY = 65535;
+constexpr std::size_t kMinimumContextBucketTokens = 512;
+constexpr Qwen35DecodeAttentionMode kDefaultOnlineDecodeMode =
+    Qwen35DecodeAttentionMode::single_block;
 
 bool multiplication_fits(std::size_t lhs, std::size_t rhs) noexcept {
   return lhs == 0 || rhs <= std::numeric_limits<std::size_t>::max() / lhs;
@@ -136,6 +139,12 @@ bool online_decode_signature_supported(
          multiplication_fits(2 * cache_plane, cache_element_bytes);
 }
 
+bool online_decode_model_signature_supported(Qwen35AttentionShape shape) {
+  return shape.tokens == 1 && shape.query_heads == kModelQueryHeads &&
+         shape.kv_heads == kModelKvHeads && shape.head_dim == kModelHeadDim &&
+         shape.max_context_tokens != 0;
+}
+
 void require(bool condition, const char *message) {
   if (!condition) {
     throw Qwen35PrimitiveError(message);
@@ -146,6 +155,44 @@ std::size_t checked_mul(std::size_t lhs, std::size_t rhs, const char *message) {
   require(lhs == 0 || rhs <= std::numeric_limits<std::size_t>::max() / lhs,
           message);
   return lhs * rhs;
+}
+
+std::size_t checked_add(std::size_t lhs, std::size_t rhs, const char *message) {
+  require(rhs <= std::numeric_limits<std::size_t>::max() - lhs, message);
+  return lhs + rhs;
+}
+
+std::size_t ceil_div(std::size_t numerator, std::size_t denominator,
+                     const char *message) {
+  require(denominator != 0, message);
+  return numerator / denominator + (numerator % denominator == 0 ? 0 : 1);
+}
+
+std::size_t partition_tokens_for_mode(Qwen35DecodeAttentionMode mode) {
+  switch (mode) {
+  case Qwen35DecodeAttentionMode::split_k_256:
+    return 256;
+  case Qwen35DecodeAttentionMode::split_k_512:
+    return 512;
+  case Qwen35DecodeAttentionMode::single_block:
+  case Qwen35DecodeAttentionMode::auto_select:
+    return 0;
+  }
+  require(false, "unsupported online decode attention mode");
+  return 0;
+}
+
+std::size_t context_bucket_tokens(Qwen35AttentionShape shape,
+                                  std::size_t context_tokens) {
+  std::size_t bucket = kMinimumContextBucketTokens;
+  while (bucket < context_tokens && bucket < shape.max_context_tokens) {
+    if (bucket > std::numeric_limits<std::size_t>::max() / 2) {
+      bucket = shape.max_context_tokens;
+      break;
+    }
+    bucket *= 2;
+  }
+  return bucket < shape.max_context_tokens ? bucket : shape.max_context_tokens;
 }
 
 int checked_grid_dimension(std::size_t value, const char *message) {
@@ -782,6 +829,80 @@ void launch_decode_by_cache_dtype(const void *query, const void *key,
 }
 
 } // namespace
+
+Qwen35OnlineDecodePlan qwen35_online_decode_plan(
+    Qwen35AttentionShape shape, Qwen35DecodeAttentionMode requested,
+    std::size_t context_tokens) {
+  require(shape.max_context_tokens != 0,
+          "online decode plan maximum context tokens is zero");
+  require(context_tokens != 0, "online decode plan context tokens is zero");
+  require(context_tokens <= shape.max_context_tokens,
+          "online decode plan context tokens exceed maximum context");
+
+  const Qwen35DecodeAttentionMode resolved_mode =
+      requested == Qwen35DecodeAttentionMode::auto_select
+          ? kDefaultOnlineDecodeMode
+          : requested;
+  const std::size_t partition_tokens = partition_tokens_for_mode(resolved_mode);
+  if (partition_tokens != 0) {
+    require(online_decode_model_signature_supported(shape),
+            "split-K online decode requires the Qwen3.5 model signature");
+  }
+
+  const std::size_t context_bucket = context_bucket_tokens(shape, context_tokens);
+  if (partition_tokens == 0) {
+    return {
+        .resolved_mode = resolved_mode,
+        .partition_tokens = 0,
+        .split_k_threshold_tokens = 0,
+        .context_bucket_tokens = context_bucket,
+        .active_partition_capacity = 1,
+    };
+  }
+  return {
+      .resolved_mode = resolved_mode,
+      .partition_tokens = partition_tokens,
+      .split_k_threshold_tokens = partition_tokens,
+      .context_bucket_tokens = context_bucket,
+      .active_partition_capacity =
+          ceil_div(context_bucket, partition_tokens,
+                   "online decode active partition capacity overflow"),
+  };
+}
+
+Qwen35OnlineDecodeWorkspaceLayout qwen35_online_decode_workspace_layout(
+    Qwen35AttentionShape shape, Qwen35DecodeAttentionMode resolved_mode) {
+  require(resolved_mode != Qwen35DecodeAttentionMode::auto_select,
+          "online decode workspace mode must be resolved");
+  const std::size_t partition_tokens = partition_tokens_for_mode(resolved_mode);
+  if (partition_tokens == 0) {
+    return {};
+  }
+  require(online_decode_model_signature_supported(shape),
+          "split-K online decode requires the Qwen3.5 model signature");
+
+  const std::size_t max_partitions =
+      ceil_div(shape.max_context_tokens, partition_tokens,
+               "online decode maximum partition capacity overflow");
+  const std::size_t partial_count = checked_mul(
+      shape.query_heads, max_partitions, "online decode partial count overflow");
+  const std::size_t partial_bytes = checked_mul(
+      partial_count, sizeof(float), "online decode partial bytes overflow");
+  const std::size_t value_offset_bytes =
+      checked_mul(2, partial_bytes, "online decode value offset overflow");
+  const std::size_t value_bytes = checked_mul(
+      checked_mul(partial_count, shape.head_dim,
+                  "online decode partial value count overflow"),
+      sizeof(float), "online decode partial value bytes overflow");
+  return {
+      .partial_count = partial_count,
+      .max_offset_bytes = 0,
+      .sum_offset_bytes = partial_bytes,
+      .value_offset_bytes = value_offset_bytes,
+      .bytes = checked_add(value_offset_bytes, value_bytes,
+                           "online decode workspace bytes overflow"),
+  };
+}
 
 bool qwen35_online_attention_prefill_supported(
     Qwen35AttentionShape shape, RaftInferDataType activation_dtype,
