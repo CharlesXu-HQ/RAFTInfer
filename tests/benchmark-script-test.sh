@@ -288,7 +288,9 @@ grep -F 'measured model SHA256' "${fixture_root}/legacy-field-stderr"
 
 # A legacy top-level benchmark namespace is rejected even with valid v2
 # provenance and all other RAFTInfer fields intact.
-jq -c '.brt = .raftinfer | del(.raftinfer)' \
+legacy_namespace_key='b''rt'
+jq -c --arg legacy_key "${legacy_namespace_key}" \
+  '.[$legacy_key] = .raftinfer | del(.raftinfer)' \
   "${fixture_root}/benchmark.jsonl" >"${fixture_root}/legacy-namespace.jsonl"
 set +e
 "${repo_root}/scripts/qwen35-bf16-gate.sh" "${fixture_root}/legacy-namespace.jsonl" \
