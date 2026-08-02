@@ -60,6 +60,10 @@ HOME, LD_LIBRARY_PATH, PATH, TMPDIR, and XDG_CACHE_HOME.
 - JQ_BIN — jq executable used to validate and construct JSON evidence.
 - OUTPUT_GGUF — generated BF16 GGUF output path.
 - PROVENANCE_OUTPUT — generated provenance JSON output path.
+- RAFTINFER_GGUF_USE_TEMP_FILE — set to 1 to pass `--use-temp-file` to the
+  converter; defaults to 0.
+- RAFTINFER_GGUF_METADATA — optional existing JSON metadata-override file
+  passed to the converter. Leave unset for its default metadata.
 - PROVENANCE_JSON — pinned provenance JSON input used by benchmark and BF16
   gate scripts.
 - CUDA_VERSION — recorded CUDA version for benchmark provenance.

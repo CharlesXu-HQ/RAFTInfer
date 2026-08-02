@@ -17,7 +17,7 @@ decimals. See [benchmark methodology](docs/benchmarks.md) and the committed
 [schema-v2 evidence](benchmarks/results/qwen35-9b-bf16-rtx5090.jsonl).
 
 The protocol used 5 warmups and 20 measurements per arm, BF16 Qwen3.5-9B
-revision `c202236235762e1c871ad0ccb60c8ee5ba337b9a`, pinned llama.cpp revision
+ModelScope revision `460979c3d11864dd16408d860ac930a360a2fac2`, pinned llama.cpp revision
 `aedb2a5e9ca3d4064148bbb919e0ddc0c1b70ab3`, and exact greedy parity for 4
 prompts × 32 tokens. Results are a single accepted RTX 5090 environment, not a
 general hardware or workload claim.

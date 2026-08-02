@@ -5,6 +5,10 @@ the README visual. Records are committed only after pinned provenance, exact
 parity, and performance-floor gates pass. Do not edit measured fields to make a
 chart look better; publish a new accepted evidence record instead.
 
+When more than one independently stable run passes, commit the conservative
+representative: a run whose displayed ratios are not higher than the confirming
+run. Retain the confirmation report and its hash in release verification notes.
+
 Render the asset with the Python standard-library renderer:
 
 ```bash

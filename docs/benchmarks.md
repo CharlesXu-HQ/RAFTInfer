@@ -2,9 +2,11 @@
 
 The checked-in [Qwen3.5-9B BF16 RTX 5090 result](../benchmarks/results/qwen35-9b-bf16-rtx5090.jsonl)
 is accepted evidence, not a synthetic or cross-machine aggregate. It uses the
-fixed Qwen3.5-9B revision `c202236235762e1c871ad0ccb60c8ee5ba337b9a`, BF16
+fixed Qwen3.5-9B ModelScope revision `460979c3d11864dd16408d860ac930a360a2fac2`, BF16
 GGUF SHA-256 `5e2d54b1b54df02cf1797e6a5e1465255ed68a9547bfd0ab0bde1357347d65e8`,
-and llama.cpp revision `aedb2a5e9ca3d4064148bbb919e0ddc0c1b70ab3`.
+schema-v2 provenance SHA-256
+`a7e1730316d25f8ad878afddbc76d6cb150c3ed191327423efd49b1df687109c`, and
+llama.cpp revision `aedb2a5e9ca3d4064148bbb919e0ddc0c1b70ab3`.
 
 Each PP128, PP512, and TG128@PP512 arm has 5 warmups and 20 measurements. Before
 benchmarking, exact greedy parity passes 4 records × 32 generated tokens (128
@@ -17,6 +19,11 @@ tokens_per_second` for the phase shown. Thus prefill displays pp128 and pp512,
 while generation displays all three arms. A ratio above 1 means RAFTInfer's
 throughput is higher. The `peak_allocated_gpu_bytes` field is RAFTInfer's RMM
 logical allocation peak; it is not a process-wide GPU-memory measurement.
+
+Two independently preflighted, uncontended runs met the BF16 gate. The checked-in
+record is the conservative representative: its five reported ratios are no
+higher than those of the confirmation run. This avoids selecting a faster
+sample from otherwise equivalent passing evidence.
 
 Limits: this is a Qwen3.5-9B BF16, single-RTX-5090, specified-protocol result.
 It does not generalize to another model, quantization, GPU, batch size, service
