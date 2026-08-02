@@ -696,6 +696,7 @@ __global__ __launch_bounds__(32, 1) void online_decode_merge_kernel(
     const float *partial_sum, const float *partial_value,
     std::size_t max_context_tokens, std::size_t host_position,
     std::size_t partition_tokens, std::size_t max_partitions,
+    std::size_t active_partition_capacity,
     std::size_t split_k_threshold_tokens,
     const std::uint32_t *device_position) {
   const std::size_t position =
@@ -710,6 +711,10 @@ __global__ __launch_bounds__(32, 1) void online_decode_merge_kernel(
   const std::size_t active_partitions =
       context_tokens / partition_tokens +
       (context_tokens % partition_tokens == 0 ? 0 : 1);
+  if (active_partitions > active_partition_capacity) {
+    __trap();
+    return;
+  }
   const std::size_t query_head = blockIdx.x;
   const int lane = threadIdx.x;
   const std::size_t first_partial = query_head * max_partitions;
@@ -1004,6 +1009,7 @@ void launch_online_decode(const void *query, const void *key, const void *value,
           static_cast<ActivationT *>(output), partial_max, partial_sum,
           partial_value, shape.max_context_tokens, shape.past_tokens,
           plan.partition_tokens, max_partitions,
+          plan.active_partition_capacity,
           plan.split_k_threshold_tokens, device_position);
   check_launch("qwen35_online_attention_decode_split_k_merge");
 }

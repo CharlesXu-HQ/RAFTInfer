@@ -26,6 +26,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <iterator>
 #include <limits>
 #include <memory>
@@ -1091,6 +1092,69 @@ void run_split_k_online_decode_boundary_cases(
   }
 }
 
+[[noreturn]] void run_split_k_dynamic_position_capacity_guard_case(
+    raftinfer::ExecutionContext &context) {
+  using Mode = raftinfer::Qwen35DecodeAttentionMode;
+  constexpr std::size_t query_heads = 16;
+  constexpr std::size_t kv_heads = 4;
+  constexpr std::size_t head_dim = 256;
+  constexpr std::size_t max_context_tokens = 1024;
+  constexpr std::size_t hidden_size = query_heads * head_dim;
+  constexpr std::size_t kv_size = kv_heads * head_dim;
+  const raftinfer::kernels::Qwen35AttentionShape shape{
+      1, query_heads, kv_heads, head_dim, max_context_tokens, 0};
+  const auto plan = raftinfer::kernels::qwen35_online_decode_plan(
+      shape, Mode::split_k_256, 256);
+  assert(plan.context_bucket_tokens == 512);
+  assert(plan.active_partition_capacity == 2);
+  const auto workspace_layout =
+      raftinfer::kernels::qwen35_online_decode_workspace_layout(
+          shape, plan.resolved_mode);
+
+  DeviceBuffer query{context, hidden_size * sizeof(__nv_bfloat16)};
+  DeviceBuffer key{context, kv_size * sizeof(__nv_bfloat16)};
+  DeviceBuffer value{context, kv_size * sizeof(__nv_bfloat16)};
+  DeviceBuffer gate{context, hidden_size * sizeof(__nv_bfloat16)};
+  DeviceBuffer output{context, hidden_size * sizeof(__nv_bfloat16)};
+  DeviceBuffer cache{context, 2 * max_context_tokens * kv_size *
+                                  sizeof(__nv_bfloat16)};
+  DeviceBuffer workspace{context, workspace_layout.bytes};
+  assert(cudaMemsetAsync(query.data(), 0,
+                         hidden_size * sizeof(__nv_bfloat16),
+                         context.stream()) == cudaSuccess);
+  assert(cudaMemsetAsync(key.data(), 0, kv_size * sizeof(__nv_bfloat16),
+                         context.stream()) == cudaSuccess);
+  assert(cudaMemsetAsync(value.data(), 0, kv_size * sizeof(__nv_bfloat16),
+                         context.stream()) == cudaSuccess);
+  assert(cudaMemsetAsync(gate.data(), 0,
+                         hidden_size * sizeof(__nv_bfloat16),
+                         context.stream()) == cudaSuccess);
+  assert(cudaMemsetAsync(output.data(), 0,
+                         hidden_size * sizeof(__nv_bfloat16),
+                         context.stream()) == cudaSuccess);
+  assert(cudaMemsetAsync(cache.data(), 0,
+                         2 * max_context_tokens * kv_size *
+                             sizeof(__nv_bfloat16),
+                         context.stream()) == cudaSuccess);
+  assert(cudaMemsetAsync(workspace.data(), 0, workspace_layout.bytes,
+                         context.stream()) == cudaSuccess);
+  const std::uint32_t position = 512;
+  auto device_position = upload(
+      context, std::span<const std::uint32_t>{&position, std::size_t{1}});
+
+  raftinfer::kernels::qwen35_online_attention_decode(
+      query.data(), key.data(), value.data(), gate.data(), output.data(),
+      cache.data(), 2 * max_context_tokens * kv_size * sizeof(__nv_bfloat16),
+      workspace.data(), workspace_layout.bytes, shape, RAFTINFER_DTYPE_BF16,
+      raftinfer::Qwen35KvCacheDType::bf16,
+      raftinfer::Qwen35KvCacheLayout::head_major, plan,
+      static_cast<const std::uint32_t *>(device_position.data()),
+      context.stream());
+  const cudaError_t error = cudaStreamSynchronize(context.stream());
+  assert(error != cudaSuccess);
+  std::_Exit(0);
+}
+
 template <typename T>
 void run_prefill_case(raftinfer::ExecutionContext &context, std::size_t tokens,
                       std::size_t query_heads, std::size_t kv_heads,
@@ -1472,4 +1536,5 @@ int main() {
   run_decode_after_prefill_case<float>(context, 1);
   run_decode_after_prefill_case<float>(context, 2);
   run_invalid_shape_tests(context);
+  run_split_k_dynamic_position_capacity_guard_case(context);
 }
