@@ -152,6 +152,70 @@ printf 'temp-file behavior state: converter_last_arg=%s provenance_status=%s inv
 [[ "${invalid_status}" -eq 2 ]]
 grep -F 'RAFTINFER_GGUF_USE_TEMP_FILE must be 0 or 1' "${fixture_root}/invalid-stderr"
 
+metadata_file="${fixture_root}/metadata.json"
+printf '%s\n' '{"general.name":"Qwen3.5 9B C202236"}' >"${metadata_file}"
+metadata_output_gguf="${fixture_root}/Qwen3.5-9B-bf16-metadata.gguf"
+metadata_provenance_json="${fixture_root}/provenance-metadata.json"
+metadata_converter_args="${fixture_root}/converter-metadata.args"
+PATH="${fake_bin}:${PATH}" \
+  HF_MODEL_DIR="${model_dir}" \
+  HF_MODEL_REVISION="${model_revision}" \
+  TRANSFORMERS_REVISION="${transformers_revision}" \
+  LLAMA_CONVERTER_DIR="${converter_dir}" \
+  LLAMA_CONVERTER_REVISION="${converter_revision}" \
+  LLAMA_REFERENCE_DIR="${reference_dir}" \
+  LLAMA_REFERENCE_REVISION="${reference_revision}" \
+  PYTHON_BIN="${fake_bin}/python" \
+  OUTPUT_GGUF="${metadata_output_gguf}" \
+  PROVENANCE_OUTPUT="${metadata_provenance_json}" \
+  RAFTINFER_GGUF_METADATA="${metadata_file}" \
+  RAFTINFER_TEST_CONVERTER_ARGS="${metadata_converter_args}" \
+  RAFTINFER_TEST_CONVERTER_REVISION="${converter_revision}" \
+  RAFTINFER_TEST_REFERENCE_REVISION="${reference_revision}" \
+  "${repo_root}/scripts/prepare-qwen35-gguf.sh"
+
+metadata_output_missing="${fixture_root}/Qwen3.5-9B-bf16-metadata-missing.gguf"
+metadata_provenance_missing="${fixture_root}/provenance-metadata-missing.json"
+missing_metadata_file="${fixture_root}/does-not-exist.json"
+set +e
+PATH="${fake_bin}:${PATH}" \
+  HF_MODEL_DIR="${model_dir}" \
+  HF_MODEL_REVISION="${model_revision}" \
+  TRANSFORMERS_REVISION="${transformers_revision}" \
+  LLAMA_CONVERTER_DIR="${converter_dir}" \
+  LLAMA_CONVERTER_REVISION="${converter_revision}" \
+  LLAMA_REFERENCE_DIR="${reference_dir}" \
+  LLAMA_REFERENCE_REVISION="${reference_revision}" \
+  PYTHON_BIN="${fake_bin}/python" \
+  OUTPUT_GGUF="${metadata_output_missing}" \
+  PROVENANCE_OUTPUT="${metadata_provenance_missing}" \
+  RAFTINFER_GGUF_METADATA="${missing_metadata_file}" \
+  RAFTINFER_TEST_CONVERTER_REVISION="${converter_revision}" \
+  RAFTINFER_TEST_REFERENCE_REVISION="${reference_revision}" \
+  "${repo_root}/scripts/prepare-qwen35-gguf.sh" \
+  >"${fixture_root}/metadata-missing-stdout" \
+  2>"${fixture_root}/metadata-missing-stderr"
+missing_metadata_status=$?
+set -e
+
+metadata_converter_last_arg="$(tail -n 1 "${metadata_converter_args}")"
+set +e
+jq -e \
+  --arg metadata_file "${metadata_file}" '
+  (.conversion.command | type == "array" and length == 9 and
+   .[-2] == "--metadata" and .[-1] == $metadata_file)
+' "${metadata_provenance_json}" >/dev/null
+metadata_provenance_status=$?
+set -e
+printf 'metadata behavior state: converter_last_arg=%s provenance_status=%s missing_status=%s\n' \
+  "${metadata_converter_last_arg}" "${metadata_provenance_status}" "${missing_metadata_status}"
+[[ "${metadata_converter_last_arg}" == "${metadata_file}" ]]
+[[ "${metadata_provenance_status}" -eq 0 ]]
+[[ "${missing_metadata_status}" -eq 2 ]]
+[[ ! -e "${metadata_output_missing}" ]]
+[[ ! -e "${metadata_provenance_missing}" ]]
+grep -F 'RAFTINFER_GGUF_METADATA must name an existing regular file' "${fixture_root}/metadata-missing-stderr"
+
 printf '%s\n' 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' \
   >"${model_dir}/.raftinfer-source-revision"
 set +e

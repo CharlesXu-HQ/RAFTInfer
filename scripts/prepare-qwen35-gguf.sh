@@ -14,6 +14,7 @@ provenance_output="${PROVENANCE_OUTPUT:-}"
 model_revision_file="${HF_MODEL_REVISION_FILE:-${hf_model_dir}/.raftinfer-source-revision}"
 jq_bin="${JQ_BIN:-jq}"
 use_temp_file="${RAFTINFER_GGUF_USE_TEMP_FILE:-0}"
+metadata_override="${RAFTINFER_GGUF_METADATA:-}"
 
 fail_usage() {
   printf 'prepare-qwen35-gguf: %s\n' "$1" >&2
@@ -38,6 +39,9 @@ require_revision() {
 [[ -x "${python_bin}" ]] || fail_usage "PYTHON_BIN is not executable: ${python_bin}"
 [[ "${use_temp_file}" == 0 || "${use_temp_file}" == 1 ]] ||
   fail_usage "RAFTINFER_GGUF_USE_TEMP_FILE must be 0 or 1"
+if [[ -n "${metadata_override}" && ! -f "${metadata_override}" ]]; then
+  fail_usage "RAFTINFER_GGUF_METADATA must name an existing regular file"
+fi
 [[ -f "${converter_dir}/convert_hf_to_gguf.py" ]] ||
   fail_usage "llama.cpp converter is missing: ${converter_dir}/convert_hf_to_gguf.py"
 [[ -f "${model_revision_file}" ]] ||
@@ -98,6 +102,9 @@ conversion_command=(
 )
 if [[ "${use_temp_file}" == 1 ]]; then
   conversion_command+=(--use-temp-file)
+fi
+if [[ -n "${metadata_override}" ]]; then
+  conversion_command+=(--metadata "${metadata_override}")
 fi
 "${conversion_command[@]}"
 [[ -s "${output_gguf}" ]] ||
