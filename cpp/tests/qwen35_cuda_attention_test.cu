@@ -20,6 +20,7 @@
 #include <rmm/mr/pool_memory_resource.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <cmath>
 #include <cstddef>
@@ -351,34 +352,44 @@ void run_attention_policy_contract_tests(raftinfer::ExecutionContext &context) {
   });
   const raftinfer::kernels::Qwen35AttentionShape decode_model_shape{1,   16, 4,
                                                               256, 32, 0};
+  const auto decode_single_plan =
+      raftinfer::kernels::qwen35_online_decode_plan(
+          decode_model_shape, Mode::single_block, 1);
   expect_primitive_error([&] {
     raftinfer::kernels::qwen35_online_attention_decode(
         const_pointer, const_pointer, const_pointer, const_pointer, pointer,
-        pointer, std::numeric_limits<std::size_t>::max(),
+        pointer, std::numeric_limits<std::size_t>::max(), nullptr, 0,
         raftinfer::kernels::Qwen35AttentionShape{1, 16, 4, 255, 32, 0}, RAFTINFER_DTYPE_F32,
         raftinfer::Qwen35KvCacheDType::f32,
-        raftinfer::Qwen35KvCacheLayout::token_major, nullptr, context.stream());
+        raftinfer::Qwen35KvCacheLayout::token_major, decode_single_plan,
+        nullptr, context.stream());
   });
   expect_primitive_error([&] {
     raftinfer::kernels::qwen35_online_attention_decode(
         const_pointer, const_pointer, const_pointer, const_pointer, pointer,
-        pointer, std::numeric_limits<std::size_t>::max(), decode_model_shape,
+        pointer, std::numeric_limits<std::size_t>::max(), nullptr, 0,
+        decode_model_shape,
         RAFTINFER_DTYPE_F16, raftinfer::Qwen35KvCacheDType::f32,
-        raftinfer::Qwen35KvCacheLayout::token_major, nullptr, context.stream());
+        raftinfer::Qwen35KvCacheLayout::token_major, decode_single_plan,
+        nullptr, context.stream());
   });
   expect_primitive_error([&] {
     raftinfer::kernels::qwen35_online_attention_decode(
         const_pointer, const_pointer, const_pointer, const_pointer, pointer,
-        pointer, sizeof(float), decode_model_shape, RAFTINFER_DTYPE_F32,
+        pointer, sizeof(float), nullptr, 0, decode_model_shape,
+        RAFTINFER_DTYPE_F32,
         raftinfer::Qwen35KvCacheDType::f32,
-        raftinfer::Qwen35KvCacheLayout::token_major, nullptr, context.stream());
+        raftinfer::Qwen35KvCacheLayout::token_major, decode_single_plan,
+        nullptr, context.stream());
   });
   expect_primitive_error([&] {
     raftinfer::kernels::qwen35_online_attention_decode(
         const_pointer, const_pointer, const_pointer, const_pointer, pointer,
-        pointer, std::numeric_limits<std::size_t>::max(), decode_model_shape,
+        pointer, std::numeric_limits<std::size_t>::max(), nullptr, 0,
+        decode_model_shape,
         RAFTINFER_DTYPE_F32, raftinfer::Qwen35KvCacheDType::f32,
-        static_cast<raftinfer::Qwen35KvCacheLayout>(99), nullptr, context.stream());
+        static_cast<raftinfer::Qwen35KvCacheLayout>(99), decode_single_plan,
+        nullptr, context.stream());
   });
 
   const std::size_t supported_output_elements = supported_prefill.tokens *
@@ -748,14 +759,20 @@ void run_online_prefill_cases(raftinfer::ExecutionContext &context) {
 template <typename ActivationT, typename CacheT>
 void run_online_decode_case(raftinfer::ExecutionContext &context,
                             std::size_t context_tokens,
-                            raftinfer::Qwen35KvCacheLayout layout) {
+                            raftinfer::Qwen35KvCacheLayout layout,
+                            raftinfer::Qwen35DecodeAttentionMode forced_mode =
+                                raftinfer::Qwen35DecodeAttentionMode::single_block,
+                            std::size_t explicit_max_context_tokens = 0,
+                            bool verify_partial_state = false) {
   constexpr std::size_t query_heads = 16;
   constexpr std::size_t kv_heads = 4;
   constexpr std::size_t head_dim = 256;
   constexpr std::size_t hidden_size = query_heads * head_dim;
   constexpr std::size_t kv_size = kv_heads * head_dim;
   const std::size_t first_position = context_tokens - 1;
-  const std::size_t max_context_tokens = context_tokens + 1;
+  const std::size_t max_context_tokens = explicit_max_context_tokens == 0
+                                             ? context_tokens + 1
+                                             : explicit_max_context_tokens;
   const raftinfer::kernels::Qwen35AttentionShape decode_shape{
       .tokens = 1,
       .query_heads = query_heads,
@@ -819,13 +836,130 @@ void run_online_decode_case(raftinfer::ExecutionContext &context,
   auto device_position = upload(
       context, std::span<const std::uint32_t>{&position, std::size_t{1}});
 
+  const auto plan = raftinfer::kernels::qwen35_online_decode_plan(
+      decode_shape, forced_mode, max_context_tokens);
+  const auto workspace_layout =
+      raftinfer::kernels::qwen35_online_decode_workspace_layout(
+          decode_shape, plan.resolved_mode);
+  DeviceBuffer device_workspace{context, workspace_layout.bytes};
+  constexpr int workspace_sentinel = 0xA5;
+  if (workspace_layout.bytes != 0) {
+    assert(cudaMemsetAsync(device_workspace.data(), workspace_sentinel,
+                           workspace_layout.bytes,
+                           context.stream()) == cudaSuccess);
+  }
+
   raftinfer::kernels::qwen35_online_attention_decode(
       device_query.data(), device_key.data(), device_value.data(),
       device_gate.data(), device_output.data(), device_cache.data(),
-      cache.size() * sizeof(CacheT), decode_shape,
+      cache.size() * sizeof(CacheT),
+      workspace_layout.bytes == 0 ? nullptr : device_workspace.data(),
+      workspace_layout.bytes, decode_shape,
       DTypeTraits<ActivationT>::dtype, cache_dtype_for<CacheT>(), layout,
+      plan,
       static_cast<const std::uint32_t *>(device_position.data()),
       context.stream());
+
+  if (workspace_layout.bytes != 0 &&
+      context_tokens < plan.split_k_threshold_tokens) {
+    const auto untouched_workspace = download<std::uint8_t>(
+        context, device_workspace.data(), workspace_layout.bytes);
+    assert(std::all_of(untouched_workspace.begin(), untouched_workspace.end(),
+                       [](std::uint8_t byte) {
+                         return byte == static_cast<std::uint8_t>(
+                                            workspace_sentinel);
+                       }));
+  }
+
+  if (verify_partial_state) {
+    assert(workspace_layout.bytes != 0);
+    const auto partials = download<float>(
+        context, device_workspace.data(), workspace_layout.bytes / sizeof(float));
+    const std::size_t max_partitions =
+        (max_context_tokens + plan.partition_tokens - 1) / plan.partition_tokens;
+    const std::size_t partial_sum_base =
+        workspace_layout.sum_offset_bytes / sizeof(float);
+    const std::size_t partial_value_base =
+        workspace_layout.value_offset_bytes / sizeof(float);
+
+    auto expected_cache = cache;
+    const std::size_t value_plane = max_context_tokens * kv_size;
+    for (std::size_t element = 0; element < kv_size; ++element) {
+      const std::size_t kv_head = element / head_dim;
+      const std::size_t dim = element - kv_head * head_dim;
+      const std::size_t cache_index = cache_index_for_layout(
+          layout, first_position, kv_head, dim, decode_shape);
+      expected_cache[cache_index] = DTypeTraits<CacheT>::from_float(
+          DTypeTraits<ActivationT>::to_float(key[element]));
+      expected_cache[value_plane + cache_index] =
+          DTypeTraits<CacheT>::from_float(
+              DTypeTraits<ActivationT>::to_float(value[element]));
+    }
+
+    const std::size_t active_partitions =
+        (context_tokens + plan.partition_tokens - 1) / plan.partition_tokens;
+    for (std::size_t query_head = 0; query_head < query_heads; ++query_head) {
+      const std::size_t kv_head = query_head / (query_heads / kv_heads);
+      for (std::size_t partition = 0; partition < active_partitions;
+           ++partition) {
+        const std::size_t begin = partition * plan.partition_tokens;
+        const std::size_t end =
+            std::min(context_tokens, begin + plan.partition_tokens);
+        float expected_max = -std::numeric_limits<float>::infinity();
+        float expected_sum = 0.0F;
+        std::vector<float> expected_value(head_dim, 0.0F);
+        for (std::size_t token = begin; token < end; ++token) {
+          float score = 0.0F;
+          for (std::size_t dim = 0; dim < head_dim; ++dim) {
+            score += DTypeTraits<ActivationT>::to_float(
+                         query[query_head * head_dim + dim]) *
+                     DTypeTraits<CacheT>::to_float(expected_cache
+                         [cache_index_for_layout(layout, token, kv_head, dim,
+                                                 decode_shape)]);
+          }
+          score /= std::sqrt(static_cast<float>(head_dim));
+          const float next_max = std::max(expected_max, score);
+          const float left_scale = std::isinf(expected_max)
+                                       ? 0.0F
+                                       : std::exp(expected_max - next_max);
+          const float right_scale = std::exp(score - next_max);
+          expected_sum = expected_sum * left_scale + right_scale;
+          for (std::size_t dim = 0; dim < head_dim; ++dim) {
+            expected_value[dim] =
+                expected_value[dim] * left_scale +
+                DTypeTraits<CacheT>::to_float(expected_cache
+                    [value_plane + cache_index_for_layout(
+                                       layout, token, kv_head, dim,
+                                       decode_shape)]) *
+                    right_scale;
+          }
+          expected_max = next_max;
+        }
+        const std::size_t partial = query_head * max_partitions + partition;
+        assert(close_enough(partials[partial], expected_max));
+        assert(close_enough(partials[partial_sum_base + partial], expected_sum));
+        for (std::size_t dim = 0; dim < head_dim; ++dim) {
+          assert(close_enough(
+              partials[partial_value_base + partial * head_dim + dim],
+              expected_value[dim]));
+        }
+      }
+    }
+  }
+
+  if (context_tokens == 257 && workspace_layout.bytes != 0) {
+    expect_primitive_error([&] {
+      raftinfer::kernels::qwen35_online_attention_decode(
+          device_query.data(), device_key.data(), device_value.data(),
+          device_gate.data(), device_output.data(), device_cache.data(),
+          cache.size() * sizeof(CacheT), device_workspace.data(),
+          workspace_layout.bytes - 1, decode_shape, RAFTINFER_DTYPE_BF16,
+          raftinfer::Qwen35KvCacheDType::bf16,
+          raftinfer::Qwen35KvCacheLayout::head_major, plan,
+          static_cast<const std::uint32_t *>(device_position.data()),
+          context.stream());
+    });
+  }
   ++position;
   assert(cudaMemcpyAsync(device_position.data(), &position, sizeof(position),
                          cudaMemcpyHostToDevice,
@@ -836,8 +970,11 @@ void run_online_decode_case(raftinfer::ExecutionContext &context,
       static_cast<const ActivationT *>(device_value.data()) + kv_size,
       static_cast<const ActivationT *>(device_gate.data()) + hidden_size,
       static_cast<ActivationT *>(device_output.data()) + hidden_size,
-      device_cache.data(), cache.size() * sizeof(CacheT), decode_shape,
+      device_cache.data(), cache.size() * sizeof(CacheT),
+      workspace_layout.bytes == 0 ? nullptr : device_workspace.data(),
+      workspace_layout.bytes, decode_shape,
       DTypeTraits<ActivationT>::dtype, cache_dtype_for<CacheT>(), layout,
+      plan,
       static_cast<const std::uint32_t *>(device_position.data()),
       context.stream());
 
@@ -930,6 +1067,27 @@ void run_online_decode_cases(raftinfer::ExecutionContext &context) {
     run_online_decode_case<ActivationT, CacheT>(context, 32, layout);
     run_online_decode_case<ActivationT, CacheT>(context, 128, layout);
     run_online_decode_case<ActivationT, CacheT>(context, 512, layout);
+  }
+}
+
+void run_split_k_online_decode_boundary_cases(
+    raftinfer::ExecutionContext &context) {
+  using Mode = raftinfer::Qwen35DecodeAttentionMode;
+  constexpr std::size_t max_context_tokens = 1025;
+  for (const std::size_t context_tokens :
+       std::array<std::size_t, 9>{1, 255, 256, 257, 511, 512, 513, 777,
+                                  1024}) {
+    run_online_decode_case<__nv_bfloat16, __nv_bfloat16>(
+        context, context_tokens, raftinfer::Qwen35KvCacheLayout::head_major,
+        Mode::split_k_256, max_context_tokens,
+        context_tokens == 257 || context_tokens == 513 ||
+            context_tokens == 777);
+  }
+  for (const std::size_t context_tokens :
+       std::array<std::size_t, 2>{513, 777}) {
+    run_online_decode_case<__nv_bfloat16, __nv_bfloat16>(
+        context, context_tokens, raftinfer::Qwen35KvCacheLayout::head_major,
+        Mode::split_k_512, max_context_tokens, true);
   }
 }
 
@@ -1306,6 +1464,7 @@ int main() {
   run_online_decode_cases<__nv_bfloat16, __nv_bfloat16>(context);
   run_online_decode_cases<float, float>(context);
   run_online_decode_cases<float, __nv_bfloat16>(context);
+  run_split_k_online_decode_boundary_cases(context);
   run_decode_after_prefill_case<__half>(context, 1);
   run_decode_after_prefill_case<__half>(context, 2);
   run_decode_after_prefill_case<__nv_bfloat16>(context, 1);

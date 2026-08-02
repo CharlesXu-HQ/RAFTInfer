@@ -352,38 +352,25 @@ __global__ void append_online_decode_cache_kernel(
 }
 
 template <typename ActivationT, typename CacheT, int Warps>
-__global__ __launch_bounds__(256, 1) void online_decode_model_kernel(
-    const ActivationT *query, const ActivationT *gate, ActivationT *output,
-    const CacheT *kv_cache, std::size_t max_context_tokens,
-    std::size_t host_position, Qwen35KvCacheLayout cache_layout,
-    const std::uint32_t *device_position) {
-  static_assert(Warps == 4 || Warps == 8);
-  __shared__ float warp_max[Warps];
-  __shared__ float warp_sum[Warps];
-  __shared__ float warp_output[Warps][kModelHeadDim];
-
+__device__ void scan_online_decode_range(
+    const ActivationT *query, const CacheT *kv_cache,
+    std::size_t query_base, std::size_t kv_head,
+    std::size_t max_context_tokens, Qwen35KvCacheLayout cache_layout,
+    std::size_t begin_token, std::size_t end_token, int warp,
+    int active_warps, float &local_max, float &local_sum,
+    float (&local_output)[kValuesPerLane]) {
   const int lane = threadIdx.x % kWarpSize;
-  const int warp = threadIdx.x / kWarpSize;
-  const std::size_t position =
-      device_position == nullptr ? host_position : *device_position;
-  if (position >= max_context_tokens) {
-    return;
-  }
-
-  const std::size_t context_tokens = position + 1;
-  const int active_warps = context_tokens <= 128 ? 4 : Warps;
-  const std::size_t query_head = blockIdx.x;
-  const std::size_t kv_head = query_head / (kModelQueryHeads / kModelKvHeads);
   const std::size_t kv_size = kModelKvHeads * kModelHeadDim;
   const std::size_t value_plane = max_context_tokens * kv_size;
-  const std::size_t query_base = query_head * kModelHeadDim;
   const float scale = rsqrtf(static_cast<float>(kModelHeadDim));
-
-  float local_max = -CUDART_INF_F;
-  float local_sum = 0.0F;
-  float local_output[kValuesPerLane] = {};
-  for (std::size_t key_token = static_cast<std::size_t>(warp);
-       warp < active_warps && key_token < context_tokens;
+  local_max = -CUDART_INF_F;
+  local_sum = 0.0F;
+#pragma unroll
+  for (int component = 0; component < kValuesPerLane; ++component) {
+    local_output[component] = 0.0F;
+  }
+  for (std::size_t key_token = begin_token + static_cast<std::size_t>(warp);
+       warp < active_warps && key_token < end_token;
        key_token += active_warps) {
     const std::size_t key_base =
         cache_element_index(cache_layout, key_token, kv_head, 0,
@@ -415,6 +402,44 @@ __global__ __launch_bounds__(256, 1) void online_decode_model_kernel(
     }
     local_max = next_max;
   }
+}
+
+template <typename ActivationT, typename CacheT, int Warps>
+__global__ __launch_bounds__(256, 1) void online_decode_model_kernel(
+    const ActivationT *query, const ActivationT *gate, ActivationT *output,
+    const CacheT *kv_cache, std::size_t max_context_tokens,
+    std::size_t host_position, Qwen35KvCacheLayout cache_layout,
+    const std::uint32_t *device_position, std::size_t split_k_threshold_tokens) {
+  static_assert(Warps == 4 || Warps == 8);
+  __shared__ float warp_max[Warps];
+  __shared__ float warp_sum[Warps];
+  __shared__ float warp_output[Warps][kModelHeadDim];
+
+  const int lane = threadIdx.x % kWarpSize;
+  const int warp = threadIdx.x / kWarpSize;
+  const std::size_t position =
+      device_position == nullptr ? host_position : *device_position;
+  if (position >= max_context_tokens) {
+    return;
+  }
+
+  const std::size_t context_tokens = position + 1;
+  if (split_k_threshold_tokens != 0 &&
+      context_tokens >= split_k_threshold_tokens) {
+    return;
+  }
+  const int active_warps = context_tokens <= 128 ? 4 : Warps;
+  const std::size_t query_head = blockIdx.x;
+  const std::size_t kv_head = query_head / (kModelQueryHeads / kModelKvHeads);
+  const std::size_t query_base = query_head * kModelHeadDim;
+
+  float local_max;
+  float local_sum;
+  float local_output[kValuesPerLane];
+  scan_online_decode_range<ActivationT, CacheT, Warps>(
+      query, kv_cache, query_base, kv_head, max_context_tokens, cache_layout,
+      0, context_tokens, warp, active_warps, local_max, local_sum,
+      local_output);
 
   if (lane == 0) {
     warp_max[warp] = local_max;
@@ -570,6 +595,157 @@ __global__ __launch_bounds__(128, 2) void online_prefill_model_kernel(
     const float gate_value = load_as_float(gate, output_index);
     const float gated =
         (out_acc[component] / row_sum) / (1.0F + expf(-gate_value));
+    store_from_float(output, output_index, gated);
+  }
+}
+
+template <typename ActivationT, typename CacheT, int PartitionTokens>
+__global__ __launch_bounds__(256, 1) void online_decode_partition_kernel(
+    const ActivationT *query, const CacheT *kv_cache, float *partial_max,
+    float *partial_sum, float *partial_value,
+    std::size_t max_context_tokens, std::size_t host_position,
+    Qwen35KvCacheLayout cache_layout, std::size_t active_partition_capacity,
+    std::size_t max_partitions, std::size_t split_k_threshold_tokens,
+    const std::uint32_t *device_position) {
+  constexpr int Warps = 8;
+  __shared__ float warp_max[Warps];
+  __shared__ float warp_sum[Warps];
+  __shared__ float warp_output[Warps][kModelHeadDim];
+
+  const std::size_t position =
+      device_position == nullptr ? host_position : *device_position;
+  if (position >= max_context_tokens) {
+    return;
+  }
+  const std::size_t context_tokens = position + 1;
+  if (context_tokens < split_k_threshold_tokens) {
+    return;
+  }
+  const std::size_t query_head =
+      static_cast<std::size_t>(blockIdx.x) / active_partition_capacity;
+  const std::size_t partition =
+      static_cast<std::size_t>(blockIdx.x) % active_partition_capacity;
+  const std::size_t begin_token = partition * PartitionTokens;
+  if (begin_token >= context_tokens) {
+    return;
+  }
+  const std::size_t end_token =
+      min(context_tokens, begin_token + static_cast<std::size_t>(PartitionTokens));
+  const std::size_t kv_head =
+      query_head / (kModelQueryHeads / kModelKvHeads);
+  const std::size_t query_base = query_head * kModelHeadDim;
+  const int lane = threadIdx.x % kWarpSize;
+  const int warp = threadIdx.x / kWarpSize;
+
+  float local_max;
+  float local_sum;
+  float local_output[kValuesPerLane];
+  scan_online_decode_range<ActivationT, CacheT, Warps>(
+      query, kv_cache, query_base, kv_head, max_context_tokens, cache_layout,
+      begin_token, end_token, warp, Warps, local_max, local_sum, local_output);
+  if (lane == 0) {
+    warp_max[warp] = local_max;
+    warp_sum[warp] = local_sum;
+  }
+#pragma unroll
+  for (int component = 0; component < kValuesPerLane; ++component) {
+    warp_output[warp][lane + component * kWarpSize] = local_output[component];
+  }
+  __syncthreads();
+  if (warp != 0) {
+    return;
+  }
+
+  float merged_max = warp_max[0];
+  float merged_sum = warp_sum[0];
+  float merged_output[kValuesPerLane];
+#pragma unroll
+  for (int component = 0; component < kValuesPerLane; ++component) {
+    merged_output[component] = warp_output[0][lane + component * kWarpSize];
+  }
+#pragma unroll
+  for (int source_warp = 1; source_warp < Warps; ++source_warp) {
+    const float next_max = fmaxf(merged_max, warp_max[source_warp]);
+    const float left_scale = expf(merged_max - next_max);
+    const float right_scale = expf(warp_max[source_warp] - next_max);
+    merged_sum = merged_sum * left_scale + warp_sum[source_warp] * right_scale;
+#pragma unroll
+    for (int component = 0; component < kValuesPerLane; ++component) {
+      const int dim = lane + component * kWarpSize;
+      merged_output[component] = merged_output[component] * left_scale +
+                                 warp_output[source_warp][dim] * right_scale;
+    }
+    merged_max = next_max;
+  }
+
+  const std::size_t partial = query_head * max_partitions + partition;
+  if (lane == 0) {
+    partial_max[partial] = merged_max;
+    partial_sum[partial] = merged_sum;
+  }
+#pragma unroll
+  for (int component = 0; component < kValuesPerLane; ++component) {
+    const int dim = lane + component * kWarpSize;
+    partial_value[partial * kModelHeadDim + dim] = merged_output[component];
+  }
+}
+
+template <typename ActivationT>
+__global__ __launch_bounds__(32, 1) void online_decode_merge_kernel(
+    const ActivationT *gate, ActivationT *output, const float *partial_max,
+    const float *partial_sum, const float *partial_value,
+    std::size_t max_context_tokens, std::size_t host_position,
+    std::size_t partition_tokens, std::size_t max_partitions,
+    std::size_t split_k_threshold_tokens,
+    const std::uint32_t *device_position) {
+  const std::size_t position =
+      device_position == nullptr ? host_position : *device_position;
+  if (position >= max_context_tokens) {
+    return;
+  }
+  const std::size_t context_tokens = position + 1;
+  if (context_tokens < split_k_threshold_tokens) {
+    return;
+  }
+  const std::size_t active_partitions =
+      context_tokens / partition_tokens +
+      (context_tokens % partition_tokens == 0 ? 0 : 1);
+  const std::size_t query_head = blockIdx.x;
+  const int lane = threadIdx.x;
+  const std::size_t first_partial = query_head * max_partitions;
+  float merged_max = partial_max[first_partial];
+  float merged_sum = partial_sum[first_partial];
+  float merged_value[kValuesPerLane];
+#pragma unroll
+  for (int component = 0; component < kValuesPerLane; ++component) {
+    const int dim = lane + component * kWarpSize;
+    merged_value[component] =
+        partial_value[first_partial * kModelHeadDim + dim];
+  }
+  for (std::size_t partition = 1; partition < active_partitions; ++partition) {
+    const std::size_t partial = first_partial + partition;
+    const float next_max = fmaxf(merged_max, partial_max[partial]);
+    const float left_scale = expf(merged_max - next_max);
+    const float right_scale = expf(partial_max[partial] - next_max);
+    merged_sum =
+        merged_sum * left_scale + partial_sum[partial] * right_scale;
+#pragma unroll
+    for (int component = 0; component < kValuesPerLane; ++component) {
+      const int dim = lane + component * kWarpSize;
+      merged_value[component] =
+          merged_value[component] * left_scale +
+          partial_value[partial * kModelHeadDim + dim] * right_scale;
+    }
+    merged_max = next_max;
+  }
+#pragma unroll
+  for (int component = 0; component < kValuesPerLane; ++component) {
+    const int dim = lane + component * kWarpSize;
+    const std::size_t output_index = query_head * kModelHeadDim + dim;
+    const float gate_value = load_as_float(gate, output_index);
+    const float gated =
+        (merged_value[component] / merged_sum) /
+        (1.0F + expf(-gate_value));
     store_from_float(output, output_index, gated);
   }
 }
@@ -744,8 +920,11 @@ void launch_online_prefill(const void *query, const void *key,
 template <typename ActivationT, typename CacheT>
 void launch_online_decode(const void *query, const void *key, const void *value,
                           const void *gate, void *output, void *kv_cache,
+                          void *workspace,
                           Qwen35AttentionShape shape,
                           Qwen35KvCacheLayout cache_layout,
+                          Qwen35OnlineDecodePlan plan,
+                          Qwen35OnlineDecodeWorkspaceLayout workspace_layout,
                           const std::uint32_t *device_position,
                           cudaStream_t stream) {
   constexpr std::size_t kv_size = kModelKvHeads * kModelHeadDim;
@@ -769,7 +948,8 @@ void launch_online_decode(const void *query, const void *key, const void *value,
             static_cast<const ActivationT *>(gate),
             static_cast<ActivationT *>(output),
             static_cast<const CacheT *>(kv_cache), shape.max_context_tokens,
-            shape.past_tokens, cache_layout, device_position);
+            shape.past_tokens, cache_layout, device_position,
+            plan.split_k_threshold_tokens);
   } else {
     online_decode_model_kernel<ActivationT, CacheT, 8>
         <<<query_head_grid, 8 * kWarpSize, 0, stream>>>(
@@ -777,9 +957,55 @@ void launch_online_decode(const void *query, const void *key, const void *value,
             static_cast<const ActivationT *>(gate),
             static_cast<ActivationT *>(output),
             static_cast<const CacheT *>(kv_cache), shape.max_context_tokens,
-            shape.past_tokens, cache_layout, device_position);
+            shape.past_tokens, cache_layout, device_position,
+            plan.split_k_threshold_tokens);
   }
   check_launch("qwen35_online_attention_decode_sm120_hd256");
+
+  if (plan.resolved_mode == Qwen35DecodeAttentionMode::single_block) {
+    return;
+  }
+  const std::size_t max_partitions =
+      ceil_div(shape.max_context_tokens, plan.partition_tokens,
+               "online decode maximum partition capacity overflow");
+  const int partition_grid = checked_grid_dimension(
+      checked_mul(shape.query_heads, plan.active_partition_capacity,
+                  "online decode partition grid dimension overflow"),
+      "online decode partition grid dimension overflow");
+  auto *workspace_bytes = static_cast<std::byte *>(workspace);
+  auto *partial_max = reinterpret_cast<float *>(
+      workspace_bytes + workspace_layout.max_offset_bytes);
+  auto *partial_sum = reinterpret_cast<float *>(
+      workspace_bytes + workspace_layout.sum_offset_bytes);
+  auto *partial_value = reinterpret_cast<float *>(
+      workspace_bytes + workspace_layout.value_offset_bytes);
+  if (plan.partition_tokens == 256) {
+    online_decode_partition_kernel<ActivationT, CacheT, 256>
+        <<<partition_grid, 8 * kWarpSize, 0, stream>>>(
+            static_cast<const ActivationT *>(query),
+            static_cast<const CacheT *>(kv_cache), partial_max, partial_sum,
+            partial_value, shape.max_context_tokens, shape.past_tokens,
+            cache_layout, plan.active_partition_capacity, max_partitions,
+            plan.split_k_threshold_tokens, device_position);
+    check_launch("qwen35_online_attention_decode_split_k_256_partition");
+  } else {
+    online_decode_partition_kernel<ActivationT, CacheT, 512>
+        <<<partition_grid, 8 * kWarpSize, 0, stream>>>(
+            static_cast<const ActivationT *>(query),
+            static_cast<const CacheT *>(kv_cache), partial_max, partial_sum,
+            partial_value, shape.max_context_tokens, shape.past_tokens,
+            cache_layout, plan.active_partition_capacity, max_partitions,
+            plan.split_k_threshold_tokens, device_position);
+    check_launch("qwen35_online_attention_decode_split_k_512_partition");
+  }
+  online_decode_merge_kernel<ActivationT>
+      <<<query_head_grid, kWarpSize, 0, stream>>>(
+          static_cast<const ActivationT *>(gate),
+          static_cast<ActivationT *>(output), partial_max, partial_sum,
+          partial_value, shape.max_context_tokens, shape.past_tokens,
+          plan.partition_tokens, max_partitions,
+          plan.split_k_threshold_tokens, device_position);
+  check_launch("qwen35_online_attention_decode_split_k_merge");
 }
 
 template <typename ActivationT>
@@ -807,21 +1033,27 @@ template <typename ActivationT>
 void launch_decode_by_cache_dtype(const void *query, const void *key,
                                   const void *value, const void *gate,
                                   void *output, void *kv_cache,
+                                  void *workspace,
                                   Qwen35AttentionShape shape,
                                   Qwen35KvCacheDType cache_dtype,
                                   Qwen35KvCacheLayout cache_layout,
+                                  Qwen35OnlineDecodePlan plan,
+                                  Qwen35OnlineDecodeWorkspaceLayout workspace_layout,
                                   const std::uint32_t *device_position,
                                   cudaStream_t stream) {
   switch (cache_dtype) {
   case Qwen35KvCacheDType::f32:
     launch_online_decode<ActivationT, float>(query, key, value, gate, output,
-                                             kv_cache, shape, cache_layout,
+                                             kv_cache, workspace, shape,
+                                             cache_layout, plan, workspace_layout,
                                              device_position, stream);
     return;
   case Qwen35KvCacheDType::bf16:
     launch_online_decode<ActivationT, __nv_bfloat16>(query, key, value, gate,
-                                                     output, kv_cache, shape,
-                                                     cache_layout,
+                                                     output, kv_cache,
+                                                     workspace, shape,
+                                                     cache_layout, plan,
+                                                     workspace_layout,
                                                      device_position, stream);
     return;
   }
@@ -982,8 +1214,10 @@ void qwen35_online_attention_prefill(
 void qwen35_online_attention_decode(
     const void *query, const void *key, const void *value, const void *gate,
     void *output, void *kv_cache, std::size_t kv_cache_bytes,
+    void *workspace, std::size_t workspace_bytes,
     Qwen35AttentionShape shape, RaftInferDataType activation_dtype,
     Qwen35KvCacheDType cache_dtype, Qwen35KvCacheLayout cache_layout,
+    Qwen35OnlineDecodePlan plan,
     const std::uint32_t *device_position, cudaStream_t stream) {
   require(query != nullptr, "online decode query pointer is null");
   require(key != nullptr, "online decode key pointer is null");
@@ -997,6 +1231,40 @@ void qwen35_online_attention_decode(
                                         cache_layout),
       "unsupported online attention decode signature; select the "
       "materialized implementation before allocation");
+
+  require(plan.resolved_mode != Qwen35DecodeAttentionMode::auto_select,
+          "online decode plan mode must be resolved");
+  const std::size_t expected_partition_tokens =
+      partition_tokens_for_mode(plan.resolved_mode);
+  require(plan.partition_tokens == expected_partition_tokens,
+          "online decode plan partition size is inconsistent");
+  if (expected_partition_tokens == 0) {
+    require(plan.split_k_threshold_tokens == 0 &&
+                plan.active_partition_capacity == 1,
+            "single-block online decode plan is inconsistent");
+    require(workspace_bytes == 0,
+            "single-block online decode does not use split-K workspace");
+  } else {
+    require(plan.split_k_threshold_tokens == expected_partition_tokens,
+            "split-K online decode threshold is inconsistent");
+    require(plan.context_bucket_tokens != 0 &&
+                plan.context_bucket_tokens <= shape.max_context_tokens,
+            "split-K online decode context bucket is invalid");
+    require(plan.active_partition_capacity ==
+                ceil_div(plan.context_bucket_tokens, expected_partition_tokens,
+                         "online decode active partition capacity overflow"),
+            "split-K online decode partition capacity is inconsistent");
+    require(device_position != nullptr ||
+                shape.past_tokens + 1 <= plan.context_bucket_tokens,
+            "split-K online decode context exceeds the planned bucket");
+  }
+  const auto workspace_layout = qwen35_online_decode_workspace_layout(
+      shape, plan.resolved_mode);
+  if (workspace_layout.bytes != 0) {
+    require(workspace != nullptr, "split-K online decode workspace is null");
+    require(workspace_bytes >= workspace_layout.bytes,
+            "split-K online decode workspace is too small");
+  }
 
   std::size_t cache_element_bytes = 0;
   switch (cache_dtype) {
@@ -1028,15 +1296,29 @@ void qwen35_online_attention_decode(
           "online decode KV cache is too small");
 
   if (activation_dtype == RAFTINFER_DTYPE_F32) {
-    launch_decode_by_cache_dtype<float>(query, key, value, gate, output,
-                                        kv_cache, shape, cache_dtype,
-                                        cache_layout, device_position, stream);
+    launch_decode_by_cache_dtype<float>(
+        query, key, value, gate, output, kv_cache, workspace, shape,
+        cache_dtype, cache_layout, plan, workspace_layout, device_position,
+        stream);
     return;
   }
-  launch_decode_by_cache_dtype<__nv_bfloat16>(query, key, value, gate, output,
-                                              kv_cache, shape, cache_dtype,
-                                              cache_layout, device_position,
-                                              stream);
+  launch_decode_by_cache_dtype<__nv_bfloat16>(
+      query, key, value, gate, output, kv_cache, workspace, shape, cache_dtype,
+      cache_layout, plan, workspace_layout, device_position, stream);
+}
+
+void qwen35_online_attention_decode(
+    const void *query, const void *key, const void *value, const void *gate,
+    void *output, void *kv_cache, std::size_t kv_cache_bytes,
+    Qwen35AttentionShape shape, RaftInferDataType activation_dtype,
+    Qwen35KvCacheDType cache_dtype, Qwen35KvCacheLayout cache_layout,
+    const std::uint32_t *device_position, cudaStream_t stream) {
+  const auto plan = qwen35_online_decode_plan(
+      shape, Qwen35DecodeAttentionMode::single_block, shape.past_tokens + 1);
+  qwen35_online_attention_decode(
+      query, key, value, gate, output, kv_cache, kv_cache_bytes, nullptr, 0,
+      shape, activation_dtype, cache_dtype, cache_layout, plan, device_position,
+      stream);
 }
 
 } // namespace raftinfer::kernels
