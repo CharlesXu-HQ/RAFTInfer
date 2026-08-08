@@ -125,6 +125,14 @@ check '
 ' "decode attention diagnostics must be fully disclosed"
 
 check '
+  all($baseline[];
+    .execution.decode_attention == "single_block" and
+    .execution.decode_attention_partition_tokens == 0 and
+    .execution.decode_attention_threshold_tokens == 0 and
+    .execution.decode_attention_split_k_graph_captured == false)
+' "baseline must disclose single-block decode attention with no split-K graph"
+
+check '
   def candidate_ok($records):
     all($records[];
       .parity.records == 4 and
@@ -144,6 +152,15 @@ check '
        else true end));
   candidate_ok($candidate_a) and candidate_ok($candidate_b)
 ' "both candidates must have exact parity, stable RAFTInfer timings, and split-K long-context execution"
+
+check '
+  ($candidate_a + $candidate_b) as $candidates |
+  [$candidates[] |
+    select(.arm == "pp512" or .arm == "tg128_pp512") |
+    .execution.decode_attention_partition_tokens] as $partitions |
+  ($partitions | length) == 4 and
+  (($partitions | unique) == [256] or ($partitions | unique) == [512])
+' "candidate long-context split-K partitions must select exactly one mode across both candidates"
 
 check '
   def arm($records; $name): first($records[] | select(.arm == $name));

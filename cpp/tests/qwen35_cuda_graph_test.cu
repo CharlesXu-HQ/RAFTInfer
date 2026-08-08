@@ -343,6 +343,22 @@ void run_executor_graph_equivalence_tests() {
 
   boundary_graph.set_decode_graph_enabled_for_tests(true);
   boundary_graph.reset();
+  std::vector<std::int32_t> threshold_capture_prompt(254, 1);
+  (void)boundary_graph.prefill(threshold_capture_prompt);
+  (void)boundary_graph.decode(2);
+  boundary_graph.reset();
+  std::vector<std::int32_t> threshold_replay_prompt(255, 1);
+  (void)boundary_graph.prefill(threshold_replay_prompt);
+  (void)boundary_graph.decode(2);
+  const auto threshold_replay_diagnostics = boundary_graph.diagnostics();
+  assert(threshold_replay_diagnostics.decode_graph_replayed);
+  assert(threshold_replay_diagnostics.decode_attention.implementation ==
+         raftinfer::Qwen35DecodeAttentionImplementation::split_k);
+  assert(threshold_replay_diagnostics.decode_attention.partition_tokens == 256);
+  assert(threshold_replay_diagnostics.decode_attention.split_k_graph_captured);
+
+  boundary_graph.set_decode_graph_enabled_for_tests(true);
+  boundary_graph.reset();
   std::vector<std::int32_t> greedy_prompt(255, 1);
   const auto graph_greedy_prefill_observation = observe_executor(
       boundary_graph, boundary_graph.prefill(greedy_prompt),

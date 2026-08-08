@@ -193,6 +193,45 @@ expect_fail fallback_path candidate_a \
      .raftinfer.execution = .execution
    else . end' \
   'both candidates must have exact parity, stable RAFTInfer timings, and split-K long-context execution'
+expect_fail mixed_candidate_partitions candidate_a \
+  'if .arm == "tg128_pp512" then
+     .execution.decode_attention_partition_tokens = 512 |
+     .execution.decode_attention_threshold_tokens = 512 |
+     .raftinfer.execution = .execution
+   else . end' \
+  'candidate long-context split-K partitions must select exactly one mode across both candidates'
+
+write_pass_fixtures
+jq -c 'if .arm == "pp512" or .arm == "tg128_pp512" then
+         .execution.decode_attention_partition_tokens = 512 |
+         .execution.decode_attention_threshold_tokens = 512 |
+         .raftinfer.execution = .execution
+       else . end' \
+  "${candidate_b}" >"${fixture_root}/different-candidate-partitions.jsonl"
+cp "${fixture_root}/different-candidate-partitions.jsonl" "${candidate_b}"
+set +e
+"${gate}" "${baseline}" "${candidate_a}" "${candidate_b}" \
+  >"${fixture_root}/different-candidate-partitions.out" \
+  2>"${fixture_root}/different-candidate-partitions.err"
+different_candidate_partitions_status=$?
+set -e
+if [[ "${different_candidate_partitions_status}" -eq 0 ]]; then
+  printf 'expected split-K gate failure for different_candidate_partitions\n' >&2
+  exit 1
+fi
+grep -F 'candidate long-context split-K partitions must select exactly one mode across both candidates' \
+  "${fixture_root}/different-candidate-partitions.err"
+
+expect_fail baseline_split_k_long_context baseline \
+  'if .arm == "pp512" or .arm == "tg128_pp512" then
+     .execution.decode_attention = "split_k" |
+     .execution.decode_attention_partition_tokens = 256 |
+     .execution.decode_attention_threshold_tokens = 256 |
+     .execution.decode_attention_context_bucket_tokens = 1024 |
+     .execution.decode_attention_split_k_graph_captured = true |
+     .raftinfer.execution = .execution
+   else . end' \
+  'baseline must disclose single-block decode attention with no split-K graph'
 
 write_pass_fixtures
 set +e

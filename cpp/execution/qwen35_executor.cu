@@ -2207,7 +2207,8 @@ private:
       return;
 
     std::size_t active_variant = 0;
-    for (std::size_t position = threshold; position < max_context_; ++position) {
+    for (std::size_t position = threshold - 1; position < max_context_;
+         ++position) {
       const auto plan = kernels::qwen35_online_decode_plan(
           decode_attention_shape(position), policy_.decode_attention,
           position + 1);
