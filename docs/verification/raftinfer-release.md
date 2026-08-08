@@ -1,11 +1,11 @@
 # RAFTInfer release-candidate verification
 
-Status: **measured selection accepted; corrected `auto`-path verification
-pending**. Split-k-256 passed the measured promotion gate. An initial
+Status: **accepted; split-k-256 is the measured and verified runtime `auto`
+default**. Split-k-256 passed the measured promotion gate. An initial
 post-commit verification correctly rejected the first runtime integration
 because the executor still resolved `auto` to single-block; the executor now
-consumes the measured kernel planner default and awaits a fresh final
-default-path run.
+consumes the measured kernel planner default, and a fresh committed-snapshot
+default-path run passed every required gate.
 
 ## Candidate and target build
 
@@ -156,8 +156,69 @@ selected partition. A clean target GREEN run passed the focused executor test
 1/1; its CTest log SHA-256 is
 `d1abe3f957e796c0ee912418c12edc9e449230163716b65bc6200425c1e7d65b`.
 Fresh post-commit parity, two independent `auto` samples, and both promotion
-gates remain required before this correction is accepted as the runtime
-default path.
+gates subsequently passed as recorded below.
+
+## Final committed-snapshot default-path verification
+
+The accepted runtime snapshot is corrective commit
+`997ac413caf52bbf97797225974d89ef4280cc25`, built from the exact 193-file
+manifest
+`daf375022bc1c53c8c04c68e8fa4f8207de4440b1bee71c2a4804c4a5b714b30`
+in `/home/charles/raftinfer-split-k-validation/source-997ac413caf5-final-attempt-02`.
+Its clean Release build used GNU 13.3.0 and CUDA 13.2.86 and passed the complete
+CUDA CTest suite 25/25. The CTest-log SHA-256 is
+`18c7c94b1f4e8cf47c9e2c1e9739cf4c3d4b12ff2a0bccb2e82877e8b3f623a0`.
+The fresh native-library and CLI SHA-256 identities are
+`cf8dab5ec9574e00210f90419f316aacfb60a4f4fd259875397e6c107f5cd65e`
+and `edc661a8f6a373d9371954570ac89b3944fd01f8916102d9b6dcdb4ea1792253`.
+
+Fresh forced-single-block and `auto` parity both passed 4/4 prompts and 128/128
+exact generated token IDs. Their SHA-256 identities are
+`4dacd35aa011d07a470b0d4980c18532a2c2c047a0fa36443ab1f1ddac266350`
+and `7f841c6f03aee2be19805b387f9287dc45118dd5389b3c7f54975e69ccdd8fb5`.
+The same-window single-block benchmark SHA-256 is
+`2dc0abd6717993649c169a415348c3febd93bb4347a5fa46ee8ee80bc08b2332`;
+independent `auto` samples A and B are
+`a13ea85f9eaa8009b2c8179f7b1a53f36edd855a68b700defb9196004fcc6228`
+and `c96458c06ccaad857e5983d32be61680c626d4915faa10c261fa8ce83381e49f`.
+
+Both samples passed the BF16 gate and disclosed the required runtime plan:
+PP128 used single-block with partition/threshold zero, bucket 512, and no
+split-K graph; both long-context arms used split-K with partition/threshold
+256, bucket 1,024, and captured graph replay.
+Sample A and B BF16-gate log SHA-256 identities are
+`ec7f246e4d2d090f9552bc0a4b9c672aa13d7662e6c7815f1d8672d69d39cffb`
+and `862a0ca463afaf5d7164113c45ea9f2c0be489ea3ce324a1dfa60695859e6021`.
+The combined split-K gate passed; its log SHA-256 is
+`8d2e3a6520cf6e2491f5ee958beca9b94698d6716ce6be1234a3de8f916cdb24`.
+The final evidence-hash manifest SHA-256 is
+`4031f8cbe379f2730fd59aa344b7325a9b2aa09bac6bc9f9a44b3e8b1ed375f5`.
+
+RAFTInfer per-arm medians, CVs, and baseline-relative ratios were:
+
+| Sample / arm | Prefill median (us) | Generation median (us) | Prefill CV | Generation CV | Prefill ratio | Generation ratio |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| A / PP128 | 19,627 | 1,463,567 | 0.000693 | 0.000154 | 0.999847 | 0.999959 |
+| A / PP512 | 60,921.5 | 1,472,611 | 0.000452 | 0.000061 | 1.003505 | 1.022828 |
+| A / TG128@PP512 | 61,008 | 1,472,559 | 0.000816 | 0.000065 | 0.998984 | 1.022946 |
+| B / PP128 | 19,663 | 1,463,870.5 | 0.000904 | 0.000215 | 0.998017 | 0.999752 |
+| B / PP512 | 60,926 | 1,472,748.5 | 0.000434 | 0.000065 | 1.003430 | 1.022732 |
+| B / TG128@PP512 | 61,253.5 | 1,472,641 | 0.000641 | 0.000055 | 0.994980 | 1.022889 |
+
+The paired llama.cpp medians and CVs from the same samples were:
+
+| Sample / arm | Prefill median (us) | Generation median (us) | Prefill CV | Generation CV |
+| --- | ---: | ---: | ---: | ---: |
+| A / PP128 | 36,963.5 | 1,512,016 | 0.005262 | 0.000291 |
+| A / PP512 | 72,002.5 | 1,513,394.5 | 0.002803 | 0.000394 |
+| A / TG128@PP512 | 72,346 | 1,513,419.5 | 0.002062 | 0.000351 |
+| B / PP128 | 36,905 | 1,511,462.5 | 0.006034 | 0.000737 |
+| B / PP512 | 72,001 | 1,512,891.5 | 0.002136 | 0.000310 |
+| B / TG128@PP512 | 72,382 | 1,512,899.5 | 0.002230 | 0.000312 |
+
+Every gain/non-regression and CV threshold passed independently in both
+samples. Final postflight showed no compute applications, 32,095 MiB free,
+0% utilization, and 40 C. No process was stopped or signaled.
 
 ## Scope
 
