@@ -125,6 +125,20 @@ std::uint32_t from_kv_cache_layout(raftinfer::Qwen35KvCacheLayout value) {
   throw std::logic_error("unmapped Qwen3.5 KV cache layout");
 }
 
+std::uint32_t
+from_decode_attention(raftinfer::Qwen35DecodeAttentionMode value) {
+  switch (value) {
+  case raftinfer::Qwen35DecodeAttentionMode::single_block:
+    return RAFTINFER_QWEN35_DECODE_ATTENTION_SINGLE_BLOCK;
+  case raftinfer::Qwen35DecodeAttentionMode::split_k_256:
+  case raftinfer::Qwen35DecodeAttentionMode::split_k_512:
+    return RAFTINFER_QWEN35_DECODE_ATTENTION_SPLIT_K;
+  case raftinfer::Qwen35DecodeAttentionMode::auto_select:
+    break;
+  }
+  throw std::logic_error("unmapped Qwen3.5 decode attention implementation");
+}
+
 bool to_bool(int32_t value, const char *field_name) {
   if (value == 0) {
     return false;
@@ -503,6 +517,16 @@ raftinfer_session_diagnostics(RaftInferSessionHandle *session,
         diagnostics.decode_graph_replayed ? 1 : 0;
     out_diagnostics->attention_workspace_bytes =
         diagnostics.attention_workspace_bytes;
+    out_diagnostics->decode_attention =
+        from_decode_attention(diagnostics.decode_attention);
+    out_diagnostics->decode_attention_partition_tokens =
+        diagnostics.decode_attention_partition_tokens;
+    out_diagnostics->decode_attention_threshold_tokens =
+        diagnostics.decode_attention_threshold_tokens;
+    out_diagnostics->decode_attention_context_bucket_tokens =
+        diagnostics.decode_attention_context_bucket_tokens;
+    out_diagnostics->decode_attention_split_k_graph_captured =
+        diagnostics.decode_attention_split_k_graph_captured ? 1 : 0;
     return RaftInferStatus{RAFTINFER_STATUS_OK, nullptr};
   } catch (const raftinfer::SessionUnavailableError &error) {
     return fail(RAFTINFER_STATUS_UNAVAILABLE, error.what());

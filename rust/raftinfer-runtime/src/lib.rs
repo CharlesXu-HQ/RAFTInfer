@@ -126,6 +126,27 @@ impl Qwen35AttentionImplementation {
     }
 }
 
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Qwen35DecodeAttentionImplementation {
+    SingleBlock = raftinfer_sys::RAFTINFER_QWEN35_DECODE_ATTENTION_SINGLE_BLOCK,
+    SplitK = raftinfer_sys::RAFTINFER_QWEN35_DECODE_ATTENTION_SPLIT_K,
+}
+
+impl Qwen35DecodeAttentionImplementation {
+    fn from_native(value: u32) -> Result<Self, Error> {
+        match value {
+            raftinfer_sys::RAFTINFER_QWEN35_DECODE_ATTENTION_SINGLE_BLOCK => Ok(Self::SingleBlock),
+            raftinfer_sys::RAFTINFER_QWEN35_DECODE_ATTENTION_SPLIT_K => Ok(Self::SplitK),
+            _ => Err(Error {
+                code: raftinfer_sys::RAFTINFER_STATUS_UNSUPPORTED,
+                message: "native diagnostics returned an unknown decode attention implementation"
+                    .to_owned(),
+            }),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum KvCacheDType {
     F32,
@@ -208,6 +229,11 @@ pub struct ExecutionDiagnostics {
     pub decode_graph_captured: bool,
     pub decode_graph_replayed: bool,
     pub attention_workspace_bytes: usize,
+    pub decode_attention: Qwen35DecodeAttentionImplementation,
+    pub decode_attention_partition_tokens: usize,
+    pub decode_attention_threshold_tokens: usize,
+    pub decode_attention_context_bucket_tokens: usize,
+    pub decode_attention_split_k_graph_captured: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -634,6 +660,14 @@ impl Session<'_, '_> {
             decode_graph_captured: native.decode_graph_captured != 0,
             decode_graph_replayed: native.decode_graph_replayed != 0,
             attention_workspace_bytes: native.attention_workspace_bytes,
+            decode_attention: Qwen35DecodeAttentionImplementation::from_native(
+                native.decode_attention,
+            )?,
+            decode_attention_partition_tokens: native.decode_attention_partition_tokens,
+            decode_attention_threshold_tokens: native.decode_attention_threshold_tokens,
+            decode_attention_context_bucket_tokens: native.decode_attention_context_bucket_tokens,
+            decode_attention_split_k_graph_captured: native.decode_attention_split_k_graph_captured
+                != 0,
         })
     }
 

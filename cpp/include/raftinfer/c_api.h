@@ -47,6 +47,11 @@ enum {
   RAFTINFER_QWEN35_KV_CACHE_LAYOUT_HEAD_MAJOR = 1,
 };
 
+enum {
+  RAFTINFER_QWEN35_DECODE_ATTENTION_SINGLE_BLOCK = 0,
+  RAFTINFER_QWEN35_DECODE_ATTENTION_SPLIT_K = 1,
+};
+
 typedef struct RaftInferQwen35ExecutionPolicy {
   size_t struct_size;
   uint32_t attention;
@@ -71,6 +76,11 @@ typedef struct RaftInferSessionDiagnostics {
   int32_t decode_graph_captured;
   int32_t decode_graph_replayed;
   size_t attention_workspace_bytes;
+  uint32_t decode_attention;
+  size_t decode_attention_partition_tokens;
+  size_t decode_attention_threshold_tokens;
+  size_t decode_attention_context_bucket_tokens;
+  int32_t decode_attention_split_k_graph_captured;
 } RaftInferSessionDiagnostics;
 
 typedef struct RaftInferTokenResult {

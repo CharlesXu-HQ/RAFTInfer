@@ -48,6 +48,25 @@ write_parity() {
           execution:{attention:$attention,kv_cache_dtype:$dtype,
             kv_cache_layout:$layout,decode_graph_enabled:true,
             decode_graph_captured:false,decode_graph_replayed:false,
+            attention_workspace_bytes:0,decode_attention:"single_block",
+            decode_attention_partition_tokens:0,
+            decode_attention_threshold_tokens:0,
+            decode_attention_context_bucket_tokens:0,
+            decode_attention_split_k_graph_captured:false}}' \
+        >>"${fixture_root}/parity.jsonl"
+    elif [[ "${include_execution}" -eq 2 ]]; then
+      jq -nc \
+        --arg name "case-${index}" \
+        --arg attention "${attention}" \
+        --arg dtype "${dtype}" \
+        --arg layout "${layout}" \
+        --argjson start "${start}" \
+        --argjson end "${end}" \
+        '{schema_version:2,name:$name,parity_passed:true,
+          prompt_token_ids:[10,11],generated_token_ids:[range($start;$end)],
+          execution:{attention:$attention,kv_cache_dtype:$dtype,
+            kv_cache_layout:$layout,decode_graph_enabled:true,
+            decode_graph_captured:false,decode_graph_replayed:false,
             attention_workspace_bytes:0}}' >>"${fixture_root}/parity.jsonl"
     else
       jq -nc \
@@ -173,8 +192,23 @@ else
 fi
 prefill_tps=$((prompt_tokens * 1000000 / prefill_median))
 generation_tps=$((128 * 1000000 / generation_median))
-printf '{"schema_version":2,"prompt_tokens":%s,"generated_tokens":128,"warmup_iterations":5,"measured_iterations":20,"peak_allocated_gpu_bytes":18000000000,"execution":{"attention":"online_tiled","kv_cache_dtype":"%s","kv_cache_layout":"%s","decode_graph_enabled":true,"decode_graph_captured":true,"decode_graph_replayed":true,"attention_workspace_bytes":0},"prefill":{"min_us":%s,"mean_us":%s,"median_us":%s,"p95_us":%s,"max_us":%s,"coefficient_of_variation":0.01,"tokens_per_second":%s},"generation":{"min_us":%s,"mean_us":%s,"median_us":%s,"p95_us":%s,"max_us":%s,"coefficient_of_variation":0.01,"tokens_per_second":%s}}\n' \
+decode_attention=single_block
+partition_tokens=0
+threshold_tokens=0
+context_bucket_tokens=0
+split_k_graph_captured=false
+if [[ "${prompt_tokens}" -eq 512 &&
+      "${RAFTINFER_TEST_FALLBACK_DECODE:-0}" != "1" ]]; then
+  decode_attention=split_k
+  partition_tokens=256
+  threshold_tokens=256
+  context_bucket_tokens=1024
+  split_k_graph_captured=true
+fi
+printf '{"schema_version":2,"prompt_tokens":%s,"generated_tokens":128,"warmup_iterations":5,"measured_iterations":20,"peak_allocated_gpu_bytes":18000000000,"execution":{"attention":"online_tiled","kv_cache_dtype":"%s","kv_cache_layout":"%s","decode_graph_enabled":true,"decode_graph_captured":true,"decode_graph_replayed":true,"attention_workspace_bytes":0,"decode_attention":"%s","decode_attention_partition_tokens":%s,"decode_attention_threshold_tokens":%s,"decode_attention_context_bucket_tokens":%s,"decode_attention_split_k_graph_captured":%s},"prefill":{"min_us":%s,"mean_us":%s,"median_us":%s,"p95_us":%s,"max_us":%s,"coefficient_of_variation":0.01,"tokens_per_second":%s},"generation":{"min_us":%s,"mean_us":%s,"median_us":%s,"p95_us":%s,"max_us":%s,"coefficient_of_variation":0.01,"tokens_per_second":%s}}\n' \
   "${prompt_tokens}" "${kv_cache_dtype}" "${kv_cache_layout}" \
+  "${decode_attention}" "${partition_tokens}" "${threshold_tokens}" \
+  "${context_bucket_tokens}" "${split_k_graph_captured}" \
   "${prefill_median}" "${prefill_median}" "${prefill_median}" \
   "${prefill_median}" "${prefill_median}" "${prefill_tps}" \
   "${generation_median}" "${generation_median}" "${generation_median}" \
@@ -202,9 +236,11 @@ run_benchmark() {
     RAFTINFER_TEST_COMPLETION_LOG="${fixture_root}/completion.log" \
     RAFTINFER_TEST_RAFTINFER_ARG_LOG="${fixture_root}/raftinfer-args.log" \
     RAFTINFER_TEST_SLOW="${RAFTINFER_TEST_SLOW:-0}" \
+    RAFTINFER_TEST_FALLBACK_DECODE="${RAFTINFER_TEST_FALLBACK_DECODE:-0}" \
     RAFTINFER_TEST_LLAMA_VERSION="${RAFTINFER_TEST_LLAMA_VERSION:-ok}" \
     RAFTINFER_KV_CACHE_DTYPE="bf16" \
     RAFTINFER_KV_CACHE_LAYOUT="head-major" \
+    RAFTINFER_QWEN35_DECODE_ATTENTION="split-k-256" \
     PARITY_REPORT="${fixture_root}/parity.jsonl" \
     PROVENANCE_JSON="${fixture_root}/provenance.json" \
     BENCHMARK_OUTPUT="${fixture_root}/benchmark.jsonl" \
@@ -245,6 +281,20 @@ jq -e -s --arg model_sha "${model_sha}" '
     .execution.attention == "online_tiled" and
     .execution.kv_cache_dtype == "bf16" and
     .execution.kv_cache_layout == "head-major" and
+    (.execution.decode_attention | type == "string") and
+    (.execution.decode_attention_partition_tokens | type == "number") and
+    (.execution.decode_attention_threshold_tokens | type == "number") and
+    (.execution.decode_attention_context_bucket_tokens | type == "number") and
+    (.execution.decode_attention_split_k_graph_captured | type == "boolean") and
+    (if .arm == "pp128" then
+       .execution.decode_attention == "single_block"
+     else
+       .execution.decode_attention == "split_k" and
+       .execution.decode_attention_partition_tokens == 256 and
+       .execution.decode_attention_threshold_tokens == 256 and
+       .execution.decode_attention_context_bucket_tokens > 0 and
+       .execution.decode_attention_split_k_graph_captured == true
+     end) and
     (.raftinfer.prefill.coefficient_of_variation | type == "number") and
     (.raftinfer.generation.coefficient_of_variation | type == "number") and
     (.llama_cpp.prefill.coefficient_of_variation | type == "number") and
@@ -331,7 +381,26 @@ set -e
 [[ "${parity_missing_status}" -eq 41 ]]
 grep -F 'parity execution diagnostics are missing' \
   "${fixture_root}/parity-missing-stderr"
+write_parity online_tiled bf16 head-major 2
+set +e
+run_benchmark >"${fixture_root}/parity-split-k-missing-stdout" \
+  2>"${fixture_root}/parity-split-k-missing-stderr"
+parity_split_k_missing_status=$?
+set -e
+[[ "${parity_split_k_missing_status}" -eq 41 ]]
+grep -F 'parity execution diagnostics are missing' \
+  "${fixture_root}/parity-split-k-missing-stderr"
 write_parity
+
+set +e
+RAFTINFER_TEST_FALLBACK_DECODE=1 run_benchmark \
+  >"${fixture_root}/fallback-decode-stdout" \
+  2>"${fixture_root}/fallback-decode-stderr"
+fallback_decode_status=$?
+set -e
+[[ "${fallback_decode_status}" -eq 32 ]]
+grep -F 'malformed RAFTINFER benchmark output' \
+  "${fixture_root}/fallback-decode-stderr"
 
 set +e
 RAFTINFER_TEST_LLAMA_VERSION=unknown run_benchmark \

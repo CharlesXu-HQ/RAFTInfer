@@ -43,6 +43,10 @@ struct SessionDiagnostics {
   std::size_t attention_workspace_bytes{};
   Qwen35DecodeAttentionMode decode_attention{
       Qwen35DecodeAttentionMode::single_block};
+  std::size_t decode_attention_partition_tokens{};
+  std::size_t decode_attention_threshold_tokens{};
+  std::size_t decode_attention_context_bucket_tokens{};
+  bool decode_attention_split_k_graph_captured{};
 };
 
 class Session {

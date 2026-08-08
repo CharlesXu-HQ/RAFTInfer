@@ -9,6 +9,8 @@ pub const RAFTINFER_QWEN35_KV_CACHE_F32: u32 = 0;
 pub const RAFTINFER_QWEN35_KV_CACHE_BF16: u32 = 1;
 pub const RAFTINFER_QWEN35_KV_CACHE_LAYOUT_TOKEN_MAJOR: u32 = 0;
 pub const RAFTINFER_QWEN35_KV_CACHE_LAYOUT_HEAD_MAJOR: u32 = 1;
+pub const RAFTINFER_QWEN35_DECODE_ATTENTION_SINGLE_BLOCK: u32 = 0;
+pub const RAFTINFER_QWEN35_DECODE_ATTENTION_SPLIT_K: u32 = 1;
 
 #[repr(C)]
 pub struct RaftInferEngineHandle {
@@ -82,6 +84,11 @@ pub struct RaftInferSessionDiagnostics {
     pub decode_graph_captured: i32,
     pub decode_graph_replayed: i32,
     pub attention_workspace_bytes: usize,
+    pub decode_attention: u32,
+    pub decode_attention_partition_tokens: usize,
+    pub decode_attention_threshold_tokens: usize,
+    pub decode_attention_context_bucket_tokens: usize,
+    pub decode_attention_split_k_graph_captured: i32,
 }
 
 #[repr(C)]

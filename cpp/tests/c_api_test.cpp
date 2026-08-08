@@ -39,6 +39,30 @@ private:
 } // namespace
 
 int main() {
+  static_assert(RAFTINFER_QWEN35_DECODE_ATTENTION_SINGLE_BLOCK == 0);
+  static_assert(RAFTINFER_QWEN35_DECODE_ATTENTION_SPLIT_K == 1);
+  static_assert(offsetof(RaftInferSessionDiagnostics, decode_attention) >
+                offsetof(RaftInferSessionDiagnostics,
+                         attention_workspace_bytes));
+  static_assert(
+      offsetof(RaftInferSessionDiagnostics,
+               decode_attention_partition_tokens) >
+      offsetof(RaftInferSessionDiagnostics, decode_attention));
+  static_assert(
+      offsetof(RaftInferSessionDiagnostics,
+               decode_attention_threshold_tokens) >
+      offsetof(RaftInferSessionDiagnostics,
+               decode_attention_partition_tokens));
+  static_assert(
+      offsetof(RaftInferSessionDiagnostics,
+               decode_attention_context_bucket_tokens) >
+      offsetof(RaftInferSessionDiagnostics,
+               decode_attention_threshold_tokens));
+  static_assert(
+      offsetof(RaftInferSessionDiagnostics,
+               decode_attention_split_k_graph_captured) >
+      offsetof(RaftInferSessionDiagnostics,
+               decode_attention_context_bucket_tokens));
 #if RAFTINFER_TEST_CUDA_ENABLED
   const char *opt_in = std::getenv("RAFTINFER_RUN_GPU_TESTS");
   if (opt_in == nullptr || std::strcmp(opt_in, "1") != 0) {
@@ -328,6 +352,11 @@ int main() {
   assert(diagnostics.decode_graph_captured == 0);
   assert(diagnostics.decode_graph_replayed == 0);
   assert(diagnostics.attention_workspace_bytes > 0);
+  assert(diagnostics.decode_attention ==
+         RAFTINFER_QWEN35_DECODE_ATTENTION_SINGLE_BLOCK);
+  assert(diagnostics.decode_attention_partition_tokens == 0);
+  assert(diagnostics.decode_attention_threshold_tokens == 0);
+  assert(diagnostics.decode_attention_split_k_graph_captured == 0);
 
   RaftInferSessionDiagnostics explicit_diagnostics{};
   explicit_diagnostics.struct_size = sizeof(RaftInferSessionDiagnostics);
@@ -342,6 +371,11 @@ int main() {
   assert(explicit_diagnostics.decode_graph_captured == 0);
   assert(explicit_diagnostics.decode_graph_replayed == 0);
   assert(explicit_diagnostics.attention_workspace_bytes > 0);
+  assert(explicit_diagnostics.decode_attention ==
+         RAFTINFER_QWEN35_DECODE_ATTENTION_SINGLE_BLOCK);
+  assert(explicit_diagnostics.decode_attention_partition_tokens == 0);
+  assert(explicit_diagnostics.decode_attention_threshold_tokens == 0);
+  assert(explicit_diagnostics.decode_attention_split_k_graph_captured == 0);
 
   status = raftinfer_session_decode(session, token, &result);
   assert(status.code == RAFTINFER_STATUS_OK);

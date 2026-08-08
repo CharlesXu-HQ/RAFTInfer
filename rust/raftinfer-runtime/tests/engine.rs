@@ -1,7 +1,7 @@
 use raftinfer_runtime::{
     BenchmarkConfig, Engine, EngineConfig, GenerationConfig, GenerationSession, KvCacheDType,
-    KvCacheLayout, Model, Qwen35AttentionImplementation, Qwen35ExecutionPolicy, SessionConfig,
-    TokenResult, benchmark_session, generate_token_ids,
+    KvCacheLayout, Model, Qwen35AttentionImplementation, Qwen35DecodeAttentionImplementation,
+    Qwen35ExecutionPolicy, SessionConfig, TokenResult, benchmark_session, generate_token_ids,
 };
 use std::{
     collections::VecDeque,
@@ -67,6 +67,41 @@ fn qwen35_execution_policy_defaults_to_online_f32_token_major_graphs() {
         SessionConfig::default().qwen35_policy,
         Qwen35ExecutionPolicy::default()
     );
+}
+
+#[test]
+fn split_k_diagnostics_have_stable_native_values_and_ffi_field_order() {
+    assert_eq!(
+        raftinfer_sys::RAFTINFER_QWEN35_DECODE_ATTENTION_SINGLE_BLOCK,
+        0
+    );
+    assert_eq!(raftinfer_sys::RAFTINFER_QWEN35_DECODE_ATTENTION_SPLIT_K, 1);
+    assert_eq!(
+        Qwen35DecodeAttentionImplementation::SingleBlock as u32,
+        raftinfer_sys::RAFTINFER_QWEN35_DECODE_ATTENTION_SINGLE_BLOCK
+    );
+    assert_eq!(
+        Qwen35DecodeAttentionImplementation::SplitK as u32,
+        raftinfer_sys::RAFTINFER_QWEN35_DECODE_ATTENTION_SPLIT_K
+    );
+
+    let diagnostics = raftinfer_sys::RaftInferSessionDiagnostics::default();
+    let base = std::ptr::addr_of!(diagnostics) as usize;
+    let workspace = std::ptr::addr_of!(diagnostics.attention_workspace_bytes) as usize - base;
+    let decode_attention = std::ptr::addr_of!(diagnostics.decode_attention) as usize - base;
+    let partition =
+        std::ptr::addr_of!(diagnostics.decode_attention_partition_tokens) as usize - base;
+    let threshold =
+        std::ptr::addr_of!(diagnostics.decode_attention_threshold_tokens) as usize - base;
+    let bucket =
+        std::ptr::addr_of!(diagnostics.decode_attention_context_bucket_tokens) as usize - base;
+    let graph =
+        std::ptr::addr_of!(diagnostics.decode_attention_split_k_graph_captured) as usize - base;
+    assert!(workspace < decode_attention);
+    assert!(decode_attention < partition);
+    assert!(partition < threshold);
+    assert!(threshold < bucket);
+    assert!(bucket < graph);
 }
 
 #[test]

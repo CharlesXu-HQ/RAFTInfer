@@ -20,6 +20,7 @@ measured_iterations=20
 generated_tokens=128
 kv_cache_dtype="${RAFTINFER_KV_CACHE_DTYPE:-bf16}"
 kv_cache_layout="${RAFTINFER_KV_CACHE_LAYOUT:-head-major}"
+decode_attention="${RAFTINFER_QWEN35_DECODE_ATTENTION:-auto}"
 llama_port="${LLAMA_SERVER_PORT:-18081}"
 llama_url="http://127.0.0.1:${llama_port}"
 preflight_retries="${RAFTINFER_PREFLIGHT_RETRIES:-30}"
@@ -64,6 +65,13 @@ command -v "${nvidia_smi}" >/dev/null ||
   fail_usage "RAFTINFER_KV_CACHE_DTYPE must be f32 or bf16"
 [[ "${kv_cache_layout}" == "token-major" || "${kv_cache_layout}" == "head-major" ]] ||
   fail_usage "RAFTINFER_KV_CACHE_LAYOUT must be token-major or head-major"
+case "${decode_attention}" in
+  auto | single-block | split-k-256 | split-k-512) ;;
+  *)
+    fail_usage \
+      "RAFTINFER_QWEN35_DECODE_ATTENTION must be auto, single-block, split-k-256, or split-k-512"
+    ;;
+esac
 
 wait_for_gpu_preflight() {
   local attempt=1
@@ -96,15 +104,26 @@ if ! "${jq_bin}" -e -s '
   all(.[]; .execution | type == "object" and
     (.attention | type == "string" and length > 0) and
     (.kv_cache_dtype | type == "string" and length > 0) and
-    (.kv_cache_layout | type == "string" and length > 0))
+    (.kv_cache_layout | type == "string" and length > 0) and
+    (.decode_attention == "single_block" or .decode_attention == "split_k") and
+    (.decode_attention_partition_tokens | type == "number" and
+      isfinite and . >= 0 and floor == .) and
+    (.decode_attention_threshold_tokens | type == "number" and
+      isfinite and . >= 0 and floor == .) and
+    (.decode_attention_context_bucket_tokens | type == "number" and
+      isfinite and . >= 0 and floor == .) and
+    (.decode_attention_split_k_graph_captured | type == "boolean"))
 ' "${parity_report}" >/dev/null; then
   printf 'qwen35-benchmark: parity execution diagnostics are missing\n' >&2
   exit 41
 fi
 if ! parity_execution="$("${jq_bin}" -ecs '
-  [.[].execution] as $executions |
-  if (($executions | unique | length) == 1) then
-    $executions[0]
+  .[0].execution as $first |
+  if all(.[];
+    .execution.attention == $first.attention and
+    .execution.kv_cache_dtype == $first.kv_cache_dtype and
+    .execution.kv_cache_layout == $first.kv_cache_layout) then
+    $first
   else
     empty
   end
@@ -247,6 +266,7 @@ for arm_spec in pp128:128 pp512:512 tg128_pp512:512; do
     --arg arm "${arm}" \
     --arg dtype "${kv_cache_dtype}" \
     --arg layout "${kv_cache_layout}" \
+    --arg decode_attention "${decode_attention}" \
     --argjson prompt_count "${prompt_count}" \
     --argjson generated_tokens "${generated_tokens}" \
     --argjson warmups "${warmup_iterations}" \
@@ -267,6 +287,28 @@ for arm_spec in pp128:128 pp512:512 tg128_pp512:512; do
       .execution.attention == "online_tiled" and
       .execution.kv_cache_dtype == $dtype and
       .execution.kv_cache_layout == $layout and
+      (.execution.decode_attention == "single_block" or
+        .execution.decode_attention == "split_k") and
+      (.execution.decode_attention_partition_tokens |
+        type == "number" and isfinite and . >= 0 and floor == .) and
+      (.execution.decode_attention_threshold_tokens |
+        type == "number" and isfinite and . >= 0 and floor == .) and
+      (.execution.decode_attention_context_bucket_tokens |
+        type == "number" and isfinite and . >= 0 and floor == .) and
+      (.execution.decode_attention_split_k_graph_captured | type == "boolean") and
+      (if ($arm != "pp128" and $decode_attention == "split-k-256") then
+         .execution.decode_attention == "split_k" and
+         .execution.decode_attention_partition_tokens == 256 and
+         .execution.decode_attention_threshold_tokens == 256 and
+         .execution.decode_attention_context_bucket_tokens > 0 and
+         .execution.decode_attention_split_k_graph_captured == true
+       elif ($arm != "pp128" and $decode_attention == "split-k-512") then
+         .execution.decode_attention == "split_k" and
+         .execution.decode_attention_partition_tokens == 512 and
+         .execution.decode_attention_threshold_tokens == 512 and
+         .execution.decode_attention_context_bucket_tokens > 0 and
+         .execution.decode_attention_split_k_graph_captured == true
+       else true end) and
       (if $arm == "tg128_pp512" then
          .execution.decode_graph_replayed == true
        else true end)

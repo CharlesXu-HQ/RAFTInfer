@@ -206,6 +206,14 @@ SessionDiagnostics Session::diagnostics() const {
                        ? Qwen35DecodeAttentionMode::split_k_256
                        : Qwen35DecodeAttentionMode::split_k_512)
                 : Qwen35DecodeAttentionMode::single_block,
+        .decode_attention_partition_tokens =
+            diagnostics.decode_attention.partition_tokens,
+        .decode_attention_threshold_tokens =
+            diagnostics.decode_attention.threshold_tokens,
+        .decode_attention_context_bucket_tokens =
+            diagnostics.decode_attention.last_context_bucket_tokens,
+        .decode_attention_split_k_graph_captured =
+            diagnostics.decode_attention.split_k_graph_captured,
     };
   }
 #endif

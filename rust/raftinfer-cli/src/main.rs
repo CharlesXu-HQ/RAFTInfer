@@ -474,7 +474,11 @@ fn benchmark_json(benchmark: &BenchmarkOutput) -> String {
          \"execution\":{{\"attention\":\"{}\",\"kv_cache_dtype\":\"{}\",\
          \"kv_cache_layout\":\"{}\",\"decode_graph_enabled\":{},\
          \"decode_graph_captured\":{},\"decode_graph_replayed\":{},\
-         \"attention_workspace_bytes\":{}}},\
+         \"attention_workspace_bytes\":{},\"decode_attention\":\"{}\",\
+         \"decode_attention_partition_tokens\":{},\
+         \"decode_attention_threshold_tokens\":{},\
+         \"decode_attention_context_bucket_tokens\":{},\
+         \"decode_attention_split_k_graph_captured\":{}}},\
          \"prefill\":{{\"min_us\":{},\"mean_us\":{},\"median_us\":{},\"p95_us\":{},\"max_us\":{},\
          \"coefficient_of_variation\":{},\
          \"tokens_per_second\":{}}},\
@@ -493,6 +497,11 @@ fn benchmark_json(benchmark: &BenchmarkOutput) -> String {
         benchmark.execution.decode_graph_captured,
         benchmark.execution.decode_graph_replayed,
         benchmark.execution.attention_workspace_bytes,
+        decode_attention_name(benchmark.execution.decode_attention),
+        benchmark.execution.decode_attention_partition_tokens,
+        benchmark.execution.decode_attention_threshold_tokens,
+        benchmark.execution.decode_attention_context_bucket_tokens,
+        benchmark.execution.decode_attention_split_k_graph_captured,
         benchmark.prefill.min_us,
         benchmark.prefill.mean_us,
         benchmark.prefill.median_us,
@@ -531,6 +540,15 @@ fn kv_cache_layout_name(value: KvCacheLayout) -> &'static str {
     }
 }
 
+fn decode_attention_name(
+    value: raftinfer_runtime::Qwen35DecodeAttentionImplementation,
+) -> &'static str {
+    match value {
+        raftinfer_runtime::Qwen35DecodeAttentionImplementation::SingleBlock => "single_block",
+        raftinfer_runtime::Qwen35DecodeAttentionImplementation::SplitK => "split_k",
+    }
+}
+
 fn generation_json(generation: &ChatGeneration, execution: ExecutionDiagnostics) -> String {
     let mut output = String::from("{\"schema_version\":2,\"prompt_token_ids\":[");
     append_token_ids(&mut output, &generation.prompt_token_ids);
@@ -560,6 +578,28 @@ fn append_execution_json(output: &mut String, execution: ExecutionDiagnostics) {
     output.push_str(",\"attention_workspace_bytes\":");
     write!(output, "{}", execution.attention_workspace_bytes)
         .expect("writing to a String cannot fail");
+    output.push_str(",\"decode_attention\":\"");
+    output.push_str(decode_attention_name(execution.decode_attention));
+    output.push_str("\",\"decode_attention_partition_tokens\":");
+    write!(output, "{}", execution.decode_attention_partition_tokens)
+        .expect("writing to a String cannot fail");
+    output.push_str(",\"decode_attention_threshold_tokens\":");
+    write!(output, "{}", execution.decode_attention_threshold_tokens)
+        .expect("writing to a String cannot fail");
+    output.push_str(",\"decode_attention_context_bucket_tokens\":");
+    write!(
+        output,
+        "{}",
+        execution.decode_attention_context_bucket_tokens
+    )
+    .expect("writing to a String cannot fail");
+    output.push_str(",\"decode_attention_split_k_graph_captured\":");
+    write!(
+        output,
+        "{}",
+        execution.decode_attention_split_k_graph_captured
+    )
+    .expect("writing to a String cannot fail");
     output.push('}');
 }
 
@@ -598,7 +638,7 @@ mod tests {
     use super::{BenchmarkOutput, LatencySummary, benchmark_json, generation_json};
     use raftinfer_runtime::{
         ChatGeneration, ExecutionDiagnostics, KvCacheDType, KvCacheLayout,
-        Qwen35AttentionImplementation,
+        Qwen35AttentionImplementation, Qwen35DecodeAttentionImplementation,
     };
 
     #[test]
@@ -619,7 +659,11 @@ mod tests {
              \"execution\":{\"attention\":\"online_tiled\",\"kv_cache_dtype\":\"f32\",\
              \"kv_cache_layout\":\"token-major\",\"decode_graph_enabled\":true,\
              \"decode_graph_captured\":false,\"decode_graph_replayed\":false,\
-             \"attention_workspace_bytes\":0}}\n"
+             \"attention_workspace_bytes\":0,\"decode_attention\":\"single_block\",\
+             \"decode_attention_partition_tokens\":0,\
+             \"decode_attention_threshold_tokens\":0,\
+             \"decode_attention_context_bucket_tokens\":0,\
+             \"decode_attention_split_k_graph_captured\":false}}\n"
         );
     }
 
@@ -639,6 +683,11 @@ mod tests {
                 decode_graph_captured: false,
                 decode_graph_replayed: false,
                 attention_workspace_bytes: 65_536,
+                decode_attention: Qwen35DecodeAttentionImplementation::SplitK,
+                decode_attention_partition_tokens: 256,
+                decode_attention_threshold_tokens: 256,
+                decode_attention_context_bucket_tokens: 1024,
+                decode_attention_split_k_graph_captured: true,
             },
         );
 
@@ -649,7 +698,12 @@ mod tests {
              \"execution\":{\"attention\":\"materialized_reference\",\
              \"kv_cache_dtype\":\"bf16\",\"kv_cache_layout\":\"head-major\",\
              \"decode_graph_enabled\":false,\"decode_graph_captured\":false,\
-             \"decode_graph_replayed\":false,\"attention_workspace_bytes\":65536}}\n"
+             \"decode_graph_replayed\":false,\"attention_workspace_bytes\":65536,\
+             \"decode_attention\":\"split_k\",\
+             \"decode_attention_partition_tokens\":256,\
+             \"decode_attention_threshold_tokens\":256,\
+             \"decode_attention_context_bucket_tokens\":1024,\
+             \"decode_attention_split_k_graph_captured\":true}}\n"
         );
     }
 
@@ -686,6 +740,11 @@ mod tests {
                 decode_graph_captured: true,
                 decode_graph_replayed: true,
                 attention_workspace_bytes: 2_097_152,
+                decode_attention: Qwen35DecodeAttentionImplementation::SplitK,
+                decode_attention_partition_tokens: 256,
+                decode_attention_threshold_tokens: 256,
+                decode_attention_context_bucket_tokens: 1024,
+                decode_attention_split_k_graph_captured: true,
             },
             prefill: LatencySummary {
                 min_us: 900.0,
@@ -713,7 +772,11 @@ mod tests {
              \"execution\":{\"attention\":\"online_tiled\",\"kv_cache_dtype\":\"bf16\",\
              \"kv_cache_layout\":\"head-major\",\"decode_graph_enabled\":true,\
              \"decode_graph_captured\":true,\"decode_graph_replayed\":true,\
-             \"attention_workspace_bytes\":2097152},\
+             \"attention_workspace_bytes\":2097152,\"decode_attention\":\"split_k\",\
+             \"decode_attention_partition_tokens\":256,\
+             \"decode_attention_threshold_tokens\":256,\
+             \"decode_attention_context_bucket_tokens\":1024,\
+             \"decode_attention_split_k_graph_captured\":true},\
              \"prefill\":{\"min_us\":900,\"mean_us\":1000,\"median_us\":1000,\"p95_us\":1100,\
              \"max_us\":1200,\"coefficient_of_variation\":0.11180339887498948,\
              \"tokens_per_second\":128000},\
@@ -732,6 +795,11 @@ mod tests {
             decode_graph_captured: false,
             decode_graph_replayed: false,
             attention_workspace_bytes: 0,
+            decode_attention: Qwen35DecodeAttentionImplementation::SingleBlock,
+            decode_attention_partition_tokens: 0,
+            decode_attention_threshold_tokens: 0,
+            decode_attention_context_bucket_tokens: 0,
+            decode_attention_split_k_graph_captured: false,
         }
     }
 }
