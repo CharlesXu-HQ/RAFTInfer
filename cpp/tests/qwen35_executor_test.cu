@@ -2,6 +2,7 @@
 #include "../execution/workspace_arena.hpp"
 #include "../foundation/device_context.hpp"
 #include "../kernels/qwen35_primitives.cuh"
+#include "../kernels/qwen35_online_attention.cuh"
 #include "../model/model.hpp"
 #include "../reference/qwen35_executor.hpp"
 
@@ -677,6 +678,60 @@ void run_executor_fixture_smoke() {
   executor.enable_trace(false);
 }
 
+void run_split_k_workspace_contract_tests() {
+  assert(cudaSetDevice(0) == cudaSuccess);
+  const auto path = write_fixture(make_release_attention_fixture(4096));
+  raftinfer::model::Model model{path.string()};
+  constexpr std::size_t max_context = 4096;
+  auto policy = raftinfer::Qwen35ExecutionPolicy{};
+  policy.decode_attention =
+      raftinfer::Qwen35DecodeAttentionMode::split_k_256;
+  const auto required = raftinfer::Qwen35Executor::workspace_bytes(
+      model.qwen35_config(), max_context, policy);
+
+  raftinfer::DeviceContext device{0, 512U * 1024U * 1024U};
+  auto weights = device.upload_qwen35_weights(model);
+  auto owner = device.create_execution_owner(required);
+  auto context = owner->execution_context();
+  raftinfer::Qwen35Executor executor{context, model.qwen35_config(), *weights,
+                                    max_context, policy};
+  const auto diagnostics = executor.diagnostics();
+  const auto shape = raftinfer::kernels::Qwen35AttentionShape{
+      .tokens = 1,
+      .query_heads = 16,
+      .kv_heads = 4,
+      .head_dim = 256,
+      .max_context_tokens = max_context,
+      .past_tokens = max_context - 1,
+  };
+  assert(diagnostics.attention_workspace_bytes ==
+         raftinfer::kernels::qwen35_online_decode_workspace_layout(
+             shape, raftinfer::Qwen35DecodeAttentionMode::split_k_256)
+             .bytes);
+  assert(diagnostics.decode_attention.implementation ==
+         raftinfer::Qwen35DecodeAttentionImplementation::split_k);
+  assert(diagnostics.decode_attention.partition_tokens == 256);
+
+  raft::device_resources resources;
+  const cudaStream_t stream =
+      raft::resource::get_cuda_stream(resources).value();
+  rmm::mr::cuda_memory_resource cuda_resource;
+  raftinfer::WorkspaceArena insufficient{
+      rmm::device_async_resource_ref{cuda_resource}, cuda::stream_ref{stream},
+      stream, required - 1};
+  cudaDeviceProp properties{};
+  assert(cudaGetDeviceProperties(&properties, 0) == cudaSuccess);
+  raftinfer::ExecutionContext insufficient_context{
+      resources, rmm::device_async_resource_ref{cuda_resource}, stream,
+      insufficient, 0, properties.major, properties.minor,
+      static_cast<int>(properties.sharedMemPerBlock)};
+  expect_executor_error([&] {
+    raftinfer::Qwen35Executor too_small{
+        insufficient_context, model.qwen35_config(), *weights, max_context,
+        policy};
+  });
+}
+
 void run_executor_f32_auxiliary_smoke() {
   assert(cudaSetDevice(0) == cudaSuccess);
   const auto path =
@@ -1284,6 +1339,7 @@ int main() {
   run_host_validation_tests();
   run_support_kernel_tests();
   run_executor_fixture_smoke();
+  run_split_k_workspace_contract_tests();
   run_executor_f32_auxiliary_smoke();
   run_grouped_input_cast_tests();
   run_cublaslt_plan_tuning_tests();

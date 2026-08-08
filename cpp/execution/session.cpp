@@ -8,9 +8,33 @@
 #endif
 
 #include <stdexcept>
+#include <cstdlib>
+#include <string_view>
 #include <utility>
 
 namespace raftinfer {
+
+Qwen35ExecutionPolicy qwen35_execution_policy_from_environment(
+    Qwen35ExecutionPolicy policy) {
+  const char *value = std::getenv("RAFTINFER_QWEN35_DECODE_ATTENTION");
+  if (value == nullptr)
+    return policy;
+  const std::string_view mode{value};
+  if (mode == "auto")
+    policy.decode_attention = Qwen35DecodeAttentionMode::auto_select;
+  else if (mode == "single-block")
+    policy.decode_attention = Qwen35DecodeAttentionMode::single_block;
+  else if (mode == "split-k-256")
+    policy.decode_attention = Qwen35DecodeAttentionMode::split_k_256;
+  else if (mode == "split-k-512")
+    policy.decode_attention = Qwen35DecodeAttentionMode::split_k_512;
+  else
+    throw std::invalid_argument(
+        "RAFTINFER_QWEN35_DECODE_ATTENTION must be one of: auto, "
+        "single-block, split-k-256, split-k-512");
+  return policy;
+}
+
 namespace {
 
 Qwen35StateLayout
@@ -54,7 +78,7 @@ Session::Session(std::shared_ptr<const model::Model> model,
                  std::uint32_t max_context_tokens,
                  Qwen35ExecutionPolicy policy)
     : model_(std::move(model)),
-      policy_(policy),
+      policy_(qwen35_execution_policy_from_environment(policy)),
       state_(create_session_layout(model_, max_context_tokens),
              Qwen35HostStorage::LogicalOnly) {
 #if RAFTINFER_ENABLE_CUDA
@@ -175,6 +199,13 @@ SessionDiagnostics Session::diagnostics() const {
         .decode_graph_captured = diagnostics.decode_graph_captured,
         .decode_graph_replayed = diagnostics.decode_graph_replayed,
         .attention_workspace_bytes = diagnostics.attention_workspace_bytes,
+        .decode_attention =
+            diagnostics.decode_attention.implementation ==
+                    Qwen35DecodeAttentionImplementation::split_k
+                ? (diagnostics.decode_attention.partition_tokens == 256
+                       ? Qwen35DecodeAttentionMode::split_k_256
+                       : Qwen35DecodeAttentionMode::split_k_512)
+                : Qwen35DecodeAttentionMode::single_block,
     };
   }
 #endif

@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <initializer_list>
@@ -215,11 +216,28 @@ ExecutorObservation observe_executor(raftinfer::Qwen35Executor &executor,
   return observation;
 }
 
+std::uint32_t float_bits(float value) {
+  std::uint32_t bits{};
+  std::memcpy(&bits, &value, sizeof(bits));
+  return bits;
+}
+
+bool same_logits_bits(const std::vector<float> &actual,
+                      const std::vector<float> &expected) {
+  if (actual.size() != expected.size())
+    return false;
+  for (std::size_t index = 0; index < actual.size(); ++index) {
+    if (float_bits(actual[index]) != float_bits(expected[index]))
+      return false;
+  }
+  return true;
+}
+
 void assert_same_observation(const ExecutorObservation &actual,
                              const ExecutorObservation &expected) {
   assert(actual.result.token == expected.result.token);
   assert(actual.result.position == expected.result.position);
-  assert(actual.logits == expected.logits);
+  assert(same_logits_bits(actual.logits, expected.logits));
   assert(actual.state.full_kv_cache == expected.state.full_kv_cache);
   assert(actual.state.linear_convolution == expected.state.linear_convolution);
   assert(actual.state.linear_recurrent == expected.state.linear_recurrent);
@@ -229,6 +247,7 @@ void run_executor_graph_equivalence_tests() {
   require_cuda(cudaSetDevice(0));
   const raftinfer::test::Qwen35GgufFixtureOptions fixture_options{
       .hidden_size = 4096,
+      .context_length = 1030,
       .full_head_count = 16,
       .full_kv_head_count = 4,
       .full_head_dimension = 256,
@@ -298,6 +317,63 @@ void run_executor_graph_equivalence_tests() {
   const auto replayed_observations =
       run_sequence(true, &captured_observations);
   assert(replayed_observations.size() == captured_observations.size());
+
+  constexpr std::size_t boundary_max_context = 1030;
+  auto boundary_graph_policy = raftinfer::Qwen35ExecutionPolicy{};
+  boundary_graph_policy.decode_graph = true;
+  boundary_graph_policy.decode_attention =
+      raftinfer::Qwen35DecodeAttentionMode::split_k_256;
+  const auto boundary_graph_workspace =
+      raftinfer::Qwen35Executor::workspace_bytes(
+          model.qwen35_config(), boundary_max_context, boundary_graph_policy);
+  auto boundary_graph_owner =
+      device.create_execution_owner(boundary_graph_workspace);
+  auto boundary_graph_context = boundary_graph_owner->execution_context();
+  raftinfer::Qwen35Executor boundary_graph{
+      boundary_graph_context, model.qwen35_config(), *weights,
+      boundary_max_context, boundary_graph_policy};
+
+  for (const std::size_t start_position : {254U, 255U, 511U, 1023U}) {
+    boundary_graph.set_decode_graph_enabled_for_tests(true);
+    boundary_graph.reset();
+    std::vector<std::int32_t> repeated_prompt(start_position, 1);
+    const auto graph_prefill_observation = observe_executor(
+        boundary_graph, boundary_graph.prefill(repeated_prompt),
+        model.qwen35_config().vocabulary_size);
+    std::vector<ExecutorObservation> graph_decode_observations;
+    for (const std::int32_t token : {2, 3}) {
+      const auto graph_result = boundary_graph.decode(token);
+      graph_decode_observations.push_back(observe_executor(
+          boundary_graph, graph_result,
+          model.qwen35_config().vocabulary_size));
+    }
+    const auto graph_diagnostics = boundary_graph.diagnostics();
+
+    boundary_graph.set_decode_graph_enabled_for_tests(false);
+    boundary_graph.reset();
+    assert_same_observation(
+        graph_prefill_observation,
+        observe_executor(boundary_graph,
+                         boundary_graph.prefill(repeated_prompt),
+                         model.qwen35_config().vocabulary_size));
+    std::size_t step = 0;
+    for (const std::int32_t token : {2, 3}) {
+      const auto stream_observation = observe_executor(
+          boundary_graph, boundary_graph.decode(token),
+          model.qwen35_config().vocabulary_size);
+      assert_same_observation(graph_decode_observations[step],
+                              stream_observation);
+      ++step;
+    }
+    if (start_position == 511) {
+      assert(graph_diagnostics.decode_graph_replayed);
+      assert(graph_diagnostics.decode_attention.implementation ==
+             raftinfer::Qwen35DecodeAttentionImplementation::split_k);
+      assert(graph_diagnostics.decode_attention.last_context_bucket_tokens ==
+             1024);
+      assert(graph_diagnostics.decode_attention.split_k_graph_captured);
+    }
+  }
 }
 
 } // namespace

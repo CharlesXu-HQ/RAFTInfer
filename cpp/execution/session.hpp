@@ -41,6 +41,8 @@ struct SessionDiagnostics {
   bool decode_graph_captured{};
   bool decode_graph_replayed{};
   std::size_t attention_workspace_bytes{};
+  Qwen35DecodeAttentionMode decode_attention{
+      Qwen35DecodeAttentionMode::single_block};
 };
 
 class Session {

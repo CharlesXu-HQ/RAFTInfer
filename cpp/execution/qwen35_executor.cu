@@ -274,18 +274,28 @@ attention_workspace_bytes(kernels::Qwen35AttentionShape shape,
 std::size_t
 max_attention_workspace(const model::Qwen35Config &config, std::size_t tokens,
                         std::size_t max_context,
-                        kernels::Qwen35AttentionLaunchPolicy policy) {
+                        kernels::Qwen35AttentionLaunchPolicy policy,
+                        Qwen35DecodeAttentionMode decode_mode) {
   if (config.full_attention_head_count == 0)
     return 0;
-  return attention_workspace_bytes(
-      kernels::Qwen35AttentionShape{
+  const auto shape = kernels::Qwen35AttentionShape{
           .tokens = tokens,
           .query_heads = config.full_attention_head_count,
           .kv_heads = config.full_attention_kv_head_count,
           .head_dim = config.full_attention_head_dimension,
           .max_context_tokens = max_context,
-          .past_tokens = max_context - tokens},
-      policy);
+          .past_tokens = max_context - tokens};
+  const auto prefill = attention_workspace_bytes(shape, policy);
+  auto decode_shape = shape;
+  decode_shape.tokens = 1;
+  decode_shape.past_tokens = max_context - 1;
+  const auto decode = policy.implementation ==
+                              Qwen35AttentionImplementation::online_tiled
+                          ? kernels::qwen35_online_decode_workspace_layout(
+                                decode_shape, decode_mode)
+                                .bytes
+                          : 0;
+  return std::max(prefill, decode);
 }
 
 std::size_t linear_qkv_width(const model::Qwen35Config &config) {
@@ -379,6 +389,15 @@ void validate_execution_policy(Qwen35ExecutionPolicy policy) {
   default:
     require(false, "unsupported Qwen3.5 KV cache layout");
   }
+  switch (policy.decode_attention) {
+  case Qwen35DecodeAttentionMode::auto_select:
+  case Qwen35DecodeAttentionMode::single_block:
+  case Qwen35DecodeAttentionMode::split_k_256:
+  case Qwen35DecodeAttentionMode::split_k_512:
+    break;
+  default:
+    require(false, "unsupported Qwen3.5 decode attention mode");
+  }
 }
 
 kernels::Qwen35AttentionLaunchPolicy
@@ -418,6 +437,7 @@ resolve_execution_policy(const model::Qwen35Config &config,
             "materialized attention requires an F32 KV cache");
     require(requested.kv_cache_layout == Qwen35KvCacheLayout::token_major,
             "materialized attention requires a token-major KV cache");
+    requested.decode_attention = Qwen35DecodeAttentionMode::single_block;
     return requested;
   }
 
@@ -436,12 +456,16 @@ resolve_execution_policy(const model::Qwen35Config &config,
         },
         RAFTINFER_DTYPE_F32, attention_launch_policy(requested));
   }
-  if (supported)
+  if (supported) {
+    if (requested.decode_attention == Qwen35DecodeAttentionMode::auto_select)
+      requested.decode_attention = Qwen35DecodeAttentionMode::single_block;
     return requested;
+  }
 
   requested.attention = Qwen35AttentionImplementation::materialized_reference;
   requested.kv_cache = Qwen35KvCacheDType::f32;
   requested.kv_cache_layout = Qwen35KvCacheLayout::token_major;
+  requested.decode_attention = Qwen35DecodeAttentionMode::single_block;
   return requested;
 }
 
@@ -541,7 +565,7 @@ std::size_t workspace_estimate(const model::Qwen35Config &config,
                   "matmul input conversion byte size overflow"));
   add(kMatmulWorkspaceBudget);
   add(max_attention_workspace(config, max_tokens, max_context,
-                              attention_policy));
+                              attention_policy, policy.decode_attention));
   const kernels::GatedDeltaShape delta_shape{
       .tokens = max_tokens,
       .hidden_size = hidden,
@@ -647,7 +671,12 @@ public:
     require(weights_.layer_count() == config_.blocks.size(),
             "CUDA weight layer count does not match Qwen3.5 config");
     validate_weight_dtypes(weights_);
+    require(context_.workspace().capacity() >=
+                workspace_estimate(config_, max_context_, policy_),
+            "Qwen3.5 executor workspace is exhausted");
     allocate_buffers();
+    initialize_decode_attention_diagnostic();
+    create_decode_graph_variants();
     create_plans();
     create_delta_schedule_diagnostics();
     reset();
@@ -692,9 +721,11 @@ public:
     ensure_healthy();
     const std::size_t start_position = position_;
     try {
-      if (can_replay_decode_graph()) {
+      auto &variant = decode_graph_variant_for(start_position);
+      if (can_replay_decode_graph(variant)) {
         upload_decode_token(token);
-        decode_graph_->replay_on_current_device();
+        variant.graph->replay_on_current_device();
+        update_decode_attention_diagnostic(variant.attention_plan);
         check_cuda(cudaMemcpyAsync(host_decode_result_.get(), device_result_,
                                    sizeof(*host_decode_result_),
                                    cudaMemcpyDeviceToHost, context_.stream()),
@@ -710,11 +741,13 @@ public:
       }
       auto result = run_chunk(one, true, start_position);
       position_ = start_position + 1;
-      if (can_capture_decode_graph()) {
-        capture_decode_graph();
-      } else if (decode_graph_enabled() && decode_graph_ != nullptr &&
-                 decode_graph_->captured()) {
-        sync_device_decode_position();
+      if (position_ < max_context_) {
+        auto &next_variant = decode_graph_variant_for(position_);
+        if (can_capture_decode_graph(next_variant))
+          capture_decode_graph_variant(next_variant);
+        else if (decode_graph_enabled() && next_variant.graph != nullptr &&
+                 next_variant.graph->captured())
+          sync_device_decode_position();
       }
       return result;
     } catch (...) {
@@ -730,13 +763,14 @@ public:
     ensure_healthy();
     const std::size_t start_position = position_;
     try {
-      if (!can_replay_decode_graph()) {
+      if (!can_replay_decode_graph(decode_graph_variant_for(start_position))) {
         const auto first = decode(first_token);
         output_tokens.front() = first.token;
         if (output_tokens.size() == 1) {
           return first;
         }
-        if (!can_replay_decode_graph()) {
+        if (!can_replay_decode_graph(
+                decode_graph_variant_for(start_position + 1))) {
           return decode_greedy_sequential(first.token, output_tokens.subspan(1));
         }
         return replay_decode_greedy(first.token, output_tokens.subspan(1),
@@ -782,10 +816,14 @@ public:
         .attention = policy_.attention,
         .kv_cache_dtype = policy_.kv_cache,
         .kv_cache_layout = policy_.kv_cache_layout,
-        .decode_graph_captured =
-            decode_graph_ != nullptr && decode_graph_->captured(),
+        .decode_graph_captured = std::any_of(
+            decode_graph_variants_.begin(), decode_graph_variants_.end(),
+            [](const auto &variant) {
+              return variant.graph != nullptr && variant.graph->captured();
+            }),
         .decode_graph_replayed = decode_graph_replayed_,
         .attention_workspace_bytes = attention_workspace_bytes_,
+        .decode_attention = decode_attention_diagnostic_,
         .cublaslt_algorithm_ids = cublaslt_algorithm_ids_,
         .cublaslt_plans = cublaslt_plan_diagnostics_,
         .gated_delta_schedules = gated_delta_schedule_diagnostics_,
@@ -827,6 +865,10 @@ public:
     check_cuda(cudaStreamSynchronize(context_.stream()),
                "Qwen3.5 test state synchronization failed");
     return snapshot;
+  }
+
+  void set_decode_graph_enabled_for_tests(bool enabled) noexcept {
+    policy_.decode_graph = enabled;
   }
 #endif
 
@@ -920,14 +962,19 @@ private:
            policy_.attention == Qwen35AttentionImplementation::online_tiled;
   }
 
-  bool can_replay_decode_graph() const noexcept {
+  struct DecodeGraphVariant {
+    kernels::Qwen35OnlineDecodePlan attention_plan;
+    std::unique_ptr<CudaGraphDecode> graph;
+  };
+
+  bool can_replay_decode_graph(const DecodeGraphVariant &variant) const noexcept {
     return !trace_enabled_ && decode_graph_enabled() &&
-           decode_graph_ != nullptr && decode_graph_->captured();
+           variant.graph != nullptr && variant.graph->captured();
   }
 
-  bool can_capture_decode_graph() const noexcept {
+  bool can_capture_decode_graph(const DecodeGraphVariant &variant) const noexcept {
     return !trace_enabled_ && decode_graph_enabled() &&
-           (decode_graph_ == nullptr || !decode_graph_->captured());
+           (variant.graph == nullptr || !variant.graph->captured());
   }
 
   void sync_device_decode_position() {
@@ -965,7 +1012,13 @@ private:
       std::size_t start_position) {
     upload_decode_token(first_token);
     for (std::size_t step = 0; step < output_tokens.size(); ++step) {
-      decode_graph_->replay_on_current_device();
+      auto &variant = decode_graph_variant_for(start_position + step);
+      if (can_capture_decode_graph(variant))
+        capture_decode_graph_variant(variant);
+      require(can_replay_decode_graph(variant),
+              "Qwen3.5 decode graph variant is unavailable");
+      variant.graph->replay_on_current_device();
+      update_decode_attention_diagnostic(variant.attention_plan);
     }
     check_cuda(cudaMemcpyAsync(output_tokens.data(),
                                device_decode_results_ + start_position,
@@ -995,13 +1048,24 @@ private:
     return result;
   }
 
-  void capture_decode_graph() {
+  DecodeGraphVariant &decode_graph_variant_for(std::size_t position) {
+    require(position < decode_graph_variant_by_position_.size(),
+            "Qwen3.5 decode graph position exceeds maximum context");
+    const auto index = decode_graph_variant_by_position_[position];
+    require(index < decode_graph_variants_.size(),
+            "Qwen3.5 decode graph variant index is invalid");
+    return decode_graph_variants_[index];
+  }
+
+  void capture_decode_graph_variant(DecodeGraphVariant &variant) {
     sync_device_decode_position();
-    if (decode_graph_ == nullptr) {
-      decode_graph_ = std::make_unique<CudaGraphDecode>(context_.device_id(),
-                                                        context_.stream());
+    captured_decode_attention_plan_ = variant.attention_plan;
+    update_decode_attention_diagnostic(captured_decode_attention_plan_);
+    if (variant.graph == nullptr) {
+      variant.graph = std::make_unique<CudaGraphDecode>(context_.device_id(),
+                                                       context_.stream());
     }
-    decode_graph_->capture([this] {
+    variant.graph->capture([this] {
       (void)run_chunk(
           std::span<const std::int32_t>{host_decode_token_.get(), 1}, true, 0,
           device_decode_token_, device_decode_position_,
@@ -1012,6 +1076,8 @@ private:
       check_cuda(cudaGetLastError(),
                  "Qwen3.5 decode graph result commit failed");
     });
+    if (variant.attention_plan.partition_tokens != 0)
+      decode_attention_diagnostic_.split_k_graph_captured = true;
   }
 
   void record_trace(std::string name, const void *device,
@@ -1188,8 +1254,19 @@ private:
         16);
     matmul_workspace_ = allocate(arena, kMatmulWorkspaceBudget,
                                  Qwen35Executor::workspace_alignment);
+    prefill_attention_workspace_bytes_ = attention_workspace_bytes(
+        kernels::Qwen35AttentionShape{
+            .tokens = max_tokens,
+            .query_heads = config_.full_attention_head_count,
+            .kv_heads = config_.full_attention_kv_head_count,
+            .head_dim = config_.full_attention_head_dimension,
+            .max_context_tokens = max_context_,
+            .past_tokens = max_context_ - max_tokens,
+        },
+        attention_policy);
     attention_workspace_bytes_ = max_attention_workspace(
-        config_, max_tokens, max_context_, attention_policy);
+        config_, max_tokens, max_context_, attention_policy,
+        policy_.decode_attention);
     if (attention_workspace_bytes_ != 0) {
       attention_workspace_ =
           allocate(arena, attention_workspace_bytes_, alignof(float));
@@ -1918,20 +1995,33 @@ private:
         .max_context_tokens = max_context_,
         .past_tokens = chunk_position,
     };
-    if (device_position != nullptr &&
+    if (tokens == 1 &&
         policy_.attention == Qwen35AttentionImplementation::online_tiled) {
+      const auto plan = device_position != nullptr
+                            ? captured_decode_attention_plan_
+                            : kernels::qwen35_online_decode_plan(
+                                  attention_shape, policy_.decode_attention,
+                                  chunk_position + 1);
+      const auto decode_workspace_bytes =
+          kernels::qwen35_online_decode_workspace_layout(
+              attention_shape, plan.resolved_mode)
+              .bytes;
+      update_decode_attention_diagnostic(plan);
       kernels::qwen35_online_attention_decode(
           full_query_norm_, full_key_norm_, full_value_, linear_gate_,
           attention_out_, full_states_[state_index].kv_cache,
-          full_states_[state_index].kv_cache_bytes, attention_shape, dtype_,
-          policy_.kv_cache, policy_.kv_cache_layout, device_position,
-          context_.stream());
+          full_states_[state_index].kv_cache_bytes,
+          decode_workspace_bytes == 0 ? nullptr : attention_workspace_,
+          decode_workspace_bytes, attention_shape, dtype_, policy_.kv_cache,
+          policy_.kv_cache_layout, plan, device_position, context_.stream());
     } else {
       kernels::qwen35_causal_attention(
           full_query_norm_, full_key_norm_, full_value_, linear_gate_,
           attention_out_, full_states_[state_index].kv_cache,
-          full_states_[state_index].kv_cache_bytes, attention_workspace_,
-          attention_workspace_bytes_, attention_shape, dtype_,
+          full_states_[state_index].kv_cache_bytes,
+          prefill_attention_workspace_bytes_ == 0 ? nullptr
+                                                  : attention_workspace_,
+          prefill_attention_workspace_bytes_, attention_shape, dtype_,
           attention_launch_policy(policy_), context_.stream());
     }
     (void)kv_width;
@@ -2024,6 +2114,83 @@ private:
   bool poisoned_{};
   bool trace_enabled_{};
 
+  kernels::Qwen35AttentionShape
+  decode_attention_shape(std::size_t past_tokens) const noexcept {
+    return kernels::Qwen35AttentionShape{
+        .tokens = 1,
+        .query_heads = config_.full_attention_head_count,
+        .kv_heads = config_.full_attention_kv_head_count,
+        .head_dim = config_.full_attention_head_dimension,
+        .max_context_tokens = max_context_,
+        .past_tokens = past_tokens,
+    };
+  }
+
+  void update_decode_attention_diagnostic(
+      kernels::Qwen35OnlineDecodePlan plan) noexcept {
+    decode_attention_diagnostic_.implementation =
+        plan.partition_tokens == 0
+            ? Qwen35DecodeAttentionImplementation::single_block
+            : Qwen35DecodeAttentionImplementation::split_k;
+    decode_attention_diagnostic_.partition_tokens = plan.partition_tokens;
+    decode_attention_diagnostic_.threshold_tokens =
+        plan.split_k_threshold_tokens;
+    decode_attention_diagnostic_.last_context_bucket_tokens =
+        plan.context_bucket_tokens;
+  }
+
+  void initialize_decode_attention_diagnostic() noexcept {
+    switch (policy_.decode_attention) {
+    case Qwen35DecodeAttentionMode::split_k_256:
+      decode_attention_diagnostic_.implementation =
+          Qwen35DecodeAttentionImplementation::split_k;
+      decode_attention_diagnostic_.partition_tokens = 256;
+      decode_attention_diagnostic_.threshold_tokens = 256;
+      break;
+    case Qwen35DecodeAttentionMode::split_k_512:
+      decode_attention_diagnostic_.implementation =
+          Qwen35DecodeAttentionImplementation::split_k;
+      decode_attention_diagnostic_.partition_tokens = 512;
+      decode_attention_diagnostic_.threshold_tokens = 512;
+      break;
+    case Qwen35DecodeAttentionMode::auto_select:
+    case Qwen35DecodeAttentionMode::single_block:
+      break;
+    }
+  }
+
+  void create_decode_graph_variants() {
+    decode_graph_variant_by_position_.assign(max_context_, 0);
+    decode_graph_variants_.push_back(DecodeGraphVariant{
+        .attention_plan = kernels::qwen35_online_decode_plan(
+            decode_attention_shape(0), Qwen35DecodeAttentionMode::single_block,
+            1),
+        .graph = nullptr,
+    });
+    const std::size_t threshold =
+        policy_.decode_attention == Qwen35DecodeAttentionMode::split_k_256
+            ? 256
+        : policy_.decode_attention == Qwen35DecodeAttentionMode::split_k_512
+            ? 512
+            : 0;
+    if (threshold == 0)
+      return;
+
+    std::size_t active_variant = 0;
+    for (std::size_t position = threshold; position < max_context_; ++position) {
+      const auto plan = kernels::qwen35_online_decode_plan(
+          decode_attention_shape(position), policy_.decode_attention,
+          position + 1);
+      if (active_variant == 0 ||
+          decode_graph_variants_[active_variant].attention_plan != plan) {
+        decode_graph_variants_.push_back(
+            DecodeGraphVariant{.attention_plan = plan, .graph = nullptr});
+        active_variant = decode_graph_variants_.size() - 1;
+      }
+      decode_graph_variant_by_position_[position] = active_variant;
+    }
+  }
+
   std::int32_t *device_tokens_{};
   std::int32_t *device_result_{};
   void *argmax_workspace_{};
@@ -2054,7 +2221,10 @@ private:
   void *matmul_input_{};
   void *matmul_workspace_{};
   void *attention_workspace_{};
+  std::size_t prefill_attention_workspace_bytes_{};
   std::size_t attention_workspace_bytes_{};
+  kernels::Qwen35OnlineDecodePlan captured_decode_attention_plan_{};
+  Qwen35DecodeAttentionDiagnostic decode_attention_diagnostic_{};
   void *delta_workspace_{};
 
   std::vector<FullState> full_states_;
@@ -2067,7 +2237,8 @@ private:
   std::vector<kernels::GatedDeltaScheduleDiagnostic>
       gated_delta_schedule_diagnostics_;
   std::vector<Qwen35TraceEntry> trace_;
-  std::unique_ptr<CudaGraphDecode> decode_graph_;
+  std::vector<DecodeGraphVariant> decode_graph_variants_;
+  std::vector<std::size_t> decode_graph_variant_by_position_;
   bool decode_graph_replayed_{};
 };
 
@@ -2151,6 +2322,10 @@ Qwen35ExecutionDiagnostics Qwen35Executor::diagnostics() const noexcept {
 test::Qwen35ExecutorStateSnapshot
 Qwen35Executor::state_snapshot_for_tests() const {
   return impl_->state_snapshot_for_tests();
+}
+
+void Qwen35Executor::set_decode_graph_enabled_for_tests(bool enabled) noexcept {
+  impl_->set_decode_graph_enabled_for_tests(enabled);
 }
 #endif
 

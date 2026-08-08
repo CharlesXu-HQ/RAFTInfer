@@ -31,8 +31,13 @@ struct Qwen35ExecutionPolicy {
       Qwen35AttentionImplementation::online_tiled};
   Qwen35KvCacheDType kv_cache{Qwen35KvCacheDType::f32};
   Qwen35KvCacheLayout kv_cache_layout{Qwen35KvCacheLayout::token_major};
+  Qwen35DecodeAttentionMode decode_attention{
+      Qwen35DecodeAttentionMode::auto_select};
   bool decode_graph{true};
   bool grouped_input_casts{true};
 };
+
+Qwen35ExecutionPolicy qwen35_execution_policy_from_environment(
+    Qwen35ExecutionPolicy policy);
 
 } // namespace raftinfer

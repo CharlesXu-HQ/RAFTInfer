@@ -40,6 +40,22 @@ struct Qwen35CublasLtPlanDiagnostic {
   bool operator==(const Qwen35CublasLtPlanDiagnostic &) const = default;
 };
 
+enum class Qwen35DecodeAttentionImplementation : std::uint8_t {
+  single_block,
+  split_k,
+};
+
+struct Qwen35DecodeAttentionDiagnostic {
+  Qwen35DecodeAttentionImplementation implementation{
+      Qwen35DecodeAttentionImplementation::single_block};
+  std::size_t partition_tokens{};
+  std::size_t threshold_tokens{};
+  std::size_t last_context_bucket_tokens{};
+  bool split_k_graph_captured{};
+
+  bool operator==(const Qwen35DecodeAttentionDiagnostic &) const = default;
+};
+
 struct Qwen35ExecutionDiagnostics {
   Qwen35AttentionImplementation attention{};
   Qwen35KvCacheDType kv_cache_dtype{};
@@ -47,6 +63,7 @@ struct Qwen35ExecutionDiagnostics {
   bool decode_graph_captured{};
   bool decode_graph_replayed{};
   std::size_t attention_workspace_bytes{};
+  Qwen35DecodeAttentionDiagnostic decode_attention;
   std::vector<int> cublaslt_algorithm_ids;
   std::vector<Qwen35CublasLtPlanDiagnostic> cublaslt_plans;
   std::vector<kernels::GatedDeltaScheduleDiagnostic> gated_delta_schedules;
@@ -109,6 +126,7 @@ public:
 
 #if defined(RAFTINFER_QWEN35_EXECUTOR_TESTING)
   test::Qwen35ExecutorStateSnapshot state_snapshot_for_tests() const;
+  void set_decode_graph_enabled_for_tests(bool enabled) noexcept;
 #endif
 
 private:

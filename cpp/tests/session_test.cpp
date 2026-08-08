@@ -18,6 +18,34 @@
 
 namespace {
 
+class ScopedDecodeAttentionEnvironment {
+public:
+  explicit ScopedDecodeAttentionEnvironment(const char *value) {
+    if (const char *current = std::getenv("RAFTINFER_QWEN35_DECODE_ATTENTION")) {
+      original_ = current;
+      had_original_ = true;
+    }
+    if (value == nullptr) {
+      assert(unsetenv("RAFTINFER_QWEN35_DECODE_ATTENTION") == 0);
+    } else {
+      assert(setenv("RAFTINFER_QWEN35_DECODE_ATTENTION", value, 1) == 0);
+    }
+  }
+
+  ~ScopedDecodeAttentionEnvironment() {
+    if (had_original_) {
+      assert(setenv("RAFTINFER_QWEN35_DECODE_ATTENTION", original_.c_str(), 1) ==
+             0);
+    } else {
+      assert(unsetenv("RAFTINFER_QWEN35_DECODE_ATTENTION") == 0);
+    }
+  }
+
+private:
+  std::string original_;
+  bool had_original_{};
+};
+
 class TemporaryFile {
 public:
   explicit TemporaryFile(const std::vector<std::uint8_t> &bytes) {
@@ -52,9 +80,43 @@ void assert_throws(Callable &&callable) {
   assert(threw);
 }
 
+void run_decode_attention_environment_tests() {
+  using Mode = raftinfer::Qwen35DecodeAttentionMode;
+  const struct {
+    const char *value;
+    Mode expected;
+  } accepted[] = {
+      {"auto", Mode::auto_select},
+      {"single-block", Mode::single_block},
+      {"split-k-256", Mode::split_k_256},
+      {"split-k-512", Mode::split_k_512},
+  };
+  for (const auto &[value, expected] : accepted) {
+    ScopedDecodeAttentionEnvironment environment{value};
+    auto policy = raftinfer::Qwen35ExecutionPolicy{};
+    policy.decode_attention = Mode::single_block;
+    assert(raftinfer::qwen35_execution_policy_from_environment(policy)
+               .decode_attention == expected);
+  }
+  {
+    ScopedDecodeAttentionEnvironment environment{nullptr};
+    auto policy = raftinfer::Qwen35ExecutionPolicy{};
+    policy.decode_attention = Mode::split_k_512;
+    assert(raftinfer::qwen35_execution_policy_from_environment(policy)
+               .decode_attention == Mode::split_k_512);
+  }
+  for (const char *value : {"", "split-k", "SPLIT-K-256"}) {
+    ScopedDecodeAttentionEnvironment environment{value};
+    assert_throws<std::invalid_argument>([] {
+      (void)raftinfer::qwen35_execution_policy_from_environment({});
+    });
+  }
+}
+
 } // namespace
 
 int main() {
+  run_decode_attention_environment_tests();
   const TemporaryFile fixture(raftinfer::test::make_qwen35_gguf_fixture());
   auto model = std::make_shared<raftinfer::model::Model>(fixture.path());
   raftinfer::Session session(model, 8);
