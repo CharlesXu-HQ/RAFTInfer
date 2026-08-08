@@ -15,6 +15,8 @@ measurements: PP128 and PP512 prefill, plus PP128, PP512, and TG128@PP512
 generation. The plotted ratios are the exact source ratios rounded to three
 decimals. See [benchmark methodology](docs/benchmarks.md) and the committed
 [schema-v2 evidence](benchmarks/results/qwen35-9b-bf16-rtx5090.jsonl).
+The measured `auto` policy uses split-k-256 for the two long-context arms while
+retaining the zero-workspace single-block path for PP128.
 
 The protocol used 5 warmups and 20 measurements per arm, BF16 Qwen3.5-9B
 ModelScope revision `460979c3d11864dd16408d860ac930a360a2fac2`, pinned llama.cpp revision

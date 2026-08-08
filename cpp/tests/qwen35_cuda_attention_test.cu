@@ -292,6 +292,14 @@ void run_attention_policy_contract_tests(raftinfer::ExecutionContext &context) {
              model_shape, single.resolved_mode)
              .bytes == 0);
 
+  const auto automatic = raftinfer::kernels::qwen35_online_decode_plan(
+      model_shape, Mode::auto_select, 513);
+  assert(automatic.resolved_mode == Mode::split_k_256);
+  assert(automatic.partition_tokens == 256);
+  assert(automatic.split_k_threshold_tokens == 256);
+  assert(automatic.context_bucket_tokens == 1024);
+  assert(automatic.active_partition_capacity == 4);
+
   const auto split256 = raftinfer::kernels::qwen35_online_decode_plan(
       model_shape, Mode::split_k_256, 513);
   assert(split256.partition_tokens == 256);

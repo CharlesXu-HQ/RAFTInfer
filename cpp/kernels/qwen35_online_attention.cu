@@ -25,7 +25,7 @@ constexpr int kValuesPerLane = kModelHeadDim / kWarpSize;
 constexpr std::size_t kMaxGridY = 65535;
 constexpr std::size_t kMinimumContextBucketTokens = 512;
 constexpr Qwen35DecodeAttentionMode kDefaultOnlineDecodeMode =
-    Qwen35DecodeAttentionMode::single_block;
+    Qwen35DecodeAttentionMode::split_k_256;
 
 bool multiplication_fits(std::size_t lhs, std::size_t rhs) noexcept {
   return lhs == 0 || rhs <= std::numeric_limits<std::size_t>::max() / lhs;

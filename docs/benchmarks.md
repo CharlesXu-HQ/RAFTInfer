@@ -14,16 +14,24 @@ exact matches), with online-tiled attention, BF16 head-major KV cache, and
 decode graph replay reported where applicable. The shared-GPU preflight runs
 before parity and benchmarking to avoid publishing a contended measurement.
 
+The accepted `auto` policy is the measured `split-k-256` default. PP128 remains
+on the zero-workspace single-block path. PP512 and TG128@PP512 disclose a
+256-token partition and threshold, a 1,024-token context bucket, 264,192 bytes
+of fixed attention workspace, and captured split-K graph replay.
+
 The chart's `RAFTInfer ratio` is `RAFTInfer tokens_per_second / llama.cpp
 tokens_per_second` for the phase shown. Thus prefill displays pp128 and pp512,
 while generation displays all three arms. A ratio above 1 means RAFTInfer's
 throughput is higher. The `peak_allocated_gpu_bytes` field is RAFTInfer's RMM
 logical allocation peak; it is not a process-wide GPU-memory measurement.
 
-Two independently preflighted, uncontended runs met the BF16 gate. The checked-in
-record is the conservative representative: its five reported ratios are no
-higher than those of the confirmation run. This avoids selecting a faster
-sample from otherwise equivalent passing evidence.
+Two independently preflighted, uncontended split-K runs met both the BF16 and
+promotion gates. The checked-in record is formal sample A, the conservative
+representative for the promotion-critical long-context generation arms: its
+PP512 and TG128@PP512 baseline-relative gains were both lower than sample B's.
+This avoids publishing the faster of the two qualifying long-context samples.
+All displayed values are direct RAFTInfer-to-llama.cpp ratios from that retained
+sample; no `bw24` series is included.
 
 Limits: this is a Qwen3.5-9B BF16, single-RTX-5090, specified-protocol result.
 It does not generalize to another model, quantization, GPU, batch size, service

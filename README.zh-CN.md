@@ -13,9 +13,11 @@ llama.cpp。五项展示的测量中 RAFTInfer 均更高：PP128、PP512 prefill
 PP128、PP512、TG128@PP512 generation。图中 ratio 是源数据精确 ratio 四舍五入至三位
 小数；见[基准方法](docs/benchmarks.md)与已提交的
 [schema-v2 evidence](benchmarks/results/qwen35-9b-bf16-rtx5090.jsonl)。
+经测量的 `auto` 策略在两个长上下文 arm 使用 split-k-256，同时 PP128 保留零
+workspace 的 single-block 路径。
 
-协议为每个 arm 5 次 warmup、20 次测量，BF16 Qwen3.5-9B revision
-`c202236235762e1c871ad0ccb60c8ee5ba337b9a`、固定 llama.cpp revision
+协议为每个 arm 5 次 warmup、20 次测量，BF16 Qwen3.5-9B ModelScope revision
+`460979c3d11864dd16408d860ac930a360a2fac2`、固定 llama.cpp revision
 `aedb2a5e9ca3d4064148bbb919e0ddc0c1b70ab3`，并对 4 prompts × 32 tokens 完成
 exact greedy parity。这是单一已接受 RTX 5090 环境的结果，不是普遍的硬件或工作负载结论。
 
