@@ -123,6 +123,7 @@ expect_fail() {
   local name="$1"
   local candidate="$2"
   local filter="$3"
+  local expected="${4:-qwen35-split-k-gate:}"
   write_pass_fixtures
   local target
   case "${candidate}" in
@@ -141,7 +142,7 @@ expect_fail() {
     printf 'expected split-K gate failure for %s\n' "${name}" >&2
     exit 1
   fi
-  grep -F 'qwen35-split-k-gate:' "${fixture_root}/${name}.err"
+  grep -F "${expected}" "${fixture_root}/${name}.err"
 }
 
 write_pass_fixtures
@@ -183,7 +184,15 @@ expect_fail nonfinite_value candidate_a \
 expect_fail undisclosed_path candidate_b \
   'if .arm == "pp512" then del(.execution.decode_attention_partition_tokens) else . end'
 expect_fail fallback_path candidate_a \
-  'if .arm == "tg128_pp512" then .execution.decode_attention = "single_block" else . end'
+  'if .arm == "tg128_pp512" then
+     .execution.decode_attention = "single_block" |
+     .execution.decode_attention_partition_tokens = 0 |
+     .execution.decode_attention_threshold_tokens = 0 |
+     .execution.decode_attention_context_bucket_tokens = 0 |
+     .execution.decode_attention_split_k_graph_captured = false |
+     .raftinfer.execution = .execution
+   else . end' \
+  'both candidates must have exact parity, stable RAFTInfer timings, and split-K long-context execution'
 
 write_pass_fixtures
 set +e
