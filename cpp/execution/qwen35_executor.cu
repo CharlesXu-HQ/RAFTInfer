@@ -471,8 +471,20 @@ resolve_execution_policy(const model::Qwen35Config &config,
         RAFTINFER_DTYPE_F32, attention_launch_policy(requested));
   }
   if (supported) {
-    if (requested.decode_attention == Qwen35DecodeAttentionMode::auto_select)
-      requested.decode_attention = Qwen35DecodeAttentionMode::single_block;
+    if (requested.decode_attention == Qwen35DecodeAttentionMode::auto_select) {
+      requested.decode_attention =
+          kernels::qwen35_online_decode_plan(
+              kernels::Qwen35AttentionShape{
+                  .tokens = 1,
+                  .query_heads = config.full_attention_head_count,
+                  .kv_heads = config.full_attention_kv_head_count,
+                  .head_dim = config.full_attention_head_dimension,
+                  .max_context_tokens = max_context,
+                  .past_tokens = 0,
+              },
+              requested.decode_attention, 1)
+              .resolved_mode;
+    }
     const std::size_t partition_tokens =
         decode_attention_partition_tokens(requested.decode_attention);
     if (partition_tokens != 0 && max_context < partition_tokens)

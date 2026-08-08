@@ -689,9 +689,23 @@ void run_split_k_workspace_contract_tests() {
       raftinfer::Qwen35DecodeAttentionMode::split_k_256;
   const auto required = raftinfer::Qwen35Executor::workspace_bytes(
       model.qwen35_config(), max_context, policy);
+  const auto automatic_required = raftinfer::Qwen35Executor::workspace_bytes(
+      model.qwen35_config(), max_context);
 
   raftinfer::DeviceContext device{0, 512U * 1024U * 1024U};
   auto weights = device.upload_qwen35_weights(model);
+  {
+    auto automatic_owner = device.create_execution_owner(required);
+    auto automatic_context = automatic_owner->execution_context();
+    raftinfer::Qwen35Executor automatic_executor{
+        automatic_context, model.qwen35_config(), *weights, max_context};
+    const auto automatic_diagnostics = automatic_executor.diagnostics();
+    assert(automatic_diagnostics.decode_attention.implementation ==
+           raftinfer::Qwen35DecodeAttentionImplementation::split_k);
+    assert(automatic_diagnostics.decode_attention.partition_tokens == 256);
+    assert(automatic_diagnostics.decode_attention.threshold_tokens == 256);
+    assert(automatic_required == required);
+  }
   auto owner = device.create_execution_owner(required);
   auto context = owner->execution_context();
   raftinfer::Qwen35Executor executor{context, model.qwen35_config(), *weights,
@@ -742,6 +756,9 @@ void run_split_k_workspace_contract_tests() {
   auto single_short_policy = forced_short_policy;
   single_short_policy.decode_attention =
       raftinfer::Qwen35DecodeAttentionMode::single_block;
+  auto automatic_short_policy = forced_short_policy;
+  automatic_short_policy.decode_attention =
+      raftinfer::Qwen35DecodeAttentionMode::auto_select;
   const auto forced_short_workspace =
       raftinfer::Qwen35Executor::workspace_bytes(
           short_model.qwen35_config(), short_max_context,
@@ -750,9 +767,29 @@ void run_split_k_workspace_contract_tests() {
       raftinfer::Qwen35Executor::workspace_bytes(
           short_model.qwen35_config(), short_max_context,
           single_short_policy);
+  const auto automatic_short_workspace =
+      raftinfer::Qwen35Executor::workspace_bytes(
+          short_model.qwen35_config(), short_max_context,
+          automatic_short_policy);
   assert(forced_short_workspace == single_short_workspace);
+  assert(automatic_short_workspace == single_short_workspace);
 
   auto short_weights = device.upload_qwen35_weights(short_model);
+  {
+    auto automatic_short_owner =
+        device.create_execution_owner(automatic_short_workspace);
+    auto automatic_short_context =
+        automatic_short_owner->execution_context();
+    raftinfer::Qwen35Executor automatic_short_executor{
+        automatic_short_context, short_model.qwen35_config(), *short_weights,
+        short_max_context, automatic_short_policy};
+    const auto automatic_short_diagnostics =
+        automatic_short_executor.diagnostics();
+    assert(automatic_short_diagnostics.decode_attention.implementation ==
+           raftinfer::Qwen35DecodeAttentionImplementation::single_block);
+    assert(automatic_short_diagnostics.decode_attention.partition_tokens == 0);
+    assert(automatic_short_diagnostics.decode_attention.threshold_tokens == 0);
+  }
   auto short_owner = device.create_execution_owner(forced_short_workspace);
   auto short_context = short_owner->execution_context();
   raftinfer::Qwen35Executor short_executor{

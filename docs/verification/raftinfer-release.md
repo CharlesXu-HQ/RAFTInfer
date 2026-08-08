@@ -1,9 +1,11 @@
 # RAFTInfer release-candidate verification
 
-Status: **accepted; split-k-256 promoted as the measured `auto` default**. This
-record covers the pinned CUDA Release build, artifact identity, exact parity,
-same-window baseline, deterministic candidate selection, two independent
-formal samples, and the promotion gate.
+Status: **measured selection accepted; corrected `auto`-path verification
+pending**. Split-k-256 passed the measured promotion gate. An initial
+post-commit verification correctly rejected the first runtime integration
+because the executor still resolved `auto` to single-block; the executor now
+consumes the measured kernel planner default and awaits a fresh final
+default-path run.
 
 ## Candidate and target build
 
@@ -133,6 +135,29 @@ its baseline-relative PP512 and TG128@PP512 gains are lower than sample B's.
 Decision: **promote `split_k_256` as `kDefaultOnlineDecodeMode`**. No threshold
 was weakened and neither formal sample was substituted. The checked-in chart
 compares RAFTInfer with llama.cpp only.
+
+## Runtime `auto` integration correction
+
+Commit `af9b9369a5cd3aa474d874d0eef5738b4fdc3824` changed the kernel planner
+default, but its first complete post-commit runtime sample disclosed
+single-block for all three benchmark arms. That attempt is rejected and is not
+promotion evidence. The root cause was an executor-level `auto` override that
+ran before kernel plan construction.
+
+An executor-level CUDA test was added for the supported Qwen3.5 shape at a
+4,096-token maximum context. Against the unchanged executor it failed exactly
+because constructed diagnostics reported single-block rather than split-K;
+the RED CTest log SHA-256 is
+`31862feb6b4361c82b54816aa44d25315571f4b772278fae7d9dc169394e5851`.
+The minimal correction resolves `auto` through `qwen35_online_decode_plan`, so
+the executor has no second hardcoded default. The existing short-context guard
+still falls back to single-block when the maximum context is smaller than the
+selected partition. A clean target GREEN run passed the focused executor test
+1/1; its CTest log SHA-256 is
+`d1abe3f957e796c0ee912418c12edc9e449230163716b65bc6200425c1e7d65b`.
+Fresh post-commit parity, two independent `auto` samples, and both promotion
+gates remain required before this correction is accepted as the runtime
+default path.
 
 ## Scope
 
