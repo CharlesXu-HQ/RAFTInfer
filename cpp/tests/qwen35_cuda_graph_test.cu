@@ -233,10 +233,17 @@ bool same_logits_bits(const std::vector<float> &actual,
   return true;
 }
 
+void assert_finite_logits(const std::vector<float> &logits) {
+  for (const float logit : logits)
+    assert(std::isfinite(logit));
+}
+
 void assert_same_observation(const ExecutorObservation &actual,
                              const ExecutorObservation &expected) {
   assert(actual.result.token == expected.result.token);
   assert(actual.result.position == expected.result.position);
+  assert_finite_logits(actual.logits);
+  assert_finite_logits(expected.logits);
   assert(same_logits_bits(actual.logits, expected.logits));
   assert(actual.state.full_kv_cache == expected.state.full_kv_cache);
   assert(actual.state.linear_convolution == expected.state.linear_convolution);
@@ -257,7 +264,8 @@ void run_executor_graph_equivalence_tests() {
       .rotary_dimension = 64,
   };
   const auto path = write_fixture(
-      raftinfer::test::make_qwen35_nonzero_bf16_gguf_fixture(fixture_options));
+      raftinfer::test::make_qwen35_nonzero_bf16_gguf_fixture(fixture_options,
+                                                             0.03125F));
   raftinfer::model::Model model{path.string()};
   constexpr std::size_t max_context = 64;
   auto graph_policy = raftinfer::Qwen35ExecutionPolicy{};
@@ -332,6 +340,40 @@ void run_executor_graph_equivalence_tests() {
   raftinfer::Qwen35Executor boundary_graph{
       boundary_graph_context, model.qwen35_config(), *weights,
       boundary_max_context, boundary_graph_policy};
+
+  boundary_graph.set_decode_graph_enabled_for_tests(true);
+  boundary_graph.reset();
+  std::vector<std::int32_t> greedy_prompt(255, 1);
+  const auto graph_greedy_prefill_observation = observe_executor(
+      boundary_graph, boundary_graph.prefill(greedy_prompt),
+      model.qwen35_config().vocabulary_size);
+  std::vector<std::int32_t> graph_greedy_tokens(260);
+  const auto graph_greedy_result =
+      boundary_graph.decode_greedy(2, graph_greedy_tokens);
+  const auto graph_greedy_observation = observe_executor(
+      boundary_graph, graph_greedy_result,
+      model.qwen35_config().vocabulary_size);
+  const auto graph_greedy_diagnostics = boundary_graph.diagnostics();
+
+  boundary_graph.set_decode_graph_enabled_for_tests(false);
+  boundary_graph.reset();
+  assert_same_observation(
+      graph_greedy_prefill_observation,
+      observe_executor(boundary_graph, boundary_graph.prefill(greedy_prompt),
+                       model.qwen35_config().vocabulary_size));
+  std::vector<std::int32_t> stream_greedy_tokens(graph_greedy_tokens.size());
+  const auto stream_greedy_result =
+      boundary_graph.decode_greedy(2, stream_greedy_tokens);
+  assert(graph_greedy_tokens == stream_greedy_tokens);
+  assert_same_observation(
+      graph_greedy_observation,
+      observe_executor(boundary_graph, stream_greedy_result,
+                       model.qwen35_config().vocabulary_size));
+  assert(graph_greedy_diagnostics.decode_graph_replayed);
+  assert(graph_greedy_diagnostics.decode_attention.implementation ==
+         raftinfer::Qwen35DecodeAttentionImplementation::split_k);
+  assert(graph_greedy_diagnostics.decode_attention.last_context_bucket_tokens ==
+         1024);
 
   for (const std::size_t start_position : {254U, 255U, 511U, 1023U}) {
     boundary_graph.set_decode_graph_enabled_for_tests(true);

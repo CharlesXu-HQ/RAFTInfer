@@ -409,6 +409,20 @@ attention_launch_policy(Qwen35ExecutionPolicy policy) noexcept {
   };
 }
 
+std::size_t decode_attention_partition_tokens(Qwen35DecodeAttentionMode mode) {
+  switch (mode) {
+  case Qwen35DecodeAttentionMode::split_k_256:
+    return 256;
+  case Qwen35DecodeAttentionMode::split_k_512:
+    return 512;
+  case Qwen35DecodeAttentionMode::auto_select:
+  case Qwen35DecodeAttentionMode::single_block:
+    return 0;
+  }
+  require(false, "unsupported Qwen3.5 decode attention mode");
+  return 0;
+}
+
 bool online_decode_supported(const model::Qwen35Config &config,
                              Qwen35ExecutionPolicy policy) noexcept {
   if (config.full_attention_head_count != 16 ||
@@ -458,6 +472,10 @@ resolve_execution_policy(const model::Qwen35Config &config,
   }
   if (supported) {
     if (requested.decode_attention == Qwen35DecodeAttentionMode::auto_select)
+      requested.decode_attention = Qwen35DecodeAttentionMode::single_block;
+    const std::size_t partition_tokens =
+        decode_attention_partition_tokens(requested.decode_attention);
+    if (partition_tokens != 0 && max_context < partition_tokens)
       requested.decode_attention = Qwen35DecodeAttentionMode::single_block;
     return requested;
   }
@@ -706,7 +724,7 @@ public:
         offset += chunk;
       }
       position_ = start_position + tokens.size();
-      sync_device_decode_position();
+      sync_device_decode_position(position_);
       return result;
     } catch (...) {
       poisoned_ = true;
@@ -744,10 +762,10 @@ public:
       if (position_ < max_context_) {
         auto &next_variant = decode_graph_variant_for(position_);
         if (can_capture_decode_graph(next_variant))
-          capture_decode_graph_variant(next_variant);
+          capture_decode_graph_variant(next_variant, position_);
         else if (decode_graph_enabled() && next_variant.graph != nullptr &&
                  next_variant.graph->captured())
-          sync_device_decode_position();
+          sync_device_decode_position(position_);
       }
       return result;
     } catch (...) {
@@ -977,12 +995,12 @@ private:
            (variant.graph == nullptr || !variant.graph->captured());
   }
 
-  void sync_device_decode_position() {
-    require(position_ <= std::numeric_limits<std::uint32_t>::max(),
+  void sync_device_decode_position(std::size_t position) {
+    require(position <= std::numeric_limits<std::uint32_t>::max(),
             "Qwen3.5 decode position exceeds CUDA graph range");
-    const auto position = static_cast<std::uint32_t>(position_);
-    check_cuda(cudaMemcpyAsync(device_decode_position_, &position,
-                               sizeof(position), cudaMemcpyHostToDevice,
+    const auto device_position = static_cast<std::uint32_t>(position);
+    check_cuda(cudaMemcpyAsync(device_decode_position_, &device_position,
+                               sizeof(device_position), cudaMemcpyHostToDevice,
                                context_.stream()),
                "Qwen3.5 decode position upload failed");
     check_cuda(cudaStreamSynchronize(context_.stream()),
@@ -1014,7 +1032,7 @@ private:
     for (std::size_t step = 0; step < output_tokens.size(); ++step) {
       auto &variant = decode_graph_variant_for(start_position + step);
       if (can_capture_decode_graph(variant))
-        capture_decode_graph_variant(variant);
+        capture_decode_graph_variant(variant, start_position + step);
       require(can_replay_decode_graph(variant),
               "Qwen3.5 decode graph variant is unavailable");
       variant.graph->replay_on_current_device();
@@ -1057,14 +1075,13 @@ private:
     return decode_graph_variants_[index];
   }
 
-  void capture_decode_graph_variant(DecodeGraphVariant &variant) {
-    sync_device_decode_position();
+  void capture_decode_graph_variant(DecodeGraphVariant &variant,
+                                    std::size_t position) {
+    sync_device_decode_position(position);
     captured_decode_attention_plan_ = variant.attention_plan;
     update_decode_attention_diagnostic(captured_decode_attention_plan_);
-    if (variant.graph == nullptr) {
-      variant.graph = std::make_unique<CudaGraphDecode>(context_.device_id(),
-                                                       context_.stream());
-    }
+    require(variant.graph != nullptr,
+            "Qwen3.5 decode graph variant owner is unavailable");
     variant.graph->capture([this] {
       (void)run_chunk(
           std::span<const std::int32_t>{host_decode_token_.get(), 1}, true, 0,
@@ -2165,7 +2182,8 @@ private:
         .attention_plan = kernels::qwen35_online_decode_plan(
             decode_attention_shape(0), Qwen35DecodeAttentionMode::single_block,
             1),
-        .graph = nullptr,
+        .graph = std::make_unique<CudaGraphDecode>(context_.device_id(),
+                                                   context_.stream()),
     });
     const std::size_t threshold =
         policy_.decode_attention == Qwen35DecodeAttentionMode::split_k_256
@@ -2183,8 +2201,10 @@ private:
           position + 1);
       if (active_variant == 0 ||
           decode_graph_variants_[active_variant].attention_plan != plan) {
-        decode_graph_variants_.push_back(
-            DecodeGraphVariant{.attention_plan = plan, .graph = nullptr});
+        decode_graph_variants_.push_back(DecodeGraphVariant{
+            .attention_plan = plan,
+            .graph = std::make_unique<CudaGraphDecode>(context_.device_id(),
+                                                       context_.stream())});
         active_variant = decode_graph_variants_.size() - 1;
       }
       decode_graph_variant_by_position_[position] = active_variant;

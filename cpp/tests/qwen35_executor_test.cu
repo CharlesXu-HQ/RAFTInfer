@@ -1,3 +1,4 @@
+#include "../execution/cuda_graph_decode.hpp"
 #include "../execution/qwen35_executor.hpp"
 #include "../execution/workspace_arena.hpp"
 #include "../foundation/device_context.hpp"
@@ -730,6 +731,82 @@ void run_split_k_workspace_contract_tests() {
         insufficient_context, model.qwen35_config(), *weights, max_context,
         policy};
   });
+
+  const auto short_path = write_fixture(make_release_attention_fixture(128));
+  raftinfer::model::Model short_model{short_path.string()};
+  constexpr std::size_t short_max_context = 128;
+  auto forced_short_policy = raftinfer::Qwen35ExecutionPolicy{};
+  forced_short_policy.decode_graph = true;
+  forced_short_policy.decode_attention =
+      raftinfer::Qwen35DecodeAttentionMode::split_k_256;
+  auto single_short_policy = forced_short_policy;
+  single_short_policy.decode_attention =
+      raftinfer::Qwen35DecodeAttentionMode::single_block;
+  const auto forced_short_workspace =
+      raftinfer::Qwen35Executor::workspace_bytes(
+          short_model.qwen35_config(), short_max_context,
+          forced_short_policy);
+  const auto single_short_workspace =
+      raftinfer::Qwen35Executor::workspace_bytes(
+          short_model.qwen35_config(), short_max_context,
+          single_short_policy);
+  assert(forced_short_workspace == single_short_workspace);
+
+  auto short_weights = device.upload_qwen35_weights(short_model);
+  auto short_owner = device.create_execution_owner(forced_short_workspace);
+  auto short_context = short_owner->execution_context();
+  raftinfer::Qwen35Executor short_executor{
+      short_context, short_model.qwen35_config(), *short_weights,
+      short_max_context, forced_short_policy};
+  const auto short_diagnostics = short_executor.diagnostics();
+  assert(short_diagnostics.decode_attention.implementation ==
+         raftinfer::Qwen35DecodeAttentionImplementation::single_block);
+  assert(short_diagnostics.decode_attention.partition_tokens == 0);
+  assert(short_diagnostics.decode_attention.threshold_tokens == 0);
+  assert(!short_diagnostics.decode_attention.split_k_graph_captured);
+
+  std::vector<std::int32_t> short_prompt(short_max_context - 2, 1);
+  (void)short_executor.prefill(short_prompt);
+  (void)short_executor.decode(2);
+  const auto after_short_decode = short_executor.diagnostics();
+  assert(after_short_decode.decode_attention.implementation ==
+         raftinfer::Qwen35DecodeAttentionImplementation::single_block);
+  assert(after_short_decode.decode_attention.partition_tokens == 0);
+  assert(!after_short_decode.decode_attention.split_k_graph_captured);
+
+  raftinfer::test::reset_cuda_graph_decode_construction_count();
+  constexpr std::size_t graph_owner_max_context = 1030;
+  auto graph_owner_policy = raftinfer::Qwen35ExecutionPolicy{};
+  graph_owner_policy.decode_graph = true;
+  graph_owner_policy.decode_attention =
+      raftinfer::Qwen35DecodeAttentionMode::split_k_256;
+  const auto graph_owner_path =
+      write_fixture(make_release_attention_fixture(graph_owner_max_context));
+  raftinfer::model::Model graph_owner_model{graph_owner_path.string()};
+  const auto graph_owner_workspace =
+      raftinfer::Qwen35Executor::workspace_bytes(
+          graph_owner_model.qwen35_config(), graph_owner_max_context,
+          graph_owner_policy);
+  auto graph_owner_weights = device.upload_qwen35_weights(graph_owner_model);
+  auto graph_owner = device.create_execution_owner(graph_owner_workspace);
+  auto graph_owner_context = graph_owner->execution_context();
+  raftinfer::Qwen35Executor graph_owner_executor{
+      graph_owner_context, graph_owner_model.qwen35_config(),
+      *graph_owner_weights,
+      graph_owner_max_context, graph_owner_policy};
+  constexpr std::size_t expected_graph_owner_variants = 4;
+  const auto construction_count =
+      raftinfer::test::cuda_graph_decode_construction_count();
+
+  std::vector<std::int32_t> graph_owner_prompt(255, 1);
+  (void)graph_owner_executor.prefill(graph_owner_prompt);
+  (void)graph_owner_executor.decode(2);
+  assert(raftinfer::test::cuda_graph_decode_construction_count() ==
+         construction_count);
+  (void)graph_owner_executor.decode(3);
+  assert(raftinfer::test::cuda_graph_decode_construction_count() ==
+         construction_count);
+  assert(construction_count == expected_graph_owner_variants);
 }
 
 void run_executor_f32_auxiliary_smoke() {

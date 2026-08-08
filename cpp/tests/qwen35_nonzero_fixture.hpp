@@ -15,7 +15,8 @@
 namespace raftinfer::test {
 
 inline std::vector<std::uint8_t>
-make_qwen35_nonzero_bf16_gguf_fixture(Qwen35GgufFixtureOptions options = {}) {
+make_qwen35_nonzero_bf16_gguf_fixture(Qwen35GgufFixtureOptions options = {},
+                                      float value_scale = 1.0F) {
   constexpr std::uint32_t kBf16TensorType = 30;
   auto bytes = make_qwen35_gguf_fixture(kBf16TensorType, false, options);
   const auto catalog = gguf::read_catalog(bytes);
@@ -44,6 +45,7 @@ make_qwen35_nonzero_bf16_gguf_fixture(Qwen35GgufFixtureOptions options = {}) {
                                 0.319F) +
                 static_cast<float>(static_cast<int>(row) - 7) / 128.0F;
       }
+      value *= value_scale;
       const std::uint16_t encoded = reference::float_to_bf16(value).bits;
       const std::size_t offset =
           payload_offset + element * sizeof(std::uint16_t);

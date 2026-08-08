@@ -2,6 +2,7 @@
 
 #include <cuda_runtime_api.h>
 
+#include <cstddef>
 #include <functional>
 
 namespace raftinfer {
@@ -28,5 +29,12 @@ private:
   cudaGraph_t graph_{};
   cudaGraphExec_t exec_{};
 };
+
+namespace test {
+
+void reset_cuda_graph_decode_construction_count() noexcept;
+std::size_t cuda_graph_decode_construction_count() noexcept;
+
+} // namespace test
 
 } // namespace raftinfer

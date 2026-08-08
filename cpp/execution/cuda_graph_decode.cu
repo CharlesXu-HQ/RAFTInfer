@@ -1,10 +1,13 @@
 #include "cuda_graph_decode.hpp"
 
+#include <atomic>
 #include <stdexcept>
 #include <string>
 
 namespace raftinfer {
 namespace {
+
+std::atomic<std::size_t> g_construction_count{0};
 
 void check_cuda(cudaError_t status, const char *operation) {
   if (status != cudaSuccess) {
@@ -21,6 +24,7 @@ void launch_graph(cudaGraphExec_t exec, cudaStream_t stream) {
 
 CudaGraphDecode::CudaGraphDecode(int device_id, cudaStream_t stream)
     : device_id_(device_id), stream_(stream) {
+  g_construction_count.fetch_add(1, std::memory_order_relaxed);
   if (stream_ == nullptr)
     throw std::runtime_error("CUDA graph decode stream is null");
 }
@@ -91,5 +95,17 @@ void CudaGraphDecode::reset() noexcept {
 bool CudaGraphDecode::captured() const noexcept {
   return graph_ != nullptr && exec_ != nullptr;
 }
+
+namespace test {
+
+void reset_cuda_graph_decode_construction_count() noexcept {
+  g_construction_count.store(0, std::memory_order_relaxed);
+}
+
+std::size_t cuda_graph_decode_construction_count() noexcept {
+  return g_construction_count.load(std::memory_order_relaxed);
+}
+
+} // namespace test
 
 } // namespace raftinfer
