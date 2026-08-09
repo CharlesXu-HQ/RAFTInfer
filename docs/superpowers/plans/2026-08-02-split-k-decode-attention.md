@@ -968,7 +968,7 @@ git commit -m "perf: retain single-block decode default"
 - Produces: a review-clean phase-A branch and a separately approved phase-B
   design boundary; phase B implementation is not mixed into phase A commits.
 
-- [ ] **Step 1: Review the complete phase-A diff**
+- [x] **Step 1: Review the complete phase-A diff**
 
 Inspect:
 
@@ -984,13 +984,13 @@ stability, workspace overflow, hidden fallback, environment parsing on the hot
 path, ABI field-order mismatch, stale benchmark schemas, and accidental bw24
 comparison claims.
 
-- [ ] **Step 2: Run final verification from clean state**
+- [x] **Step 2: Run final verification from clean state**
 
 Require a clean worktree, rerun `scripts/local-check.sh`, and rerun the clean
 target CUDA build/test/parity/benchmark commands from Task 5. Verify every
 reported SHA-256 against the retained file.
 
-- [ ] **Step 3: Commit review fixes if required**
+- [x] **Step 3: Commit review fixes if required**
 
 If review changes files:
 

@@ -220,6 +220,62 @@ Every gain/non-regression and CV threshold passed independently in both
 samples. Final postflight showed no compute applications, 32,095 MiB free,
 0% utilization, and 40 C. No process was stopped or signaled.
 
+## Phase-A review-clean committed-snapshot verification
+
+The complete phase-A review found three important issues: the CUDA Graph
+position map switched one token later than runtime dispatch, the promotion gate
+did not prove that the baseline was single-block, and the gate allowed mixed
+candidate partitions across arms or samples. Corrective commit
+`2f3e5c08f92715e301e3bfbfec0b86037f5bf86f` fixed all three. An independent
+re-review reported no Critical, Important, or Minor findings.
+
+The accepted Task 6 snapshot was built from deterministic archive SHA-256
+`fbdba678d2099f7fe692e4366dfdac61ea00019452e735f95b6376918aef056a`
+and exact 193-file source manifest
+`6f694b60fe2d7e7e9bf88c8db0b98c55827744819b2cea159e8e882dc8d8e35c`.
+The fresh GNU 13.3.0 / CUDA 13.2.86 Release build passed CUDA CTest 25/25;
+the CTest log SHA-256 is
+`3f9c11701c02e2c3914aa46ac4898e15f270930ff1c8eb6ad3c36416473c5d18`.
+The resulting native library and CLI SHA-256 identities are
+`b029b0c72e276105fc9c14121a2d6ff95b69233f6156f94ee3c31e5769bea015`
+and `edc661a8f6a373d9371954570ac89b3944fd01f8916102d9b6dcdb4ea1792253`.
+
+Fresh forced-single-block and `auto` parity passed 4/4 prompts and 128/128
+exact generated token IDs. Their SHA-256 identities are
+`4dacd35aa011d07a470b0d4980c18532a2c2c047a0fa36443ab1f1ddac266350`
+and `7f841c6f03aee2be19805b387f9287dc45118dd5389b3c7f54975e69ccdd8fb5`.
+The same-window baseline and independent `auto` A/B benchmark SHA-256
+identities are
+`10ff30d0447483b51632432ebdffdda27a4645e60f7aaff08a086e0d68b2bf7d`,
+`3a73445fb41eba210c780db3fec36ad57cb8d91097fd3fc5a301346ce9550153`,
+and `029994e6552e433c6c17eeedda624fa623c447a45248e45759a497e994111ce8`.
+
+Both `auto` samples passed BF16, CV, exact-parity, diagnostic-disclosure, and
+baseline-relative promotion checks. The final execution diagnostics are
+consistent with the corrected boundary contract: PP128+TG128 finishes at
+context 256 and discloses split-k-256 with bucket 512, while both 512-token
+arms disclose split-k-256 with bucket 1,024. Every `auto` arm reports partition
+and threshold 256 plus captured graph replay. Baseline-relative ratios were:
+
+| Sample | PP128 prefill | PP128 generation | PP512 prefill | PP512 generation | TG128@PP512 prefill | TG128@PP512 generation |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| A | 1.000789 | 0.998342 | 0.999214 | 1.022470 | 0.999338 | 1.022651 |
+| B | 1.001631 | 0.999924 | 0.997605 | 1.022169 | 0.998865 | 1.021061 |
+
+All RAFTInfer CVs were below 0.0013 and all paired llama.cpp CVs were below
+0.0091. The hardened combined split-K gate passed; its log SHA-256 is
+`8cf9a046251526efb08139684c88e581930a51105479ac49e7aa014787bfc234`.
+The retained final evidence-hash manifest SHA-256 is
+`13f87cba73731ef0263cf99848b59c3baa34d0a699d32ef5f36a53903092e6d1`.
+Final postflight showed no compute applications, 31,972 MiB free, 0%
+utilization, and 43 C. No process was stopped or signaled.
+
+Task 6 attempt 01 is retained but excluded: its benchmark and BF16 gate passed,
+then an obsolete wrapper assertion rejected the correct PP128 threshold-end
+split-K diagnostics. A causal fixture reproduced that wrapper-only failure
+before the minimal attempt-02 correction. No production source changed between
+attempts.
+
 ## Scope
 
 This evidence applies only to Qwen3.5-9B BF16 on this one RTX 5090 protocol.

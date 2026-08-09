@@ -34,7 +34,9 @@ HOME, LD_LIBRARY_PATH, PATH, TMPDIR, and XDG_CACHE_HOME.
   `split-k-512`; the default is `auto`. Benchmark evidence for either split-K
   policy rejects PP512 and TG128@PP512 records unless they disclose the
   matching split-K partition, a positive context bucket, and a captured
-  split-K graph. PP128 may disclose the single-block short-context path.
+  split-K graph. Diagnostics describe the final decode step: PP128 may remain
+  single-block when its final context is below the selected threshold, but a
+  PP128+TG128 run reaches context 256 and therefore discloses split-k-256.
 - RAFTINFER_GPU_LOCK — lock-file path serializing target-GPU runs; default
   /tmp/raftinfer-qwen35-gpu.lock.
 - RAFTINFER_GPU_ID — GPU index used by benchmark metadata; default 0.
