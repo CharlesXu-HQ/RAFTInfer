@@ -1,5 +1,0 @@
-blank_issues_enabled: false
-contact_links:
-  - name: Security vulnerability
-    url: https://github.com/charlesxu91/RAFTInfer/security/advisories/new
-    about: Please report security vulnerabilities privately; do not disclose exploit details in public issues.

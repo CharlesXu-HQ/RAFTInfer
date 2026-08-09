@@ -1,5 +1,8 @@
 .worktrees/
+.github/
+.superpower/
 .superpowers/
+/docs/superpowers/
 /build/
 /target/
 /.cache/
